@@ -1,0 +1,1 @@
+# declarmima_information_category1

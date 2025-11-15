@@ -4,14 +4,15 @@ import tempfile
 import time
 from io import BytesIO
 
-# Imports for RAG and LangChain (need to install: langchain, langchain-community, pypdf, faiss-cpu, langchain-huggingface)
+# LangChain / RAG imports (2024–2025 compatible)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders.pdf import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.llms import HuggingFaceHub
 from langchain_core.prompts import PromptTemplate
 from langchain_community.chains import RetrievalQA
+
 
 
 # --- Configuration ---

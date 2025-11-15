@@ -25,9 +25,15 @@ Processing parameters
 
 # Retrieval Augmented Generation (RAG) Models
 
+# cloud based (experimental )
+
 [![meaningtowords](https://img.shields.io/badge/ragmodelcloud1-streamlit-red)](https://information-retrieval-from-scientific-documents1.streamlit.app/)  (Hugging Face API Key is Required)
 
 [![meaningtowords](https://img.shields.io/badge/ragmodelcloud2-streamlit-red)](https://information-retrieval-from-scientific-documents2.streamlit.app/) (API Key Not Required, recommended to run in local computers)
+
+# local computer (working)
+
+the files need to be run in local computer with Ollama and  llama3.1:8b installed
 
 
 

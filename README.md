@@ -27,4 +27,6 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/ragmodelcloud1-streamlit-red)](https://information-retrieval-from-scientific-documents1.streamlit.app/)
 
+[![meaningtowords](https://img.shields.io/badge/ragmodelcloud2-streamlit-red)](https://information-retrieval-from-scientific-documents2.streamlit.app/)
+
 

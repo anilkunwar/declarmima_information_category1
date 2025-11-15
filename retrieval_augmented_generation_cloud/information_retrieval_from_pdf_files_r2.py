@@ -21,7 +21,7 @@ except ImportError as e:
 
 from langchain_core.prompts import PromptTemplate
 #from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+#from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # --- Configuration for Cloud-Optimized Models ---
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # ~80MB

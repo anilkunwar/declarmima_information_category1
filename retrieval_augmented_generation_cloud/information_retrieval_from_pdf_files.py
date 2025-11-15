@@ -11,10 +11,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.llms import HuggingFaceHub
 from langchain_core.prompts import PromptTemplate
-from langchain.chains.retrieval import RetrievalQA
-
-
-
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # --- Configuration ---
 # Defaults for Hugging Face models
@@ -67,7 +65,7 @@ def create_vector_store(chunks, embedding_model, hf_token):
         return None
 
 def create_rag_chain(vectorstore, llm_model, hf_token):
-    """Creates the LangChain RetrievalQA chain using Hugging Face Hub."""
+    """Creates the LangChain retrieval chain using Hugging Face Hub."""
     llm = HuggingFaceHub(
         repo_id=llm_model,
         huggingfacehub_api_token=hf_token,
@@ -88,14 +86,11 @@ def create_rag_chain(vectorstore, llm_model, hf_token):
         template=template, input_variables=["context", "question"]
     )
 
-    # Create the RAG chain
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        return_source_documents=False,
-        chain_type_kwargs={"prompt": RAG_PROMPT}
-    )
+    # Create the combine documents chain
+    combine_docs_chain = create_stuff_documents_chain(llm, RAG_PROMPT)
+
+    # Create the retrieval chain
+    qa_chain = create_retrieval_chain(retriever, combine_docs_chain)
     return qa_chain
 
 # --- Streamlit UI and Logic ---
@@ -222,9 +217,9 @@ def main():
                     try:
                         # Invoke the RAG chain
                         response = st.session_state.qa_chain.invoke(
-                            {"query": prompt}
+                            {"input": prompt}
                         )
-                        full_response = response.get('result', "Sorry, I couldn't find an answer in the provided document context.")
+                        full_response = response.get('answer', "Sorry, I couldn't find an answer in the provided document context.")
 
                         # Simulate streaming display
                         for chunk in full_response.split():

@@ -21,3 +21,10 @@ Processing parameters
 
 # Information from abstracts
 
+
+
+# Retrieval Augmented Generation (RAG) Models
+
+[![meaningtowords](https://img.shields.io/badge/ragmodelcloud1-streamlit-red)](https://information-retrieval-from-scientific-documents1.streamlit.app/)
+
+

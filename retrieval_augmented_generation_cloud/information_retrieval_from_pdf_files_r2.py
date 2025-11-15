@@ -12,7 +12,7 @@ from langchain_community.vectorstores import FAISS
 # --- LIGHTWEIGHT MODEL IMPORTS ---
 try:
     # Try to use smaller models that might fit in Streamlit Cloud memory
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+    #from langchain_community.embeddings import HuggingFaceEmbeddings
     from langchain_community.llms import Ollama
     CLOUD_FRIENDLY = True
 except ImportError as e:

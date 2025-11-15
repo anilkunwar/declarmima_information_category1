@@ -8,7 +8,7 @@ from io import BytesIO
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceInferenceAPIEmbeddings
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_huggingface import HuggingFaceHub
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA

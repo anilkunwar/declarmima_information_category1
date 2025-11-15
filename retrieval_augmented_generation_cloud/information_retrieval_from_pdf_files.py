@@ -5,14 +5,15 @@ import time
 from io import BytesIO
 
 # LangChain / RAG imports (2024–2025 compatible)
+# Fix 1: Consolidate imports for the chain creation functions
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders.pdf import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.llms import HuggingFaceHub
 from langchain_core.prompts import PromptTemplate
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain, create_stuff_documents_chain # Consolidated
+# Note: No longer need 'from langchain.chains.combine_documents import create_stuff_documents_chain'
 
 # --- Configuration ---
 # Defaults for Hugging Face models
@@ -73,17 +74,18 @@ def create_rag_chain(vectorstore, llm_model, hf_token):
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-    # Define the custom prompt for RAG (adjusted for TinyLlama chat format if needed)
+    # Fix 2: Change prompt variable for user query from {question} to {input}
+    # This aligns with the expected variable name when using create_retrieval_chain
     template = """
     <s>[INST] You are an expert document assistant. Use the following context to answer the user's question concisely and accurately.
     If the answer is not found in the context, state that clearly and do not try to make up an answer.
 
     Context: {context}
 
-    Question: {question} [/INST]
+    Question: {input} [/INST]
     """
     RAG_PROMPT = PromptTemplate(
-        template=template, input_variables=["context", "question"]
+        template=template, input_variables=["context", "input"]
     )
 
     # Create the combine documents chain
@@ -143,23 +145,23 @@ def main():
         if new_files:
             # Reset chat history when new files are added
             st.session_state.messages = []
+            # We clear the vectorstore and chunks so we rebuild it with all files
             st.session_state.vectorstore = None
+            st.session_state.existing_chunks = [] # Clear existing chunks if new files are processed
 
             with st.spinner(f"Processing {len(new_files)} new PDF(s): {', '.join([f.name for f in new_files])}..."):
                 try:
                     all_chunks = []
-                    for uploaded_file in new_files:
-                        # 1. Load and Chunk each new file
+                    # Re-process ALL uploaded files to get all chunks, ensuring combined knowledge base
+                    for uploaded_file in uploaded_files:
+                        # 1. Load and Chunk each file
                         chunks = load_and_chunk_pdf(uploaded_file)
                         all_chunks.extend(chunks)
-                        st.info(f"Loaded {len(chunks)} text chunks from {uploaded_file.name}.")
-                        # Mark as processed
-                        st.session_state.processed_files.add(uploaded_file.name)
+                        if uploaded_file.name not in st.session_state.processed_files:
+                             st.info(f"Loaded {len(chunks)} text chunks from {uploaded_file.name}.")
+                             st.session_state.processed_files.add(uploaded_file.name) # Mark as processed only if successfully chunked
 
-                    # If there are existing chunks (from previous uploads), merge them
-                    if "existing_chunks" not in st.session_state:
-                        st.session_state.existing_chunks = []
-                    st.session_state.existing_chunks.extend(all_chunks)
+                    st.session_state.existing_chunks = all_chunks
 
                     # 2. Create or Update Vector Store (Cached for performance)
                     st.session_state.vectorstore = create_vector_store(
@@ -171,9 +173,8 @@ def main():
                     st.success("Document ingestion complete! You can now ask questions.")
                 except Exception as e:
                     st.error(f"Failed to process PDFs: {e}")
-                    # Remove failed files from processed set to allow retry
-                    for f in new_files:
-                        st.session_state.processed_files.discard(f.name)
+                    # Note: We don't remove files from processed_files here, as the full list of chunks might be corrupted
+                    # The `st.session_state.vectorstore = None` will prevent the chat interface from appearing.
                     return
         else:
             st.info("All uploaded files have already been processed.")
@@ -212,7 +213,7 @@ def main():
                 message_placeholder = st.empty()
                 full_response = ""
 
-                # Note: RetrievalQA is not inherently streaming, so we use a placeholder and then update.
+                # Note: The LCEL chain is not inherently streaming, so we use a placeholder and then update.
                 with st.spinner("Thinking..."):
                     try:
                         # Invoke the RAG chain
@@ -222,10 +223,11 @@ def main():
                         full_response = response.get('answer', "Sorry, I couldn't find an answer in the provided document context.")
 
                         # Simulate streaming display
+                        display_text = ""
                         for chunk in full_response.split():
-                            full_response += chunk + " "
-                            time.sleep(0.05)
-                            message_placeholder.markdown(full_response + "▌")
+                            display_text += chunk + " "
+                            time.sleep(0.01) # Reduced sleep time for faster display
+                            message_placeholder.markdown(display_text + "▌")
                         message_placeholder.markdown(full_response)
 
                     except Exception as e:

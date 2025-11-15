@@ -12,7 +12,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.llms import HuggingFaceHub
 from langchain_core.prompts import PromptTemplate
-from langchain.chains import create_retrieval_chain, create_stuff_documents_chain # Consolidated
+#from langchain.chains import create_retrieval_chain, create_stuff_documents_chain # Consolidated
 # Note: No longer need 'from langchain.chains.combine_documents import create_stuff_documents_chain'
 
 # --- Configuration ---

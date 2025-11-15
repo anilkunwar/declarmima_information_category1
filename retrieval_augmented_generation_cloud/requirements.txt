@@ -6,3 +6,8 @@ langchain-text-splitters
 pypdf
 faiss-cpu
 huggingface_hub
+setence-transformers
+transformers
+torch
+accelerate
+psutil

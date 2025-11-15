@@ -1,0 +1,6 @@
+streamlit
+tinyllama
+langchain
+langchain-community
+pypdf
+faiss-cpu

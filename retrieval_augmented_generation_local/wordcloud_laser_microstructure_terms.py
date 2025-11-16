@@ -414,23 +414,76 @@ def compute_lda_fast(_chunks, n_topics=5):
 def compute_nmf_fast(_chunks, n_topics=5, vectorizer=None):
     texts = [c.page_content.lower() for c in _chunks]
     sources = [c.metadata["source_document"] for c in _chunks]
+
     if vectorizer is None:
-        vectorizer = TfidfVectorizer(max_df=0.7, min_df=2, stop_words='english', token_pattern=r'(?u)\b\w\w+\b', ngram_range=(1,2))
+        vectorizer = TfidfVectorizer(
+            max_df=0.7, min_df=2, stop_words='english',
+            token_pattern=r'(?u)\b\w\w+\b', ngram_range=(1,2)
+        )
     X = vectorizer.fit_transform(texts)
     feature_names = vectorizer.get_feature_names_out()
+
     nmf = NMF(n_components=n_topics, random_state=42, max_iter=200)
     W = nmf.fit_transform(X)
     H = nmf.components_
 
+    # === Extract top terms ===
     topics = []
     for i, topic in enumerate(H):
         top_idx = topic.argsort()[-10:][::-1]
-        topics.append({"topic_id": i, "terms": [feature_names[j] for j in top_idx], "weights": [f"{topic[j]:.3f}" for j in top_idx]})
+        terms = [feature_names[j] for j in top_idx]
+        weights = [f"{topic[j]:.3f}" for j in top_idx]
+        topics.append({"topic_id": i, "terms": terms, "weights": weights})
 
-    doc_dist = [{"document": sources[i], "dominant_topic": np.argmax(W[i]), "contributions": [f"{p:.3f}" for p in (W[i]/W[i].sum())]} for i in range(len(sources))]
-    docs = [text.split() for text in texts]
-    dictionary = Dictionary(docs)
-    coherence = CoherenceModel(topics=[[t for t in topic["terms"]] for topic in topics], texts=docs, dictionary=dictionary, coherence='c_v').get_coherence()
+    # === Document-topic distribution ===
+    doc_dist = []
+    for i in range(len(sources)):
+        probs = W[i]
+        total = probs.sum()
+        if total > 0:
+            probs = probs / total
+        else:
+            probs = np.zeros(n_topics)
+        dominant = int(np.argmax(probs))
+        doc_dist.append({
+            "document": sources[i],
+            "dominant_topic": dominant,
+            "contributions": [f"{p:.3f}" for p in probs]
+        })
+
+    # === COHERENCE: Tokenize NMF terms using dictionary ===
+    # Build dictionary from raw texts (same as LDA)
+    raw_docs = [text.split() for text in texts]
+    dictionary = Dictionary(raw_docs)
+    dictionary.filter_extremes(no_below=2, no_above=0.7)
+
+    # Split NMF phrases into tokens that exist in dictionary
+    tokenized_topics = []
+    for topic in topics:
+        topic_tokens = []
+        for phrase in topic["terms"]:
+            # Split phrase: "laser power" → ["laser", "power"]
+            tokens = phrase.split()
+            # Keep only tokens that are in dictionary
+            valid_tokens = [t for t in tokens if t in dictionary.token2id]
+            topic_tokens.extend(valid_tokens)
+        # Dedupe and limit
+        topic_tokens = list(dict.fromkeys(topic_tokens))[:10]
+        tokenized_topics.append(topic_tokens)
+
+    # Only compute coherence if we have valid tokens
+    if any(tokenized_topics):
+        coherence_model = CoherenceModel(
+            topics=tokenized_topics,
+            texts=raw_docs,
+            dictionary=dictionary,
+            coherence='c_v'
+        )
+        coherence = coherence_model.get_coherence()
+    else:
+        coherence = 0.0
+        st.warning("NMF: No valid tokens for coherence. Using 0.0")
+
     return topics, doc_dist, coherence
 
 @st.cache_data

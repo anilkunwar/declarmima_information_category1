@@ -31,7 +31,7 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/ragmodelcloud2-streamlit-red)](https://information-retrieval-from-scientific-documents2.streamlit.app/) (API Key Not Required, recommended to run in local computers)
 
-[![meaningtowords](https://img.shields.io/badge/ragmodelcloud-v3.0-brightgreen.svg)](https://information-retrieval-from-scientific-documents3.streamlit.app/) (API Key Not Required, runs with QWEN and GPT-2)
+[![meaningtowords](https://img.shields.io/badge/ragmodelcloud-v3.0-brightgreen.svg)](https://information-retrieval-from-scientific-documents3.streamlit.app/) (API Key Not Required, runs with QWEN and GPT-2, currently can perform chat only with GPT-2)
 
 # local computer (working)
 

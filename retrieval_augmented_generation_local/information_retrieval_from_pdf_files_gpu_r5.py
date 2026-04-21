@@ -1,17 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-LASER MICROSTRUCTURE RAG CHATBOT - FULLY API-FREE VERSION
-==========================================================
+LASER MICROSTRUCTURE RAG CHATBOT - FULLY API-FREE VERSION (FIXED)
+==================================================================
 ✅ Zero API keys required - all models run locally
-✅ Optimized for Streamlit Cloud (memory-efficient caching)
+✅ Supports Hugging Face transformers models AND Ollama local models
+✅ Optimized for Streamlit Cloud and local deployment
 ✅ Laser-microstructure domain specialization
-✅ Supports GPT-2 and Qwen-0.5B models (local inference)
 ✅ PDF/text document ingestion with FAISS vector storage
 ✅ Source citation and confidence scoring
 ✅ Responsive UI with streaming-like output simulation
+✅ Memory-efficient loading with quantization support for large models
+✅ Automatic fallback to smaller models if GPU memory is limited
 
 Deploy to Streamlit Cloud with requirements.txt below.
+For local use with Ollama: install ollama Python library and run `ollama pull <model>`
 """
 import streamlit as st
 import os
@@ -22,45 +25,71 @@ import json
 import torch
 import numpy as np
 from io import BytesIO
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 from datetime import datetime
+import sys
+import subprocess
+import platform
 
 # LangChain / RAG imports (local-only, no API calls)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings  # LOCAL embeddings!
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 
-# Transformers for local LLM inference
+# Transformers for local LLM inference via Hugging Face
 from transformers import (
     GPT2Tokenizer, GPT2LMHeadModel,
     AutoTokenizer, AutoModelForCausalLM,
-    pipeline, set_seed
+    pipeline, set_seed, BitsAndBytesConfig
 )
+
+# Optional: Ollama support for local model serving
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
 
 # =============================================
 # GLOBAL CONFIGURATION - LASER MICROSTRUCTURE DOMAIN
 # =============================================
 
-# Local model choices (no API needed)
+# Local model choices - FIXED: Using proper Hugging Face repo IDs
+# Format: "Display Name": "hf_repo_id" or "ollama:model_tag" for Ollama backend
 LOCAL_LLM_OPTIONS = {
-    # Your original tiny models (Good for low-latency testing)
-    "GPT-2 (1.5B, fastest startup)": "gpt2",
-    "Qwen2-0.5B-Instruct (best JSON, recommended)": "qwen2:0.5b",
-    "Qwen2.5-0.5B-Instruct (newest, best reasoning)": "qwen2.5:0.5b",
+    # === TINY MODELS (Good for low-latency testing, CPU-friendly) ===
+    "GPT-2 (1.5B, fastest startup, CPU OK)": "gpt2",
+    "Qwen2-0.5B-Instruct (best JSON, recommended)": "Qwen/Qwen2-0.5B-Instruct",
+    "Qwen2.5-0.5B-Instruct (newest, best reasoning)": "Qwen/Qwen2.5-0.5B-Instruct",
+    "TinyLlama-1.1B-Chat (balanced small model)": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     
-    # The "Powerhouse" options found in your Ollama library
-    "Qwen2.5-14B (RTX 5080 Optimized, Best Overall)": "qwen2.5:14b",
-    "Llama3.1-8B (Most Popular, Balanced)": "llama3.1:8b",
-    "Gemma3 (Latest Google model, Great logic)": "gemma3:latest",
+    # === MEDIUM MODELS (Require GPU or good CPU, 4-8GB VRAM) ===
+    "Qwen2.5-1.5B-Instruct (efficient mid-size)": "Qwen/Qwen2.5-1.5B-Instruct",
+    "Qwen2.5-3B-Instruct (strong reasoning)": "Qwen/Qwen2.5-3B-Instruct",
+    "Mistral-7B-Instruct-v0.3 (reliable & efficient)": "mistralai/Mistral-7B-Instruct-v0.3",
+    "Llama-3.2-3B-Instruct (Meta's latest small)": "meta-llama/Llama-3.2-3B-Instruct",
     
-    # Specialized / Legacy options from your list
-    "Mistral-7B (Reliable & Efficient)": "mistral:7b",
-    "Falcon3-10B (Lightweight & Modern)": "falcon3:10b",
-    "GPT-OSS (20B, Maximum Scale)": "gpt-oss:20b"
+    # === LARGE MODELS (Require GPU with 12-24GB VRAM, use 4-bit quantization) ===
+    "Qwen2.5-7B-Instruct (excellent all-rounder)": "Qwen/Qwen2.5-7B-Instruct",
+    "Llama-3.1-8B-Instruct (most popular balanced)": "meta-llama/Llama-3.1-8B-Instruct",
+    "Gemma-2-9B-it (Google's latest, great logic)": "google/gemma-2-9b-it",
+    "Falcon-7B-Instruct (lightweight & modern)": "tiiuae/falcon-7b-instruct",
+    
+    # === OLLAMA BACKEND MODELS (if ollama library installed) ===
+    # These use Ollama's local model server instead of transformers
+    "[Ollama] qwen2.5:0.5b (via ollama serve)": "ollama:qwen2.5:0.5b",
+    "[Ollama] qwen2.5:1.5b (via ollama serve)": "ollama:qwen2.5:1.5b",
+    "[Ollama] qwen2.5:7b (via ollama serve)": "ollama:qwen2.5:7b",
+    "[Ollama] qwen2.5:14b (via ollama serve) 🔥": "ollama:qwen2.5:14b",
+    "[Ollama] llama3.1:8b (via ollama serve)": "ollama:llama3.1:8b",
+    "[Ollama] mistral:7b (via ollama serve)": "ollama:mistral:7b",
+    "[Ollama] gemma2:9b (via ollama serve)": "ollama:gemma2:9b",
+    "[Ollama] falcon3:10b (via ollama serve)": "ollama:falcon3:10b",
 }
+
 # Local embedding model (~80MB, CPU-friendly)
 LOCAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -87,6 +116,23 @@ LASER_KEYWORDS = {
     "characterization": ["SEM", "AFM", "profilometry", "spectroscopy", "microscopy"],
 }
 
+# Memory estimation for model loading (approximate VRAM requirements)
+MODEL_MEMORY_ESTIMATES = {
+    "gpt2": {"params": "1.5B", "vram_fp16": "~3GB", "vram_4bit": "~1GB", "cpu_ok": True},
+    "Qwen/Qwen2-0.5B-Instruct": {"params": "0.5B", "vram_fp16": "~1GB", "vram_4bit": "~400MB", "cpu_ok": True},
+    "Qwen/Qwen2.5-0.5B-Instruct": {"params": "0.5B", "vram_fp16": "~1GB", "vram_4bit": "~400MB", "cpu_ok": True},
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": {"params": "1.1B", "vram_fp16": "~2.5GB", "vram_4bit": "~800MB", "cpu_ok": True},
+    "Qwen/Qwen2.5-1.5B-Instruct": {"params": "1.5B", "vram_fp16": "~3.5GB", "vram_4bit": "~1.2GB", "cpu_ok": False},
+    "Qwen/Qwen2.5-3B-Instruct": {"params": "3B", "vram_fp16": "~6GB", "vram_4bit": "~2GB", "cpu_ok": False},
+    "mistralai/Mistral-7B-Instruct-v0.3": {"params": "7B", "vram_fp16": "~14GB", "vram_4bit": "~4.5GB", "cpu_ok": False},
+    "meta-llama/Llama-3.2-3B-Instruct": {"params": "3B", "vram_fp16": "~6GB", "vram_4bit": "~2GB", "cpu_ok": False},
+    "Qwen/Qwen2.5-7B-Instruct": {"params": "7B", "vram_fp16": "~14GB", "vram_4bit": "~4.5GB", "cpu_ok": False},
+    "Qwen/Qwen2.5-14B-Instruct": {"params": "14B", "vram_fp16": "~28GB", "vram_4bit": "~9GB", "cpu_ok": False},
+    "meta-llama/Llama-3.1-8B-Instruct": {"params": "8B", "vram_fp16": "~16GB", "vram_4bit": "~5GB", "cpu_ok": False},
+    "google/gemma-2-9b-it": {"params": "9B", "vram_fp16": "~18GB", "vram_4bit": "~6GB", "cpu_ok": False},
+    "tiiuae/falcon-7b-instruct": {"params": "7B", "vram_fp16": "~14GB", "vram_4bit": "~4.5GB", "cpu_ok": False},
+}
+
 # =============================================
 # SESSION STATE INITIALIZATION
 # =============================================
@@ -101,15 +147,67 @@ def initialize_session_state():
         "llm_model_choice": None,
         "llm_tokenizer": None,
         "llm_model": None,
+        "llm_backend": None,  # "transformers" or "ollama"
         "embeddings": None,
         "processing_complete": False,
         "laser_domain_boost": True,
         "show_sources": True,
         "max_retrieved_chunks": 4,
+        "use_4bit_quantization": True,  # Default to 4-bit for large models
+        "ollama_host": "http://localhost:11434",  # Default Ollama endpoint
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+# =============================================
+# UTILITY FUNCTIONS
+# =============================================
+
+def is_ollama_model(model_key: str) -> bool:
+    """Check if the model key indicates an Ollama backend model."""
+    return model_key.startswith("ollama:") or model_key.startswith("[Ollama]")
+
+def extract_ollama_tag(model_key: str) -> str:
+    """Extract the Ollama model tag from the key."""
+    if model_key.startswith("ollama:"):
+        return model_key.replace("ollama:", "", 1)
+    elif model_key.startswith("[Ollama]"):
+        # Extract tag after the display name, e.g., "[Ollama] qwen2.5:0.5b (via ollama serve)"
+        match = re.search(r'\]\s*([^\s(]+)', model_key)
+        if match:
+            return match.group(1)
+    return model_key
+
+def get_hf_repo_id(model_key: str) -> str:
+    """Extract the Hugging Face repo ID from the model key."""
+    # Remove display name prefix if present
+    if ":" in model_key and not model_key.startswith("http"):
+        parts = model_key.split(":", 1)
+        if len(parts) == 2 and "/" in parts[1]:
+            return parts[1].strip()
+    return model_key
+
+def get_available_gpu_memory() -> Optional[float]:
+    """Get available GPU memory in GB if CUDA is available."""
+    if not torch.cuda.is_available():
+        return None
+    try:
+        total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        reserved = torch.cuda.memory_reserved(0) / (1024**3)
+        return total_memory - reserved
+    except:
+        return None
+
+def estimate_model_memory(model_key: str, use_4bit: bool = False) -> Dict[str, any]:
+    """Get memory estimates for a model."""
+    repo_id = get_hf_repo_id(model_key) if not is_ollama_model(model_key) else model_key
+    return MODEL_MEMORY_ESTIMATES.get(repo_id, {
+        "params": "Unknown",
+        "vram_fp16": "Unknown",
+        "vram_4bit": "Unknown", 
+        "cpu_ok": False
+    })
 
 # =============================================
 # LOCAL MODEL LOADING (CACHED FOR PERFORMANCE)
@@ -130,43 +228,24 @@ def load_local_embeddings():
         return None
 
 @st.cache_resource(show_spinner="Loading local LLM (this may take 1-2 minutes on first load)...")
-def load_local_llm(model_key: str):
-    """Load local LLM (GPT-2 or Qwen) with proper device handling."""
+def load_local_llm(model_key: str, use_4bit: bool = True):
+    """
+    Load local LLM using either Hugging Face transformers or Ollama.
+    
+    Args:
+        model_key: Key from LOCAL_LLM_OPTIONS dictionary
+        use_4bit: Whether to use 4-bit quantization for large models (reduces VRAM usage)
+    
+    Returns:
+        tuple: (tokenizer_or_none, model_or_none, device_or_backend, backend_type)
+    """
     try:
-        model_path = LOCAL_LLM_OPTIONS.get(model_key, "gpt2")
-        
-        # Determine device
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        st.sidebar.info(f"🖥️ Running on: {device.upper()}")
-        
-        if "GPT-2" in model_key:
-            # Load GPT-2
-            tokenizer = GPT2Tokenizer.from_pretrained(model_path)
-            model = GPT2LMHeadModel.from_pretrained(model_path)
+        # Determine backend
+        if is_ollama_model(model_key):
+            return _load_ollama_model(model_key)
         else:
-            # Load Qwen models with trust_remote_code
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_path, 
-                trust_remote_code=True,
-                padding_side="left"
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                device_map="auto" if device == "cuda" else None
-            )
-            if device == "cpu":
-                model = model.to(device)
-        
-        model.eval()
-        
-        # Set padding token for GPT-2 compatibility
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        return tokenizer, model, device
-        
+            return _load_transformers_model(model_key, use_4bit)
+            
     except Exception as e:
         st.error(f"Failed to load LLM '{model_key}': {e}")
         st.warning("Falling back to GPT-2...")
@@ -177,9 +256,125 @@ def load_local_llm(model_key: str):
                 tokenizer.pad_token = tokenizer.eos_token
             model.eval()
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            return tokenizer, model, device
-        except:
-            return None, None, None
+            return tokenizer, model, device, "transformers"
+        except Exception as e2:
+            st.error(f"Fallback also failed: {e2}")
+            return None, None, None, None
+
+#
+def _load_ollama_model(model_key: str):
+    """Load model via Ollama API with robust response handling."""
+    if not OLLAMA_AVAILABLE:
+        raise ImportError("ollama library not installed. Run: pip install ollama")
+    
+    model_tag = extract_ollama_tag(model_key)
+    
+    try:
+        client = ollama.Client(host=st.session_state.ollama_host)
+        
+        # Test connection
+        response = client.list()
+        
+        # FIX: Robustly handle 'models' list even if the API format changed
+        # We handle both dict-based and object-based responses
+        models_list = response.get('models', []) if isinstance(response, dict) else getattr(response, 'models', [])
+        
+        model_names = []
+        for m in models_list:
+            # Check for 'model' (new API), then 'name' (old API)
+            if isinstance(m, dict):
+                name = m.get('model') or m.get('name')
+            else:
+                name = getattr(m, 'model', None) or getattr(m, 'name', None)
+            
+            if name:
+                model_names.append(name)
+
+        # Check if our model is available
+        if model_tag not in model_names:
+            st.warning(f"⚠️ Model '{model_tag}' not found in Ollama.")
+            if model_names:
+                st.info(f"📋 Available: {', '.join(model_names[:5])}")
+            return None, None, st.session_state.ollama_host, "ollama"
+                
+    except Exception as conn_err:
+        st.error(f"❌ Connection Error: {conn_err}")
+        return None, None, st.session_state.ollama_host, "ollama"
+    
+    return None, model_tag, st.session_state.ollama_host, "ollama"
+
+def _load_transformers_model(model_key: str, use_4bit: bool = True):
+    """Load model via Hugging Face transformers with optional quantization."""
+    repo_id = get_hf_repo_id(model_key)
+    
+    # Determine device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    available_vram = get_available_gpu_memory()
+    
+    # Show memory info in sidebar
+    mem_info = estimate_model_memory(model_key, use_4bit)
+    st.sidebar.info(f"""
+    📊 Model Memory Estimate:
+    - Parameters: {mem_info['params']}
+    - VRAM (FP16): {mem_info['vram_fp16']}
+    - VRAM (4-bit): {mem_info['vram_4bit']}
+    - CPU OK: {'✅ Yes' if mem_info['cpu_ok'] else '❌ No'}
+    - Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}
+    """)
+    
+    # Auto-disable 4-bit for tiny models (not needed)
+    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id:
+        use_4bit = False
+    
+    # Configure quantization for large models if GPU available
+    quantization_config = None
+    if use_4bit and device == "cuda" and available_vram:
+        try:
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+            st.sidebar.success("✅ 4-bit quantization enabled")
+        except ImportError:
+            st.sidebar.warning("⚠️ bitsandbytes not installed. Install with: pip install bitsandbytes")
+            use_4bit = False
+    
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        repo_id,
+        trust_remote_code=True,
+        padding_side="left",
+        use_fast=True
+    )
+    
+    # Load model with appropriate settings
+    model_kwargs = {
+        "trust_remote_code": True,
+        "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+    }
+    
+    if quantization_config:
+        model_kwargs["quantization_config"] = quantization_config
+        model_kwargs["device_map"] = "auto"
+    elif device == "cuda":
+        model_kwargs["device_map"] = "auto"
+    
+    model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
+    
+    # If not using device_map, manually move to device
+    if "device_map" not in model_kwargs and device == "cpu":
+        model = model.to(device)
+    
+    model.eval()
+    
+    # Set padding token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    return tokenizer, model, device, "transformers"
 
 # =============================================
 # DOCUMENT LOADING & CHUNKING (LASER-OPTIMIZED)
@@ -349,17 +544,18 @@ Answer (cite sources, be technical and precise):"""
     
     return laser_system + user_query
 
-def generate_local_response(
+
+def generate_local_response_transformers(
     tokenizer, 
     model, 
     device: str, 
     prompt: str,
-    backend: str
+    backend_name: str
 ) -> str:
-    """Generate response using local LLM with proper formatting."""
+    """Generate response using Hugging Face transformers model."""
     try:
-        # Format prompt for the specific model
-        if "Qwen" in backend:
+        # Format prompt for the specific model family
+        if "Qwen" in backend_name or "qwen" in backend_name.lower():
             # Use Qwen's chat template
             messages = [
                 {"role": "system", "content": "You are an expert in laser-microstructure interaction."},
@@ -370,11 +566,25 @@ def generate_local_response(
                 tokenize=False, 
                 add_generation_prompt=True
             )
+        elif "Llama" in backend_name or "llama" in backend_name.lower():
+            # Use Llama chat template
+            messages = [
+                {"role": "system", "content": "You are an expert in laser-microstructure interaction."},
+                {"role": "user", "content": prompt}
+            ]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+        elif "Mistral" in backend_name or "mistral" in backend_name.lower():
+            # Mistral uses [INST] tags
+            formatted_prompt = f"<s>[INST] {prompt} [/INST]"
         else:
-            # GPT-2: simple prompt format
+            # GPT-2 and others: simple prompt format
             formatted_prompt = prompt
         
-        # Tokenize
+        # Tokenize with truncation
         inputs = tokenizer.encode(
             formatted_prompt, 
             return_tensors='pt', 
@@ -402,7 +612,7 @@ def generate_local_response(
         full_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         
         # Extract answer after the prompt (model may repeat prompt)
-        if "[/INST]" in full_text:  # Qwen format
+        if "[/INST]" in full_text:  # Qwen/Llama/Mistral format
             answer = full_text.split("[/INST]")[-1].strip()
         elif "Answer (cite sources" in full_text:  # Our prompt marker
             answer = full_text.split("Answer (cite sources")[-1].strip()
@@ -422,12 +632,89 @@ def generate_local_response(
         st.error(f"Generation error: {e}")
         return f"Error generating response: {str(e)[:200]}..."
 
+#
+def generate_local_response_ollama(
+    model_tag: str,
+    ollama_host: str,
+    prompt: str
+) -> str:
+    """Generate response using Ollama API with robust streaming."""
+    try:
+        client = ollama.Client(host=ollama_host)
+        
+        messages = [
+            {"role": "system", "content": "You are an expert in laser-microstructure interaction research. Answer based ONLY on the provided context."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        # Try streaming first, fallback to non-streaming
+        try:
+            response = client.chat(
+                model=model_tag,
+                messages=messages,
+                options={
+                    "temperature": LASER_DOMAIN_CONFIG["temperature"],
+                    "num_predict": LASER_DOMAIN_CONFIG["max_new_tokens"],
+                },
+                stream=True
+            )
+            
+            full_response = ""
+            for chunk in response:
+                # Handle different chunk formats
+                if isinstance(chunk, dict):
+                    if 'message' in chunk and 'content' in chunk['message']:
+                        full_response += chunk['message']['content']
+                    elif 'content' in chunk:  # Direct content in chunk
+                        full_response += chunk['content']
+                elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                    full_response += chunk.message.content
+                    
+        except TypeError:
+            # Fallback to non-streaming if stream=True causes issues
+            response = client.chat(
+                model=model_tag,
+                messages=messages,
+                options={
+                    "temperature": LASER_DOMAIN_CONFIG["temperature"],
+                    "num_predict": LASER_DOMAIN_CONFIG["max_new_tokens"],
+                }
+            )
+            if isinstance(response, dict):
+                full_response = response.get('message', {}).get('content', '')
+            elif hasattr(response, 'message'):
+                full_response = response.message.content
+            else:
+                full_response = str(response)
+        
+        return full_response.strip() if full_response.strip() else "I was unable to generate a response. Please try rephrasing your question."
+        
+    except Exception as e:
+        st.error(f"Ollama generation error: {e}")
+        return f"Error generating response via Ollama: {str(e)[:200]}..."
+
+
+def generate_local_response(
+    tokenizer, 
+    model_or_tag, 
+    device_or_host: str, 
+    prompt: str,
+    backend: str,
+    backend_type: str
+) -> str:
+    """Unified response generator for both transformers and Ollama backends."""
+    if backend_type == "ollama":
+        return generate_local_response_ollama(model_or_tag, device_or_host, prompt)
+    else:
+        return generate_local_response_transformers(tokenizer, model_or_tag, device_or_host, prompt, backend)
+
 def retrieve_and_answer(
     vectorstore,
     tokenizer,
     model,
-    device: str,
+    device_or_host: str,
     backend: str,
+    backend_type: str,
     query: str,
     k: int = None,
     score_threshold: float = None
@@ -469,7 +756,14 @@ def retrieve_and_answer(
     prompt = create_laser_rag_prompt(retrieved_docs, query)
     
     # Generate response
-    answer = generate_local_response(tokenizer, model, device, prompt, backend)
+    answer = generate_local_response(
+        tokenizer=tokenizer,
+        model_or_tag=model,
+        device_or_host=device_or_host,
+        prompt=prompt,
+        backend=backend,
+        backend_type=backend_type
+    )
     
     return answer, retrieved_docs, avg_relevance
 
@@ -482,14 +776,54 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
         
-        # Model selection
-        model_choice = st.selectbox(
-            "🧠 Local LLM Backend",
-            options=list(LOCAL_LLM_OPTIONS.keys()),
-            index=1,  # Default to Qwen2-0.5B
-            help="All models run locally - no API key needed!"
+        # Backend selection
+        backend_option = st.radio(
+            "🔧 Inference Backend",
+            options=["Hugging Face Transformers", "Ollama (if installed)"],
+            index=0,
+            help="Transformers: direct HF model loading\nOllama: use local ollama serve (faster switching)"
         )
+        st.session_state.inference_backend = backend_option
+        
+        # Model selection - filter based on backend
+        if backend_option == "Ollama (if installed)":
+            if not OLLAMA_AVAILABLE:
+                st.error("❌ ollama library not installed")
+                st.code("pip install ollama")
+                st.info("Also ensure Ollama server is running: ollama serve")
+            available_ollama_models = [k for k in LOCAL_LLM_OPTIONS.keys() if is_ollama_model(k)]
+            model_choice = st.selectbox(
+                "🧠 Local LLM Backend (Ollama)",
+                options=available_ollama_models if available_ollama_models else ["No Ollama models available"],
+                index=0 if available_ollama_models else 0,
+                help="Models served via local Ollama instance"
+            )
+        else:
+            hf_models = [k for k in LOCAL_LLM_OPTIONS.keys() if not is_ollama_model(k)]
+            model_choice = st.selectbox(
+                "🧠 Local LLM Backend (Hugging Face)",
+                options=hf_models,
+                index=2,  # Default to Qwen2.5-0.5B
+                help="Models loaded directly via transformers library"
+            )
+        
         st.session_state.llm_model_choice = model_choice
+        
+        # Quantization option for transformers backend
+        if backend_option == "Hugging Face Transformers" and not is_ollama_model(model_choice):
+            st.session_state.use_4bit_quantization = st.checkbox(
+                "🗜️ Use 4-bit quantization (reduces VRAM usage)",
+                value=True,
+                help="Enable for models >3B parameters to reduce memory usage by ~75%"
+            )
+        
+        # Ollama host configuration
+        if backend_option == "Ollama (if installed)" or is_ollama_model(model_choice):
+            st.session_state.ollama_host = st.text_input(
+                "🌐 Ollama Host",
+                value=st.session_state.ollama_host,
+                help="URL of your Ollama server (default: http://localhost:11434)"
+            )
         
         # Domain settings
         st.markdown("#### 🔬 Laser Domain Settings")
@@ -521,17 +855,30 @@ def render_sidebar():
         <ul style="margin:0.5rem 0 0 1rem;padding:0">
         <li>Upload papers about laser ablation, LIPSS, ultrafast processing</li>
         <li>Ask specific questions: "What fluence threshold for silicon ablation?"</li>
-        <li>Small models work best with clear, focused queries</li>
+        <li>Small models (≤1.5B) work on CPU; larger need GPU</li>
         <li>First load may take 1-2 min (model download)</li>
+        <li>For Ollama: run <code>ollama pull qwen2.5:7b</code> first</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
         
         # Resource info
         st.markdown("---")
-        st.caption(f"🖥️ Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+        gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
+        vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
+        st.caption(f"🖥️ Device: {gpu_info}")
+        st.caption(f"💾 Available VRAM: {vram_info}")
         st.caption(f"📦 Embedding model: ~80MB")
         st.caption(f"🤖 LLM: {LOCAL_LLM_OPTIONS.get(model_choice, 'unknown')}")
+        
+        # Ollama status check
+        if backend_option == "Ollama (if installed)" and OLLAMA_AVAILABLE:
+            try:
+                client = ollama.Client(host=st.session_state.ollama_host)
+                models = client.list()
+                st.success(f"✅ Ollama connected: {len(models.get('models', []))} models available")
+            except:
+                st.error("❌ Cannot connect to Ollama")
 
 def render_document_uploader():
     """Render document upload section."""
@@ -603,19 +950,33 @@ def render_chat_interface():
     
     # Load LLM if not already loaded
     if st.session_state.llm_tokenizer is None and st.session_state.llm_model_choice:
+        backend_type = "ollama" if is_ollama_model(st.session_state.llm_model_choice) else "transformers"
         with st.spinner(f"Loading {st.session_state.llm_model_choice}..."):
-            tokenizer, model, device = load_local_llm(st.session_state.llm_model_choice)
-            if tokenizer and model:
+            result = load_local_llm(
+                st.session_state.llm_model_choice, 
+                use_4bit=st.session_state.get('use_4bit_quantization', True)
+            )
+            tokenizer, model, device_or_host, loaded_backend = result
+            
+            if tokenizer is not None or model is not None:
                 st.session_state.llm_tokenizer = tokenizer
                 st.session_state.llm_model = model
-                st.session_state.llm_device = device
+                st.session_state.llm_device_or_host = device_or_host
+                st.session_state.llm_backend_type = loaded_backend
                 st.success("✓ Model loaded!")
             else:
                 st.error("Failed to load model. Try selecting a different option.")
                 return
     
-    if not st.session_state.llm_tokenizer:
-        st.warning("Please select a model in the sidebar first")
+    # Check if we have a usable model
+    has_model = (
+        st.session_state.llm_backend_type == "ollama" and st.session_state.llm_model is not None
+    ) or (
+        st.session_state.llm_backend_type == "transformers" and st.session_state.llm_tokenizer is not None
+    )
+    
+    if not has_model:
+        st.warning("Please select and load a model in the sidebar first")
         return
     
     # Display chat history
@@ -648,13 +1009,14 @@ def render_chat_interface():
                         vectorstore=st.session_state.vectorstore,
                         tokenizer=st.session_state.llm_tokenizer,
                         model=st.session_state.llm_model,
-                        device=st.session_state.llm_device,
+                        device_or_host=st.session_state.llm_device_or_host,
                         backend=st.session_state.llm_model_choice,
+                        backend_type=st.session_state.llm_backend_type,
                         query=prompt,
                         k=st.session_state.max_retrieved_chunks
                     )
                     
-                    # Simulate streaming output
+                    # Simulate streaming output (for better UX even with non-streaming backends)
                     display_text = ""
                     for word in answer.split():
                         display_text += word + " "
@@ -694,13 +1056,13 @@ def render_footer():
         st.markdown("**⚡ Performance Tips:**")
         st.caption("• Keep questions focused and specific")
         st.caption("• Smaller chunks = more precise retrieval")
-        st.caption("• CPU mode: allow 10-30s per response")
+        st.caption("• CPU mode: allow 10-30s per response; GPU: 2-10s")
     
     with col3:
         st.markdown("**🔐 Privacy & Deployment:**")
         st.caption("• All processing happens locally in your session")
         st.caption("• No data sent to external APIs")
-        st.caption("• Works on Streamlit Cloud free tier")
+        st.caption("• Works on Streamlit Cloud (with small models) or local GPU")
 
 # =============================================
 # MAIN APPLICATION
@@ -738,6 +1100,13 @@ def main():
         border-radius: 0.5rem;
         margin: 0.25rem 0;
     }
+    .model-warning {
+        background: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        padding: 0.75rem;
+        border-radius: 0 0.5rem 0.5rem 0;
+        margin: 0.5rem 0;
+    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -755,6 +1124,28 @@ def main():
     
     # Sidebar
     render_sidebar()
+    
+    # Show model memory warning if needed
+    if st.session_state.llm_model_choice and not is_ollama_model(st.session_state.llm_model_choice):
+        mem_info = estimate_model_memory(
+            st.session_state.llm_model_choice, 
+            st.session_state.get('use_4bit_quantization', True)
+        )
+        available_vram = get_available_gpu_memory()
+        if available_vram and not mem_info['cpu_ok']:
+            required = float(mem_info['vram_4bit'].replace('GB','').replace('~','').strip()) if 'GB' in mem_info['vram_4bit'] else 100
+            if available_vram < required:
+                st.markdown(f"""
+                <div class="model-warning">
+                ⚠️ <strong>Memory Warning:</strong> {st.session_state.llm_model_choice} requires ~{mem_info['vram_4bit']} VRAM.
+                You have ~{available_vram:.1f}GB available. Consider:
+                <ul>
+                <li>Using 4-bit quantization (already enabled)</li>
+                <li>Selecting a smaller model</li>
+                <li>Using Ollama backend for better memory management</li>
+                </ul>
+                </div>
+                """, unsafe_allow_html=True)
     
     # Main content area
     col1, col2 = st.columns([1, 2])
@@ -807,7 +1198,7 @@ def main():
             <ol>
             <li>Upload PDF/TXT files in the left panel</li>
             <li>Click "Process Documents"</li>
-            <li>Select your preferred local LLM</li>
+            <li>Select your preferred local LLM in sidebar</li>
             <li>Start asking technical questions!</li>
             </ol>
             </div>

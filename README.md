@@ -38,7 +38,7 @@ Processing parameters
 
 # local computer (working)
 
-[![meaningtowords](https://img.shields.io/badge/ragmodelcloud-v4.0-brightgreen.svg)](https://information-retrieval-from-scientific-documents4.streamlit.app/) (same app as v4.0 of the cloud, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces)
+[![meaningtowords](https://img.shields.io/badge/ragmodellocal-v4.0-brightgreen.svg)](https://information-retrieval-from-scientific-documents4.streamlit.app/) (same app as v4.0 of the cloud, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces)
 
 the files need to be run in local computer with Ollama and  llama3.1:8b installed
 

@@ -9,6 +9,7 @@ huggingface_hub
 sentence-transformers
 transformers
 torch
+torchvision
 accelerate
 psutil
 crossrefapi

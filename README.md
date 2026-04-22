@@ -50,11 +50,15 @@ the files need to be run in local computer with Ollama and  llama3.1:8b installe
 
 # Concept Graph
 
+# cloud based (experimental )
+
 [![meaningtowords](https://img.shields.io/badge/conceptgraph-v1.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts1.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 1000 ) 
 
 [![meaningtowords](https://img.shields.io/badge/conceptgraph-v2.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts2.streamlit.app/)  (a less robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 1000 ) 
 
-[![meaningtowords](https://img.shields.io/badge/conceptgraph-v3.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts3.streamlit.app/)  (a less robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 1000 ) 
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v3.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts3.streamlit.app/)  (a less robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 1000 )
+
+# local computer (working)
 
 
 

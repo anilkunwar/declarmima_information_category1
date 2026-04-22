@@ -888,7 +888,8 @@ def main():
         elif len(abstracts) > 35:
             st.warning(f"⚠️ {len(abstracts)} abstracts may increase processing time")
             
-        progress_bar = st.progress(0)
+        # ✅ FIX: Initialize progress bar with 0.0 (not 0)
+        progress_bar = st.progress(0.0)
         status = st.status("🔄 Initializing pipeline...", expanded=True)
         
         try:
@@ -898,7 +899,8 @@ def main():
                 embed_model = load_embedding_model()
                 tokenizer, llm_model = load_lightweight_llm()
                 st.success("✅ Models loaded")
-            progress_bar.progress(10)
+            # ✅ FIX: Use 0.0-1.0 range (0.10 = 10%)
+            progress_bar.progress(0.10)
             
             # Get adaptive config
             config = get_adaptive_config(len(abstracts))
@@ -919,7 +921,8 @@ def main():
                 st.write(f"✅ **{len(valid_concepts)}** concepts extracted")
                 if len(valid_concepts) < 10:
                     st.info("💡 Small concept set: using semantic-only graph mode")
-            progress_bar.progress(25)
+            # ✅ FIX: Use 0.0-1.0 range
+            progress_bar.progress(0.25)
             
             # Fallback if still too few concepts
             if len(valid_concepts) < 3:
@@ -940,17 +943,23 @@ def main():
                 if not nx.is_connected(nx_graph):
                     n_comp = nx.number_connected_components(nx_graph)
                     st.info(f"🔗 Graph has {n_comp} component(s) - using bridge edges for connectivity")
-            progress_bar.progress(40)
+            # ✅ FIX: Use 0.0-1.0 range
+            progress_bar.progress(0.40)
             
             # Step 4: Embeddings
             with st.status("🧠 Generating embeddings..."):
                 node_features = generate_embeddings(valid_concepts, embed_model)
                 st.write(f"✅ Dimension: {node_features.shape[1]}")
-            progress_bar.progress(50)
+            # ✅ FIX: Use 0.0-1.0 range
+            progress_bar.progress(0.50)
             
-            # Step 5: Train GNN
+            # Step 5: Train GNN - ✅ FIXED CALLBACK FUNCTION
             def _training_progress(epoch, loss):
-                progress_bar.progress(50 + epoch * 0.3)
+                # ✅ FIX: Map epoch (0 to TRAIN_EPOCHS) to progress (0.50 to 0.80)
+                # Formula: start at 50%, add 30% spread over all epochs
+                progress_value = 0.50 + (epoch / TRAIN_EPOCHS) * 0.30
+                # ✅ FIX: Clamp to valid range [0.0, 1.0] to prevent overflow
+                progress_bar.progress(min(1.0, max(0.0, progress_value)))
                 if epoch % 10 == 0:
                     status.write(f"📊 Epoch {epoch}/{TRAIN_EPOCHS} | Loss: {loss:.4f}")
             
@@ -959,7 +968,8 @@ def main():
                     node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, _training_progress
                 )
                 st.success("✅ GNN training complete")
-            progress_bar.progress(80)
+            # ✅ FIX: Use 0.0-1.0 range
+            progress_bar.progress(0.80)
             
             # Step 6: Scoring
             with st.status("📈 Scoring novel directions..."):
@@ -971,13 +981,15 @@ def main():
                     ridge, embed_model, d_prev_dict, adj_indices, adj_values
                 )
                 st.write(f"✅ Scored **{len(top_scores)}** novel pairs")
-            progress_bar.progress(90)
+            # ✅ FIX: Use 0.0-1.0 range
+            progress_bar.progress(0.90)
             
             # Step 7: LLM curation
             with st.status("✍️ Generating hypotheses..."):
                 directions_df = generate_research_directions(top_scores, tokenizer, llm_model)
                 st.success("✅ Pipeline complete!")
-            progress_bar.progress(100)
+            # ✅ FIX: Use 1.0 for 100% (not 100)
+            progress_bar.progress(1.00)
             status.update(label="✅ Analysis complete!", state="complete", expanded=False)
             
             # === DISPLAY RESULTS ===

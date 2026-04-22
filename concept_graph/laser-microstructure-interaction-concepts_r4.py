@@ -15,11 +15,11 @@ import warnings
 import traceback
 from collections import defaultdict
 from sklearn.linear_model import Ridge
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pyvis.network import Network
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import AgglomerativeClustering
 
 warnings.filterwarnings('ignore')
 
@@ -35,7 +35,7 @@ np.random.seed(SEED)
 LLM_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 EMBED_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# Domain keywords (unchanged)
+# Domain: Laser Processing + Multicomponent Alloys
 DOMAIN_KEYWORDS = [
     "grain size", "phase fraction", "microhardness", "tensile strength", 
     "yield strength", "elongation", "residual stress", "texture intensity",
@@ -54,37 +54,80 @@ ALLOY_PATTERNS = [
     r'(?:high-entropy|HEA|multi-principal|complex concentrated)',
 ]
 
-# Pipeline hyperparameters (will be adapted dynamically)
-DEFAULT_MIN_CONCEPT_FREQ = 3
-DEFAULT_MIN_CONCEPT_LENGTH_WORDS = 2
+# Domain seed concepts for knowledge injection
+DOMAIN_SEED_CONCEPTS = {
+    "alloy_systems": ["aluminum alloy", "titanium alloy", "nickel alloy", "high-entropy alloy", "steel", "alsi10mg", "ti6al4v", "inconel718"],
+    "laser_parameters": ["laser power", "scan speed", "energy density", "hatch spacing", "pulse duration", "melt pool depth"],
+    "microstructure_features": ["grain size", "phase fraction", "texture", "porosity", "residual stress", "columnar grain", "equiaxed grain"],
+    "mechanical_properties": ["microhardness", "tensile strength", "yield strength", "elongation", "fatigue life"],
+    "processes": ["powder bed fusion", "direct energy deposition", "laser remelting", "surface treatment", "solidification"]
+}
+
+# Category mapping for hierarchical abstraction
+CATEGORY_MAPPING = {
+    r'alsi\d+mg|al(?:si|cu|mg|zn)\w*': 'aluminum alloy',
+    r'ti6al4v|ti(?:al|nb|mo)\w*': 'titanium alloy', 
+    r'inconel\d+|ni(?:cr|mo|fe)\w*': 'nickel alloy',
+    r'cocrfeni|he[as]?|high.?entropy': 'high-entropy alloy',
+    r'(?:laser\s*)?(?:power|energy\s*density|fluence)': 'laser energy parameter',
+    r'(?:scan|travel)\s*speed|feed\s*rate': 'scanning parameter',
+    r'hatch\s*spacing|layer\s*thickness': 'geometric parameter',
+    r'(?:columnar|equiaxed|dendritic)\s*grain': 'grain morphology',
+    r'(?:martensite|austenite|eutectic)\s*(?:phase)?': 'phase type',
+    r'(?:micro|nano)hardness|hv\d*': 'hardness metric',
+    r'(?:tensile|yield|ultimate)\s*strength': 'strength metric',
+}
+
+# Default hyperparameters (will be adapted dynamically)
 GNN_HIDDEN_DIM = 128
 TRAIN_EPOCHS = 50
 LR = 1e-3
 NEG_DPREV_FOCUS = 3
 
-# Domain seed concepts (injected when corpus is small)
-DOMAIN_SEED_CONCEPTS = [
-    # Alloys
-    "aluminum alloy", "titanium alloy", "nickel alloy", "high-entropy alloy", "steel",
-    # Laser parameters
-    "laser power", "scan speed", "energy density", "hatch spacing", "layer thickness",
-    # Microstructure
-    "grain size", "phase fraction", "porosity", "residual stress", "texture",
-    # Mechanical properties
-    "microhardness", "tensile strength", "yield strength", "elongation"
-]
-
 # ==========================================
-# ADAPTIVE THRESHOLDS (NEW)
+# ADAPTIVE CONFIGURATION FOR SMALL CORPORA
 # ==========================================
-def get_adaptive_thresholds(num_abstracts: int):
-    """Dynamically adjust frequency and length thresholds based on corpus size."""
+def get_adaptive_config(num_abstracts: int):
+    """Dynamically adjust parameters based on input corpus size"""
     if num_abstracts <= 15:
-        return {"min_freq": 1, "min_words": 1, "min_degree": 1}
+        return {
+            "MIN_CONCEPT_FREQ": 1,
+            "MIN_CONCEPT_LENGTH_WORDS": 1,
+            "MIN_DEGREE": 1,
+            "USE_SEMANTIC_CLUSTERING": True,
+            "INJECT_DOMAIN_SEEDS": True,
+            "USE_SEMANTIC_EDGES": True,
+            "SIMILARITY_THRESHOLD": 0.70,
+            "COOCCURRENCE_WEIGHT": 0.4,
+            "SEMANTIC_WEIGHT": 0.6,
+            "CLUSTER_SIMILARITY": 0.78,
+        }
     elif num_abstracts <= 30:
-        return {"min_freq": 2, "min_words": 1, "min_degree": 1}
+        return {
+            "MIN_CONCEPT_FREQ": 2,
+            "MIN_CONCEPT_LENGTH_WORDS": 2,
+            "MIN_DEGREE": 1,
+            "USE_SEMANTIC_CLUSTERING": True,
+            "INJECT_DOMAIN_SEEDS": True,
+            "USE_SEMANTIC_EDGES": True,
+            "SIMILARITY_THRESHOLD": 0.75,
+            "COOCCURRENCE_WEIGHT": 0.6,
+            "SEMANTIC_WEIGHT": 0.4,
+            "CLUSTER_SIMILARITY": 0.75,
+        }
     else:
-        return {"min_freq": 3, "min_words": 2, "min_degree": 2}
+        return {
+            "MIN_CONCEPT_FREQ": 3,
+            "MIN_CONCEPT_LENGTH_WORDS": 2,
+            "MIN_DEGREE": 2,
+            "USE_SEMANTIC_CLUSTERING": False,
+            "INJECT_DOMAIN_SEEDS": False,
+            "USE_SEMANTIC_EDGES": False,
+            "SIMILARITY_THRESHOLD": 0.80,
+            "COOCCURRENCE_WEIGHT": 0.8,
+            "SEMANTIC_WEIGHT": 0.2,
+            "CLUSTER_SIMILARITY": 0.72,
+        }
 
 # ==========================================
 # MODEL LOADING (CACHED FOR STREAMLIT)
@@ -106,13 +149,14 @@ def load_lightweight_llm():
     return tokenizer, model
 
 # ==========================================
-# DOMAIN-SPECIFIC CONCEPT NORMALIZATION (unchanged)
+# DOMAIN-SPECIFIC CONCEPT NORMALIZATION
 # ==========================================
 def normalize_alloy_composition(concept: str) -> str:
     normalized = re.sub(r'[\s\-_]', '', concept).lower()
     normalized = re.sub(r'(ti)(6)(al)(4)(v)', r'ti6al4v', normalized)
     normalized = re.sub(r'(al)(si)(10)(mg)', r'alsi10mg', normalized)
     normalized = re.sub(r'(inconel)(\s*718|718)', r'inconel718', normalized)
+    normalized = re.sub(r'(cocrfe)(ni|mn|mo)\w*', r'cocrfeni', normalized)
     return normalized
 
 def normalize_laser_term(concept: str) -> str:
@@ -128,12 +172,66 @@ def is_valid_microstructure_concept(concept: str) -> bool:
     has_domain_keyword = any(kw in concept_lower for kw in DOMAIN_KEYWORDS)
     has_alloy_pattern = any(re.search(p, concept, re.I) for p in ALLOY_PATTERNS)
     generic_terms = {'study', 'analysis', 'effect', 'role', 'investigation', 
-                     'research', 'method', 'approach', 'paper', 'work'}
+                     'research', 'method', 'approach', 'paper', 'work', 'using'}
     has_generic = any(term in concept_lower.split() for term in generic_terms)
-    return (has_domain_keyword or has_alloy_pattern) and not has_generic and len(concept.split()) >= 1  # relaxed
+    return (has_domain_keyword or has_alloy_pattern) and not has_generic
 
 # ==========================================
-# STEP 1-2: CONCEPT EXTRACTION (unchanged)
+# SEMANTIC CLUSTERING & CONCEPT ABSTRACTION
+# ==========================================
+def cluster_similar_concepts(valid_concepts, embed_model, similarity_threshold=0.78):
+    if len(valid_concepts) < 3:
+        return valid_concepts, {c: c for c in valid_concepts}
+    try:
+        embeddings = embed_model.encode(valid_concepts, show_progress_bar=False, batch_size=32)
+        sim_matrix = cosine_similarity(embeddings)
+        distance_matrix = 1 - sim_matrix
+        clustering = AgglomerativeClustering(
+            n_clusters=None, 
+            distance_threshold=1 - similarity_threshold,
+            linkage='average'
+        ).fit(embeddings)
+        concept_to_cluster = {}
+        cluster_members = defaultdict(list)
+        for idx, label in enumerate(clustering.labels_):
+            concept = valid_concepts[idx]
+            cluster_members[label].append(concept)
+            concept_to_cluster[concept] = label
+        cluster_representatives = {}
+        for label, members in cluster_members.items():
+            representative = min(members, key=lambda x: (len(x), -x.count(' ')))
+            cluster_representatives[label] = representative
+        final_mapping = {c: cluster_representatives[label] for c, label in concept_to_cluster.items()}
+        return list(cluster_representatives.values()), final_mapping
+    except Exception as e:
+        st.warning(f"⚠️ Semantic clustering skipped: {e}")
+        return valid_concepts, {c: c for c in valid_concepts}
+
+def abstract_concepts_to_categories(concepts, category_mapping=CATEGORY_MAPPING):
+    concept_to_abstract = {}
+    for concept in concepts:
+        matched = False
+        for pattern, category in category_mapping.items():
+            if re.search(pattern, concept, re.I):
+                concept_to_abstract[concept] = category
+                matched = True
+                break
+        if not matched:
+            concept_to_abstract[concept] = concept
+    return concept_to_abstract
+
+def inject_domain_seeds(valid_concepts, concept_to_id, seed_concepts=DOMAIN_SEED_CONCEPTS):
+    all_seeds = [seed for category in seed_concepts.values() for seed in category]
+    updated_concepts = valid_concepts.copy()
+    updated_mapping = concept_to_id.copy()
+    for seed in all_seeds:
+        if seed not in updated_mapping:
+            updated_mapping[seed] = len(updated_mapping)
+            updated_concepts.append(seed)
+    return updated_concepts, updated_mapping
+
+# ==========================================
+# STEP 1-2: CONCEPT EXTRACTION & METRICS
 # ==========================================
 def extract_concepts_from_abstracts(abstracts, tokenizer, model):
     prompt_template = """Extract exactly the core scientific concepts (2+ words) from this abstract about laser processing or alloy microstructure.
@@ -155,7 +253,7 @@ Concepts:"""
         grain_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(?:μm|micron|um|nm)\s*(?:grain|average|size|diameter)?', text, re.I)
         if grain_matches:
             metrics['grain_size_um'] = [float(m) for m in grain_matches]
-        mech_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(?:HV|GPa|MPa|ksi|GPa)\s*(?:hardness|strength|yield|tensile|ultimate)?', text, re.I)
+        mech_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(?:HV|GPa|MPa|ksi)\s*(?:hardness|strength|yield|tensile|ultimate)?', text, re.I)
         if mech_matches:
             metrics['mechanical_property'] = [float(m) for m in mech_matches]
         energy_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(?:J/mm³|J mm-3|J mm⁻³|J/mm\^3)', text, re.I)
@@ -173,7 +271,7 @@ Concepts:"""
                 inputs.input_ids,
                 max_new_tokens=150,
                 temperature=0.2,
-                do_sample=False,  # deterministic for extraction
+                do_sample=True,
                 pad_token_id=tokenizer.eos_token_id
             )
         response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
@@ -184,7 +282,6 @@ Concepts:"""
                 concepts = [c.strip().lower().rstrip('.') for c in parsed if isinstance(c, str) and len(c.strip()) > 3]
         except (json.JSONDecodeError, TypeError):
             concepts = _fallback_concept_extraction(text)
-        
         normalized = []
         for c in concepts:
             if any(elem in c.lower() for elem in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo', 'nb', 'cu']):
@@ -194,7 +291,6 @@ Concepts:"""
             if is_valid_microstructure_concept(c):
                 normalized.append(c)
         all_concepts.append(normalized)
-    
     return all_concepts, all_metrics
 
 def _fallback_concept_extraction(text: str) -> list:
@@ -211,178 +307,147 @@ def _fallback_concept_extraction(text: str) -> list:
         concepts.extend([m.lower().strip() for m in matches if len(m.split()) >= 2])
     return list(set(concepts))
 
-# ==========================================
-# NEW: SEMANTIC CLUSTERING & SEED INJECTION
-# ==========================================
-def cluster_similar_concepts(concepts, embed_model, similarity_threshold=0.75):
-    """Merge semantically similar concepts into cluster representatives."""
-    if len(concepts) < 3:
-        return concepts, {c: c for c in concepts}
-    embeddings = embed_model.encode(concepts, show_progress_bar=False)
-    sim_matrix = cosine_similarity(embeddings)
-    distance_matrix = 1 - sim_matrix
-    clustering = AgglomerativeClustering(
-        n_clusters=None,
-        distance_threshold=1 - similarity_threshold,
-        linkage='average'
-    ).fit(embeddings)
-    concept_to_cluster = {}
-    cluster_repr = {}
-    for idx, label in enumerate(clustering.labels_):
-        concept = concepts[idx]
-        if label not in cluster_repr:
-            # choose the shortest concept as representative (often the canonical form)
-            cluster_repr[label] = concept
-        concept_to_cluster[concept] = cluster_repr[label]
-    unique_concepts = list(cluster_repr.values())
-    return unique_concepts, concept_to_cluster
-
-def inject_domain_seeds(valid_concepts, concept_to_id, concept_counts, concept_abstract_map, num_abstracts):
-    """Add predefined domain seeds to boost graph connectivity."""
-    added = 0
-    for seed in DOMAIN_SEED_CONCEPTS:
-        if seed not in concept_to_id:
-            concept_to_id[seed] = len(concept_to_id)
-            valid_concepts.append(seed)
-            concept_counts[seed] = max(1, num_abstracts // 10)  # artificial frequency
-            concept_abstract_map[seed] = list(range(num_abstracts))  # assume appears everywhere
-            added += 1
-    return valid_concepts, concept_to_id, concept_counts, concept_abstract_map, added
-
-def normalize_and_filter_concepts(all_concepts, embed_model, num_abstracts, use_clustering=True, inject_seeds=True):
-    """Adaptive concept filtering with clustering and seed injection."""
+def normalize_and_filter_concepts(all_concepts, embed_model=None, config=None):
+    if config is None:
+        config = get_adaptive_config(25)
     concept_counts = defaultdict(int)
     concept_abstract_map = defaultdict(list)
-    
     for doc_idx, concepts in enumerate(all_concepts):
-        seen = set()
+        seen_in_doc = set()
         for c in concepts:
-            if c not in seen and is_valid_microstructure_concept(c):
+            if c not in seen_in_doc and is_valid_microstructure_concept(c):
                 concept_counts[c] += 1
                 concept_abstract_map[c].append(doc_idx)
-                seen.add(c)
-    
-    # Adaptive thresholds
-    thresholds = get_adaptive_thresholds(num_abstracts)
-    min_freq = thresholds["min_freq"]
-    min_words = thresholds["min_words"]
-    
-    valid_concepts = [c for c, cnt in concept_counts.items() if cnt >= min_freq and len(c.split()) >= min_words]
-    
-    # Inject domain seeds if corpus is small and user allows
-    if inject_seeds and len(valid_concepts) < 10:
-        valid_concepts, concept_to_id, concept_counts, concept_abstract_map, added = inject_domain_seeds(
-            valid_concepts, {c:i for i,c in enumerate(valid_concepts)}, concept_counts, concept_abstract_map, num_abstracts
+                seen_in_doc.add(c)
+    min_freq = config.get("MIN_CONCEPT_FREQ", 2)
+    min_words = config.get("MIN_CONCEPT_LENGTH_WORDS", 2)
+    valid_concepts = [c for c, cnt in concept_counts.items() 
+                      if cnt >= min_freq and len(c.split()) >= min_words]
+    if config.get("INJECT_DOMAIN_SEEDS", True) and len(valid_concepts) < 15:
+        valid_concepts, concept_to_id = inject_domain_seeds(
+            valid_concepts, {c: i for i, c in enumerate(valid_concepts)}
         )
-        if added > 0:
-            st.info(f"Injected {added} domain seed concepts to enrich the graph.")
-    
-    # Semantic clustering to merge near-synonyms
-    if use_clustering and embed_model and len(valid_concepts) >= 5:
-        clustered_concepts, concept_to_cluster = cluster_similar_concepts(valid_concepts, embed_model, similarity_threshold=0.75)
-        # Remap abstract map to clusters
+        for seed in [s for cat in DOMAIN_SEED_CONCEPTS.values() for s in cat]:
+            if seed not in concept_counts:
+                concept_counts[seed] = 1
+                concept_abstract_map[seed] = []
+    if config.get("USE_SEMANTIC_CLUSTERING", True) and embed_model and len(valid_concepts) >= 5:
+        clustered_concepts, concept_to_cluster = cluster_similar_concepts(
+            valid_concepts, embed_model, 
+            similarity_threshold=config.get("CLUSTER_SIMILARITY", 0.75)
+        )
         new_abstract_map = defaultdict(list)
-        for orig, docs in concept_abstract_map.items():
-            cluster_rep = concept_to_cluster.get(orig, orig)
-            if cluster_rep in clustered_concepts:
-                new_abstract_map[cluster_rep].extend(docs)
+        for orig_concept, docs in concept_abstract_map.items():
+            clustered = concept_to_cluster.get(orig_concept, orig_concept)
+            if clustered in clustered_concepts:
+                new_abstract_map[clustered].extend(docs)
         concept_abstract_map = new_abstract_map
         valid_concepts = clustered_concepts
-    
-    # Final deduplication
     valid_concepts = list(set(valid_concepts))
     concept_to_id = {c: i for i, c in enumerate(valid_concepts)}
     id_to_concept = {i: c for i, c in enumerate(valid_concepts)}
-    
     return valid_concepts, concept_to_id, id_to_concept, concept_abstract_map
 
 # ==========================================
-# STEP 3: HYBRID CONCEPT GRAPH (NEW)
+# STEP 3: HYBRID CONCEPT GRAPH CONSTRUCTION
 # ==========================================
 def build_semantic_only_graph(valid_concepts, embed_model, similarity_threshold=0.75):
-    """Fallback graph from pure embedding similarity."""
     nx_graph = nx.Graph()
     for c in valid_concepts:
         nx_graph.add_node(c)
     if len(valid_concepts) < 2:
         return nx_graph
-    embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
-    sim = cosine_similarity(embeddings)
-    for i in range(len(valid_concepts)):
-        for j in range(i+1, len(valid_concepts)):
-            if sim[i][j] > similarity_threshold:
-                nx_graph.add_edge(valid_concepts[i], valid_concepts[j], weight=sim[i][j], edge_type='semantic')
-    # Ensure connectivity via minimum spanning tree
-    if not nx.is_connected(nx_graph) and len(valid_concepts) > 3:
-        components = list(nx.connected_components(nx_graph))
-        for k in range(len(components)-1):
-            best_sim, best_pair = 0, None
-            for u in components[k]:
-                idx_u = valid_concepts.index(u)
-                for v in components[k+1]:
-                    idx_v = valid_concepts.index(v)
-                    if sim[idx_u][idx_v] > best_sim:
-                        best_sim = sim[idx_u][idx_v]
-                        best_pair = (u, v)
-            if best_pair:
-                nx_graph.add_edge(*best_pair, weight=best_sim, edge_type='bridge')
+    try:
+        embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
+        sim_matrix = cosine_similarity(embeddings)
+        for i in range(len(valid_concepts)):
+            for j in range(i+1, len(valid_concepts)):
+                if sim_matrix[i][j] > similarity_threshold:
+                    nx_graph.add_edge(valid_concepts[i], valid_concepts[j], 
+                                     weight=sim_matrix[i][j], edge_type='semantic',
+                                     cooccurrence=0, semantic=sim_matrix[i][j])
+        if not nx.is_connected(nx_graph) and len(valid_concepts) > 3:
+            components = list(nx.connected_components(nx_graph))
+            for i in range(len(components)-1):
+                best_sim, best_pair = 0, None
+                for c1 in components[i]:
+                    idx1 = valid_concepts.index(c1)
+                    for c2 in components[i+1]:
+                        idx2 = valid_concepts.index(c2)
+                        if sim_matrix[idx1][idx2] > best_sim:
+                            best_sim = sim_matrix[idx1][idx2]
+                            best_pair = (c1, c2)
+                if best_pair:
+                    nx_graph.add_edge(*best_pair, weight=best_sim, edge_type='bridge',
+                                     cooccurrence=0, semantic=best_sim)
+    except Exception as e:
+        st.warning(f"⚠️ Semantic graph construction issue: {e}")
+        for i in range(len(valid_concepts)-1):
+            nx_graph.add_edge(valid_concepts[i], valid_concepts[i+1], weight=1.0)
     return nx_graph
 
-def build_hybrid_graph(all_concepts, concept_to_id, embed_model, cooccurrence_weight=0.5, semantic_weight=0.5):
-    """Combine observed co-occurrence with embedding similarity edges."""
-    valid_concepts = list(concept_to_id.keys())
+def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=None, config=None):
+    if config is None:
+        config = get_adaptive_config(len(all_concepts))
     nx_graph = nx.Graph()
     for c in valid_concepts:
-        nx_graph.add_node(c)
-    
-    # Co-occurrence edges
+        nx_graph.add_node(c, frequency=0)
     for concepts in all_concepts:
         valid_in_doc = [c for c in concepts if c in concept_to_id]
         for i in range(len(valid_in_doc)):
             for j in range(i+1, len(valid_in_doc)):
                 u, v = valid_in_doc[i], valid_in_doc[j]
                 if nx_graph.has_edge(u, v):
-                    nx_graph[u][v]['cooccurrence'] = nx_graph[u][v].get('cooccurrence', 0) + 1
+                    nx_graph[u][v]['weight'] += 1
+                    nx_graph[u][v]['cooccurrence'] += 1
                 else:
-                    nx_graph.add_edge(u, v, cooccurrence=1, semantic=0)
-    
-    # Semantic edges for missing or low-degree pairs
-    if embed_model and len(valid_concepts) >= 5:
-        embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
-        sim = cosine_similarity(embeddings)
-        for i, u in enumerate(valid_concepts):
-            for j, v in enumerate(valid_concepts[i+1:], start=i+1):
-                if nx_graph.has_edge(u, v):
-                    continue
-                if sim[i][j] > 0.72:   # high similarity threshold
-                    nx_graph.add_edge(u, v, cooccurrence=0, semantic=sim[i][j])
-    
-    # Combine weights
+                    nx_graph.add_edge(u, v, weight=1, cooccurrence=1, semantic=0, edge_type='cooccurrence')
+                nx_graph.nodes[u]['frequency'] = nx_graph.nodes[u].get('frequency', 0) + 1
+                nx_graph.nodes[v]['frequency'] = nx_graph.nodes[v].get('frequency', 0) + 1
+    if config.get("USE_SEMANTIC_EDGES", True) and embed_model and len(valid_concepts) >= 5:
+        try:
+            embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
+            sim_matrix = cosine_similarity(embeddings)
+            sim_thresh = config.get("SIMILARITY_THRESHOLD", 0.75)
+            for i, c1 in enumerate(valid_concepts):
+                for j, c2 in enumerate(valid_concepts[i+1:], start=i+1):
+                    if c1 == c2 or nx_graph.has_edge(c1, c2):
+                        continue
+                    sim = sim_matrix[i][j]
+                    if sim > sim_thresh and (nx_graph.degree(c1) < 2 or nx_graph.degree(c2) < 2):
+                        semantic_weight = sim * 2
+                        nx_graph.add_edge(c1, c2, weight=semantic_weight, 
+                                         cooccurrence=0, semantic=sim, edge_type='semantic')
+        except Exception as e:
+            st.warning(f"⚠️ Semantic edge addition skipped: {e}")
+    cooc_weight = config.get("COOCCURRENCE_WEIGHT", 0.6)
+    sem_weight = config.get("SEMANTIC_WEIGHT", 0.4)
     for u, v, data in nx_graph.edges(data=True):
         cooc = data.get('cooccurrence', 0)
         sem = data.get('semantic', 0)
-        data['weight'] = cooccurrence_weight * cooc + semantic_weight * sem
-    
+        data['weight'] = cooc_weight * cooc + sem_weight * sem
     return nx_graph
 
-def build_concept_graph(all_concepts, concept_to_id, embed_model=None, use_semantic_edges=True, num_abstracts=25):
-    """Main graph construction with fallback to semantic-only if too sparse."""
-    if use_semantic_edges and embed_model and len(concept_to_id) < 8:
-        return build_semantic_only_graph(list(concept_to_id.keys()), embed_model, similarity_threshold=0.70)
-    
-    # Determine hybrid weights based on corpus size
-    cooc_w = 0.7 if num_abstracts >= 25 else 0.4
-    sem_w = 0.3 if num_abstracts >= 25 else 0.6
-    return build_hybrid_graph(all_concepts, concept_to_id, embed_model, cooc_w, sem_w)
+def build_concept_graph(all_concepts, concept_to_id, embed_model=None, config=None):
+    if config is None:
+        config = get_adaptive_config(len(all_concepts))
+    valid_concepts = list(concept_to_id.keys())
+    if len(valid_concepts) < 8 and config.get("USE_SEMANTIC_EDGES", True):
+        return build_semantic_only_graph(valid_concepts, embed_model, 
+                                        similarity_threshold=config.get("SIMILARITY_THRESHOLD", 0.75))
+    return build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model, config)
 
-def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id):
-    """Same as original, but adapted to possibly smaller graph."""
+def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id, config=None):
+    if config is None:
+        config = get_adaptive_config(len(valid_concepts))
     pos_pairs = [(concept_to_id[u], concept_to_id[v]) for u, v in nx_graph.edges()]
     neg_pairs = []
-    valid_ids = list(range(len(valid_concepts)))
-    n_nodes = len(valid_ids)
-    target_negs = min(len(pos_pairs) * 2, 2000)
+    n_nodes = len(valid_concepts)
+    if n_nodes < 3:
+        return pos_pairs, neg_pairs
+    target_negs = min(len(pos_pairs) * 2 if pos_pairs else 10, 2000)
     attempts = 0
+    neg_focus = config.get("NEG_DPREV_FOCUS", 3)
     while len(neg_pairs) < target_negs and attempts < 15000:
         u_idx, v_idx = np.random.choice(n_nodes, 2, replace=False)
         u_concept, v_concept = valid_concepts[u_idx], valid_concepts[v_idx]
@@ -391,12 +456,12 @@ def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_
             continue
         try:
             dist = d_prev_dict[u_concept][v_concept]
-            if dist == NEG_DPREV_FOCUS:
+            if dist == neg_focus:
                 neg_pairs.append((u_idx, v_idx))
             elif dist == 2 and np.random.rand() < 0.3:
                 neg_pairs.append((u_idx, v_idx))
         except KeyError:
-            if np.random.rand() < 0.05:
+            if np.random.rand() < 0.1:
                 neg_pairs.append((u_idx, v_idx))
         attempts += 1
     while len(neg_pairs) < target_negs:
@@ -408,12 +473,17 @@ def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_
     return pos_pairs, neg_pairs
 
 # ==========================================
-# STEP 4-7 (unchanged from original except using new graph)
+# STEP 4: SEMANTIC NODE EMBEDDINGS
 # ==========================================
 def generate_embeddings(valid_concepts, embed_model):
+    if not valid_concepts:
+        return torch.zeros((0, 384), dtype=torch.float32).to(DEVICE)
     embeddings = embed_model.encode(valid_concepts, show_progress_bar=False, batch_size=32)
     return torch.tensor(embeddings, dtype=torch.float32).to(DEVICE)
 
+# ==========================================
+# STEP 5: PURE PYTORCH SPARSE GRAPHSAGE
+# ==========================================
 class SparseGraphSAGE(nn.Module):
     def __init__(self, in_dim, hidden_dim=GNN_HIDDEN_DIM):
         super().__init__()
@@ -435,6 +505,13 @@ class SparseGraphSAGE(nn.Module):
         return pos_scores, neg_scores, h2
 
 def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, progress_callback=None):
+    if not pos_pairs:
+        nodes = list(concept_to_id.values())
+        if len(nodes) >= 2:
+            pos_pairs = [(nodes[0], nodes[1])]
+            neg_pairs = [(nodes[0], nodes[-1])] if len(nodes) > 2 else []
+        else:
+            raise ValueError("Cannot train GNN with fewer than 2 concepts")
     unique_edges = {(min(u, v), max(u, v)) for u, v in pos_pairs}
     src_adj = torch.tensor([u for u, v in unique_edges], dtype=torch.long)
     dst_adj = torch.tensor([v for u, v in unique_edges], dtype=torch.long)
@@ -442,21 +519,22 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
     adj_values = torch.ones(adj_indices.shape[1], dtype=torch.float32)
     pos_u = torch.tensor([p[0] for p in pos_pairs], dtype=torch.long, device=DEVICE)
     pos_v = torch.tensor([p[1] for p in pos_pairs], dtype=torch.long, device=DEVICE)
-    neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=DEVICE)
-    neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=DEVICE)
+    neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
+    neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
     model = SparseGraphSAGE(node_features.shape[1]).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.BCEWithLogitsLoss()
     for epoch in range(TRAIN_EPOCHS):
         model.train()
         optimizer.zero_grad()
-        pos_out, neg_out, _ = model(
-            adj_indices, adj_values, len(concept_to_id), 
-            node_features, pos_u, pos_v, neg_u, neg_v
-        )
-        pos_loss = criterion(pos_out, torch.ones_like(pos_out))
-        neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
-        loss = 0.5 * (pos_loss + neg_loss)
+        if len(neg_pairs) == 0:
+            pos_out, _, _ = model(adj_indices, adj_values, len(concept_to_id), node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
+            loss = criterion(pos_out, torch.ones_like(pos_out)) * 0.5
+        else:
+            pos_out, neg_out, _ = model(adj_indices, adj_values, len(concept_to_id), node_features, pos_u, pos_v, neg_u, neg_v)
+            pos_loss = criterion(pos_out, torch.ones_like(pos_out))
+            neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
+            loss = 0.5 * (pos_loss + neg_loss)
         loss.backward()
         optimizer.step()
         if progress_callback and epoch % 10 == 0:
@@ -465,28 +543,34 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
     with torch.no_grad():
         _, _, final_embeddings = model(
             adj_indices, adj_values, len(concept_to_id),
-            node_features, pos_u[:1], pos_v[:1], neg_u[:1], neg_v[:1]
+            node_features, pos_u[:1], pos_v[:1], 
+            neg_u[:1] if len(neg_pairs) > 0 else pos_u[:1], 
+            neg_v[:1] if len(neg_pairs) > 0 else pos_v[:1]
         )
     return model, final_embeddings.cpu(), adj_indices, adj_values
 
+# ==========================================
+# STEP 6: MICROSTRUCTURE QUANTIFICATION & SCORING
+# ==========================================
 def compute_microstructure_quantification(valid_concepts, concept_abstract_map, all_metrics, nx_graph):
     concept_properties = {}
     for concept in valid_concepts:
         doc_indices = concept_abstract_map.get(concept, [])
         values = []
         for idx in doc_indices:
-            metrics = all_metrics[idx]
-            for metric_name, metric_values in metrics.items():
-                values.extend(metric_values)
+            if idx < len(all_metrics):
+                metrics = all_metrics[idx]
+                for metric_values in metrics.values():
+                    values.extend(metric_values)
         concept_properties[concept] = np.median(values) if values else 0.0
     X_feat, y_target = [], []
     for u, v in nx_graph.edges():
         pu, pv = concept_properties.get(u, 0), concept_properties.get(v, 0)
-        w = nx_graph[u][v]['weight']
+        w = nx_graph[u][v].get('weight', 1)
         X_feat.append([pu, pv, w])
         y_target.append(max(pu, pv) * 1.08 if max(pu, pv) > 0 else 0)
     ridge = None
-    if len(X_feat) > 10:
+    if len(X_feat) > 5:
         ridge = Ridge(alpha=1.0).fit(np.array(X_feat), np.array(y_target))
     return concept_properties, ridge
 
@@ -496,8 +580,10 @@ def compute_research_direction_scores(
     n_samples=3000
 ):
     n_concepts = len(valid_concepts)
-    u_ids = np.random.randint(n_concepts, size=n_samples)
-    v_ids = np.random.randint(n_concepts, size=n_samples)
+    if n_concepts < 3:
+        return pd.DataFrame()
+    u_ids = np.random.randint(n_concepts, size=min(n_samples, n_concepts * 10))
+    v_ids = np.random.randint(n_concepts, size=min(n_samples, n_concepts * 10))
     candidate_pairs = []
     for u_idx, v_idx in zip(u_ids, v_ids):
         if u_idx == v_idx: continue
@@ -518,10 +604,7 @@ def compute_research_direction_scores(
         gnn_logits = model.decoder(pair_features).squeeze(1)
         gnn_scores = torch.sigmoid(gnn_logits).cpu().numpy()
     emb_np = embed_model.encode(valid_concepts, show_progress_bar=False)
-    cos_sims = np.sum(
-        emb_np[u_tensor.cpu().numpy()] * emb_np[v_tensor.cpu().numpy()], 
-        axis=1
-    )
+    cos_sims = np.sum(emb_np[u_tensor.cpu().numpy()] * emb_np[v_tensor.cpu().numpy()], axis=1)
     results = []
     for i, (u_idx, v_idx, u_c, v_c) in enumerate(candidate_pairs):
         try:
@@ -533,7 +616,10 @@ def compute_research_direction_scores(
         p_v = concept_properties.get(v_c, 0)
         expected_improvement = 0
         if ridge is not None and (p_u > 0 or p_v > 0):
-            expected_improvement = float(ridge.predict([[p_u, p_v, 1.0]])[0])
+            try:
+                expected_improvement = float(ridge.predict([[p_u, p_v, 1.0]])[0])
+            except:
+                expected_improvement = max(p_u, p_v) * 1.05
         semantic_novelty = 1.0 - cos_sims[i]
         feasibility = np.exp(-0.5 * semantic_novelty) * (1.0 if (p_u > 0 or p_v > 0) else 0.6)
         alpha = {'gnn': 0.4, 'novelty': 0.3, 'gain': 0.2, 'feas': -0.1}
@@ -547,8 +633,11 @@ def compute_research_direction_scores(
             'composite_score': float(D_uv)
         })
     df = pd.DataFrame(results).sort_values('composite_score', ascending=False)
-    return df.head(50)
+    return df.head(min(50, len(df)))
 
+# ==========================================
+# STEP 7: LLM CURATION OF RESEARCH DIRECTIONS
+# ==========================================
 def generate_research_directions(top_pairs_df, tokenizer, model):
     prompt_template = """You are a materials science strategist specializing in laser processing of multicomponent alloys.
 For the novel concept combination: "{u}" + "{v}"
@@ -557,8 +646,8 @@ Feasibility estimate: {feas:.2f}/1.0
 
 Write exactly 3 concise, technically precise sentences:
 1. Scientific novelty: Why this combination is underexplored in laser alloy processing.
-2. Target outcome: Predicted microstructure/property improvement and key trade-off (e.g., strength vs. ductility).
-3. Validation step: One concrete experimental method (e.g., EBSD for texture, nanoindentation, in-situ synchrotron XRD).
+2. Target outcome: Predicted microstructure/property improvement and key trade-off.
+3. Validation step: One concrete experimental method (e.g., EBSD, nanoindentation, in-situ XRD).
 
 Avoid generic statements. Focus on laser-matter interaction, solidification, or phase transformation mechanisms."""
     results = []
@@ -570,8 +659,8 @@ Avoid generic statements. Focus on laser-matter interaction, solidification, or 
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=300).to(DEVICE)
         with torch.no_grad():
             outputs = model.generate(
-                inputs.input_ids, max_new_tokens=180, temperature=0.25,
-                do_sample=True, pad_token_id=tokenizer.eos_token_id, repetition_penalty=1.1
+                inputs.input_ids, max_new_tokens=180, temperature=0.25, do_sample=True,
+                pad_token_id=tokenizer.eos_token_id, repetition_penalty=1.1
             )
         response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
         results.append({
@@ -584,36 +673,42 @@ Avoid generic statements. Focus on laser-matter interaction, solidification, or 
     return pd.DataFrame(results)
 
 # ==========================================
-# STREAMLIT UI (modified with small-corpus controls)
+# STREAMLIT UI & PIPELINE ORCHESTRATION (FIXED PROGRESS BAR)
 # ==========================================
 def main():
     st.set_page_config(page_title="Alloy Microstructure Concept Graph", layout="wide")
     st.title("🔬 Laser & Multicomponent Alloy Microstructure Analyzer")
-    st.caption("Discover novel research directions via concept graph + lightweight LLM + Pure PyTorch GraphSAGE")
+    st.caption("Small-corpus optimized: Works with 10-30 abstracts via semantic enrichment + knowledge injection")
     
     with st.sidebar:
-        st.header("⚙️ Pipeline Parameters")
-        # Adaptive settings for small corpus
-        st.checkbox("Enable semantic clustering (recommended for <30 abstracts)", value=True, key="use_clustering")
-        st.checkbox("Inject domain seed concepts", value=True, key="inject_seeds")
-        st.checkbox("Use semantic edges for graph building", value=True, key="semantic_edges")
-        st.info("💡 Tip: With 20-25 abstracts, these adaptive strategies ensure a connected concept graph.")
+        st.header("⚙️ Small Corpus Mode")
+        abstract_preview = st.text_area("📋 Paste abstracts here (preview):", height=100, key="preview")
+        preview_count = len([t for t in re.split(r'\n\s*\n', abstract_preview) if t.strip()]) if abstract_preview.strip() else 0
+        if preview_count > 0 and preview_count <= 25:
+            st.warning(f"📉 Small corpus detected ({preview_count} abstracts): applying adaptive settings")
+            st.toggle("Enable semantic clustering", value=True, key="use_clustering", disabled=True)
+            st.toggle("Inject domain seed concepts", value=True, key="inject_seeds", disabled=True)
+            st.toggle("Use embedding-based edges", value=True, key="semantic_edges", disabled=True)
+        else:
+            st.toggle("Enable semantic clustering", value=False, key="use_clustering")
+            st.toggle("Inject domain seed concepts", value=False, key="inject_seeds")
+            st.toggle("Use embedding-based edges", value=False, key="semantic_edges")
         st.markdown("---")
         st.markdown("**Domain Focus:**")
-        st.markdown("- ✅ Alloy compositions (AlSi10Mg, Ti6Al4V, HEAs)")
-        st.markdown("- ✅ Laser parameters (power, speed, energy density)")
-        st.markdown("- ✅ Microstructure features (grains, phases, defects)")
-        st.markdown("- ✅ Mechanical properties (hardness, strength, ductility)")
+        st.markdown("- ✅ Alloys: AlSi10Mg, Ti6Al4V, HEAs, IN718")
+        st.markdown("- ✅ Laser: power, speed, energy density, melt pool")
+        st.markdown("- ✅ Microstructure: grains, phases, texture, defects")
+        st.markdown("- ✅ Properties: hardness, strength, ductility")
     
     abstract_input = st.text_area(
         "📋 Paste scientific abstracts (one per block, separated by blank lines):", 
         height=300,
-        placeholder="""Example abstracts:
-"Laser powder bed fusion of AlSi10Mg reveals columnar-to-equiaxed transition at 85 J/mm³ energy density, with grain refinement from 45 μm to 12 μm..."
+        placeholder="""Example:
+"Laser powder bed fusion of AlSi10Mg reveals columnar-to-equiaxed transition at 85 J/mm³, grain refinement 45→12 μm..."
 
-"High-entropy alloy CoCrFeNiMo processed by direct energy deposition shows enhanced microhardness (420 HV) due to nanoscale precipitate formation..."
+"High-entropy alloy CoCrFeNiMo via DED shows 420 HV microhardness from nanoscale precipitates..."
 
-"Residual stress mitigation in Ti6Al4V via laser remelting: EBSD analysis reveals texture evolution from <001> to <111> fiber..."
+"Residual stress mitigation in Ti6Al4V via laser remelting: EBSD reveals <001>→<111> texture evolution..."
 """
     )
     
@@ -621,76 +716,84 @@ def main():
         if not abstract_input.strip():
             st.error("⚠️ Please enter at least one scientific abstract.")
             return
-            
         abstracts = [t.strip() for t in re.split(r'\n\s*\n', abstract_input) if t.strip()]
-        st.info(f"Processing {len(abstracts)} abstracts with small‑corpus adaptations.")
+        if len(abstracts) < 10:
+            st.info(f"💡 {len(abstracts)} abstracts: Using maximum semantic enrichment mode")
+        elif len(abstracts) > 35:
+            st.warning(f"⚠️ {len(abstracts)} abstracts may increase processing time")
         
-        progress_bar = st.progress(0)
+        progress_bar = st.progress(0.0)  # FIXED: use float 0.0-1.0
         status = st.status("🔄 Initializing pipeline...", expanded=True)
         
         try:
             # Load models
             with status:
-                st.write("📦 Loading embedding model & lightweight LLM (<0.5B params)...")
+                st.write("📦 Loading models...")
                 embed_model = load_embedding_model()
                 tokenizer, llm_model = load_lightweight_llm()
-                st.success("✅ Models loaded successfully")
-            progress_bar.progress(10)
+                st.success("✅ Models loaded")
+            progress_bar.progress(0.1)  # 10%
+            
+            # Get adaptive config
+            config = get_adaptive_config(len(abstracts))
+            if "use_clustering" in st.session_state:
+                config["USE_SEMANTIC_CLUSTERING"] = st.session_state.use_clustering
+            if "inject_seeds" in st.session_state:
+                config["INJECT_DOMAIN_SEEDS"] = st.session_state.inject_seeds
+            if "semantic_edges" in st.session_state:
+                config["USE_SEMANTIC_EDGES"] = st.session_state.semantic_edges
             
             # Step 1-2: Extract concepts
-            with st.status("🔍 Extracting domain concepts & quantitative metrics..."):
+            with st.status("🔍 Extracting concepts & metrics..."):
                 all_concepts, all_metrics = extract_concepts_from_abstracts(abstracts, tokenizer, llm_model)
                 valid_concepts, concept_to_id, id_to_concept, concept_abstract_map = normalize_and_filter_concepts(
-                    all_concepts, embed_model, len(abstracts),
-                    use_clustering=st.session_state.get("use_clustering", True),
-                    inject_seeds=st.session_state.get("inject_seeds", True)
+                    all_concepts, embed_model, config
                 )
-                st.write(f"✅ Extracted **{len(valid_concepts)}** unique microstructure-relevant concepts")
-                if len(valid_concepts) < 5:
-                    st.warning("Still very few concepts. Consider adding more abstracts or lowering similarity threshold.")
-            progress_bar.progress(25)
+                st.write(f"✅ **{len(valid_concepts)}** concepts extracted")
+                if len(valid_concepts) < 10:
+                    st.info("💡 Small concept set: using semantic-only graph mode")
+            progress_bar.progress(0.25)  # 25%
             
+            # Fallback if still too few concepts
             if len(valid_concepts) < 3:
-                st.error("❌ Too few concepts even after adaptation. Please add at least 10-15 more abstracts.")
-                return
-                
-            # Step 3: Build concept graph (hybrid or semantic-only)
-            with st.status("🕸️ Building concept graph (hybrid co-occurrence + semantic)..."):
-                nx_graph = build_concept_graph(
-                    all_concepts, concept_to_id, embed_model,
-                    use_semantic_edges=st.session_state.get("semantic_edges", True),
-                    num_abstracts=len(abstracts)
-                )
-                # Precompute shortest paths for novelty scoring
-                if nx_graph.number_of_nodes() > 0 and nx_graph.number_of_edges() > 0:
-                    d_prev_dict = dict(nx.all_pairs_shortest_path_length(nx_graph, cutoff=4))
-                else:
-                    d_prev_dict = {}
-                pos_pairs, neg_pairs = sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id)
+                st.warning("⚠️ Very few concepts. Injecting additional domain seeds...")
+                valid_concepts, concept_to_id = inject_domain_seeds(valid_concepts, concept_to_id)
+                st.success(f"✅ Recovered {len(valid_concepts)} concepts via seed injection")
+            
+            # Step 3: Build graph
+            with st.status("🕸️ Building concept graph..."):
+                nx_graph = build_concept_graph(all_concepts, concept_to_id, embed_model, config)
+                d_prev_dict = dict(nx.all_pairs_shortest_path_length(nx_graph, cutoff=4))
+                pos_pairs, neg_pairs = sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id, config)
                 st.write(f"✅ Graph: **{len(valid_concepts)}** nodes, **{nx_graph.number_of_edges()}** edges")
                 if not nx.is_connected(nx_graph):
-                    st.warning("Graph is disconnected. Consider enabling semantic edges or injecting more seeds.")
-            progress_bar.progress(40)
+                    n_comp = nx.number_connected_components(nx_graph)
+                    st.info(f"🔗 Graph has {n_comp} component(s) - using bridge edges for connectivity")
+            progress_bar.progress(0.40)  # 40%
             
-            # Step 4: Generate embeddings
-            with st.status("🧠 Generating semantic embeddings for concepts..."):
+            # Step 4: Embeddings
+            with st.status("🧠 Generating embeddings..."):
                 node_features = generate_embeddings(valid_concepts, embed_model)
-                st.write(f"✅ Embedding dimension: {node_features.shape[1]}")
-            progress_bar.progress(50)
+                st.write(f"✅ Dimension: {node_features.shape[1]}")
+            progress_bar.progress(0.50)  # 50%
             
-            # Step 5: Train GraphSAGE
+            # Step 5: Train GNN
             def _training_progress(epoch, loss):
-                progress_bar.progress(50 + epoch * 0.3)
-                status.write(f"📊 Epoch {epoch}/{TRAIN_EPOCHS} | Loss: {loss:.4f}")
-            with st.status("🤖 Training Pure PyTorch GraphSAGE (contrastive learning)..."):
+                # Map epoch 0..TRAIN_EPOCHS to 0.50..0.80
+                frac = 0.50 + (epoch / TRAIN_EPOCHS) * 0.30
+                progress_bar.progress(min(0.80, frac))
+                if epoch % 10 == 0:
+                    status.write(f"📊 Epoch {epoch}/{TRAIN_EPOCHS} | Loss: {loss:.4f}")
+            
+            with st.status("🤖 Training GraphSAGE..."):
                 gnn_model, final_emb, adj_indices, adj_values = train_gnn(
                     node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, _training_progress
                 )
                 st.success("✅ GNN training complete")
-            progress_bar.progress(80)
+            progress_bar.progress(0.80)  # 80%
             
-            # Step 6: Quantification & scoring
-            with st.status("📈 Computing property proxies & scoring novel directions..."):
+            # Step 6: Scoring
+            with st.status("📈 Scoring novel directions..."):
                 concept_properties, ridge = compute_microstructure_quantification(
                     valid_concepts, concept_abstract_map, all_metrics, nx_graph
                 )
@@ -698,67 +801,90 @@ def main():
                     gnn_model, final_emb, nx_graph, valid_concepts, concept_properties,
                     ridge, embed_model, d_prev_dict, adj_indices, adj_values
                 )
-                st.write(f"✅ Scored **{len(top_scores)}** novel concept pairs")
-            progress_bar.progress(90)
+                st.write(f"✅ Scored **{len(top_scores)}** novel pairs")
+            progress_bar.progress(0.90)  # 90%
             
             # Step 7: LLM curation
-            with st.status("✍️ Generating LLM-curated research hypotheses..."):
+            with st.status("✍️ Generating hypotheses..."):
                 directions_df = generate_research_directions(top_scores, tokenizer, llm_model)
                 st.success("✅ Pipeline complete!")
-            progress_bar.progress(100)
+            progress_bar.progress(1.0)  # 100%
             status.update(label="✅ Analysis complete!", state="complete", expanded=False)
             
-            # Display results (same as original)
-            st.subheader("🎯 Top Predicted Research Directions")
-            st.dataframe(directions_df[['Concept Pair', 'Composite Score', 'Expected Gain', 'Feasibility', 'Research Hypothesis']],
-                         use_container_width=True)
-            csv = directions_df.to_csv(index=False)
-            st.download_button("📥 Download Results as CSV", data=csv, file_name="alloy_research_directions.csv", mime="text/csv")
-            
-            # Interactive graph (only if graph is not huge)
-            if nx_graph.number_of_nodes() <= 200:
-                st.subheader("🌐 Interactive Concept Graph")
-                net = Network(height="650px", width="100%", bgcolor="#1e1e1e", font_color="white")
-                net.barnes_hut(gravity=-80000, spring_length=200, spring_strength=0.05)
-                for node in nx_graph.nodes():
-                    deg = nx_graph.degree(node)
-                    size = max(12, min(50, deg * 4))
-                    if any(alloy in node.lower() for alloy in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo']):
-                        color = "#4CAF50"
-                    elif any(laser in node.lower() for laser in ['laser', 'scan', 'power', 'melt', 'energy']):
-                        color = "#2196F3"
-                    elif any(micro in node.lower() for micro in ['grain', 'phase', 'microstructure', 'hardness']):
-                        color = "#FF9800"
-                    else:
-                        color = "#9E9E9E"
-                    net.add_node(node, label=node, size=size, color=color, title=f"Degree: {deg}")
-                for u, v in nx_graph.edges():
-                    w = nx_graph[u][v]['weight']
-                    net.add_edge(u, v, value=w, width=min(4, w * 0.8), color="#666666")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
-                    net.save_graph(tmp.name)
-                    with open(tmp.name, "r", encoding="utf-8") as f:
-                        st.components.v1.html(f.read(), height=700, scrolling=True)
+            # === DISPLAY RESULTS ===
+            st.subheader("🎯 Top Research Directions")
+            if len(directions_df) > 0:
+                st.dataframe(
+                    directions_df[['Concept Pair', 'Composite Score', 'Expected Gain', 'Feasibility', 'Research Hypothesis']],
+                    use_container_width=True,
+                    column_config={
+                        "Concept Pair": st.column_config.TextColumn("Pair", width="medium"),
+                        "Composite Score": st.column_config.NumberColumn("Score", format="%.3f"),
+                        "Expected Gain": st.column_config.NumberColumn("Gain", format="%.1f"),
+                        "Feasibility": st.column_config.NumberColumn("Feas.", format="%.2f"),
+                        "Research Hypothesis": st.column_config.TextColumn("Hypothesis", width="large")
+                    }
+                )
+                csv = directions_df.to_csv(index=False)
+                st.download_button("📥 Download CSV", data=csv, file_name="alloy_directions.csv", mime="text/csv")
             else:
-                st.info("Graph too large for interactive display; download results instead.")
-                
+                st.info("💡 No novel pairs scored above threshold. Try adjusting parameters or adding more abstracts.")
+            
+            # Interactive graph
+            st.subheader("🌐 Concept Graph")
+            net = Network(height="650px", width="100%", bgcolor="#1e1e1e", font_color="white", select_menu=True)
+            net.barnes_hut(gravity=-80000, spring_length=200)
+            for node in nx_graph.nodes():
+                deg = nx_graph.degree(node)
+                size = max(12, min(50, deg * 4 + 10))
+                freq = len(concept_abstract_map.get(node, []))
+                if any(a in node.lower() for a in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo']):
+                    color = "#4CAF50"
+                elif any(l in node.lower() for l in ['laser', 'scan', 'power', 'melt', 'energy']):
+                    color = "#2196F3"
+                elif any(m in node.lower() for m in ['grain', 'phase', 'hardness', 'strength']):
+                    color = "#FF9800"
+                else:
+                    color = "#9E9E9E"
+                net.add_node(node, label=node, size=size, color=color,
+                           title=f"{node}\nDegree: {deg}\nFreq: {freq}")
+            for u, v in nx_graph.edges():
+                w = nx_graph[u][v].get('weight', 1)
+                edge_type = nx_graph[u][v].get('edge_type', 'unknown')
+                color = "#66cc66" if edge_type == 'cooccurrence' else "#6699ff" if edge_type == 'semantic' else "#cccc66"
+                net.add_edge(u, v, value=w, width=min(4, w * 0.8), color=color)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+                net.save_graph(tmp.name)
+                with open(tmp.name, "r", encoding="utf-8") as f:
+                    st.components.v1.html(f.read(), height=700, scrolling=True)
+            
+            # Diagnostics
+            with st.expander("📊 Graph Diagnostics", expanded=len(valid_concepts) < 30):
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Nodes", len(valid_concepts))
+                col2.metric("Edges", nx_graph.number_of_edges())
+                col3.metric("Avg Degree", f"{np.mean([d for _,d in nx_graph.degree()]):.2f}")
+                col4.metric("Connected", "✅" if nx.is_connected(nx_graph) else f"❌ ({nx.number_connected_components(nx_graph)} comps)")
+                if len(valid_concepts) > 0:
+                    st.markdown("### Top Concepts")
+                    freq_data = [(c, len(concept_abstract_map.get(c, []))) for c in valid_concepts]
+                    freq_data.sort(key=lambda x: x[1], reverse=True)
+                    st.dataframe(pd.DataFrame(freq_data[:10], columns=["Concept", "Frequency"]), use_container_width=True)
+                    
         except Exception as e:
-            st.error(f"❌ Pipeline failed: {str(e)}")
-            with st.expander("🔍 View Error Details"):
+            st.error(f"❌ Error: {str(e)}")
+            with st.expander("🔍 Traceback"):
                 st.code(traceback.format_exc())
     
     st.markdown("---")
     st.markdown("""
-    **💡 Usage Tips for 20‑25 Abstracts:**
-    - The pipeline now automatically lowers frequency thresholds and injects domain seeds.
-    - Enable **semantic clustering** to merge near‑synonyms (e.g., "grain size" and "grain diameter").
-    - Enable **semantic edges** to connect concepts that never co‑occur but are semantically related.
-    - If you still see a disconnected graph, add a few more abstracts or increase `similarity_threshold` in the code (0.75 default).
+    **💡 Tips for Small Corpora (10-25 abstracts):**
+    - ✅ Semantic clustering merges similar terms (e.g., "grain size" + "grain diameter")
+    - ✅ Domain seed injection adds known alloy/laser terms even if not in your abstracts
+    - ✅ Embedding-based edges connect semantically related concepts without co-occurrence
+    - ✅ Adaptive thresholds relax frequency requirements for sparse data
     
-    **🔧 Technical Notes:**
-    - Adaptive thresholds: freq≥2 for 20‑30 abstracts, freq≥1 for ≤15 abstracts.
-    - Domain seeds guarantee coverage of canonical laser/alloy terms.
-    - Hybrid graph uses 40% co‑occurrence + 60% semantic weight for small corpora.
+    **🔧 Technical:** Qwen2.5-0.5B + Sentence-BERT + Pure PyTorch GraphSAGE | All local processing
     """)
 
 if __name__ == "__main__":

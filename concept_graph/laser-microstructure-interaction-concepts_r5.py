@@ -617,7 +617,7 @@ class SparseGraphSAGE(nn.Module):
             hidden_dim: Hidden layer dimension for GNN
         """
         super().__init__()
-        # ✅ FIX: lin1 now correctly maps in_dim (384) -> hidden_dim (128)
+        # ✅ lin1 maps: in_dim (384) -> hidden_dim (128)
         self.lin1 = nn.Linear(in_dim, hidden_dim)
         self.lin2 = nn.Linear(hidden_dim, hidden_dim)
         self.decoder = nn.Sequential(
@@ -629,7 +629,7 @@ class SparseGraphSAGE(nn.Module):
     def forward(self, adj_indices, adj_values, num_nodes, h, pos_u, pos_v, neg_u, neg_v):
         """
         Args:
-            h: Node features of shape (num_nodes, in_dim)
+            h: Node features of shape (num_nodes, in_dim) - MUST be original embeddings (384-dim)
         """
         # Build sparse adjacency matrix: A of shape (num_nodes, num_nodes)
         A = sparse.FloatTensor(adj_indices, adj_values, torch.Size([num_nodes, num_nodes])).to(h.device)
@@ -644,7 +644,6 @@ class SparseGraphSAGE(nn.Module):
         h2 = self.lin2(torch.sparse.mm(A, h1) * deg_inv.unsqueeze(1))
         
         # Edge scoring: concatenate embeddings of endpoint nodes
-        # h2[pos_u]: (num_edges, hidden_dim)
         pos_scores = self.decoder(torch.cat([h2[pos_u], h2[pos_v]], dim=1)).squeeze(1)
         neg_scores = self.decoder(torch.cat([h2[neg_u], h2[neg_v]], dim=1)).squeeze(1)
         
@@ -654,7 +653,7 @@ class SparseGraphSAGE(nn.Module):
 def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, progress_callback=None):
     """Train GraphSAGE with contrastive edge prediction loss"""
     
-    # ✅ FIX: Validate dimensions before training
+    # Validate dimensions before training
     num_nodes = len(concept_to_id)
     in_dim = node_features.shape[1] if node_features.numel() > 0 else 384
     
@@ -686,7 +685,7 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
     neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
     neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
     
-    # ✅ FIX: Initialize GNN with correct in_dim matching embedding dimension
+    # Initialize GNN with correct in_dim matching embedding dimension
     model = SparseGraphSAGE(in_dim=in_dim, hidden_dim=GNN_HIDDEN_DIM).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.BCEWithLogitsLoss()
@@ -753,12 +752,20 @@ def compute_microstructure_quantification(valid_concepts, concept_abstract_map, 
     return concept_properties, ridge
 
 
+# ✅ FIXED: Added node_features parameter and use it instead of final_emb
 def compute_research_direction_scores(
-    model, final_emb, nx_graph, valid_concepts, concept_properties, 
+    model, node_features, final_emb, nx_graph, valid_concepts, concept_properties, 
     ridge, embed_model, d_prev_dict, adj_indices, adj_values,
     n_samples=3000
 ):
-    """Score novel concept pairs for promising microstructure research directions"""
+    """Score novel concept pairs for promising microstructure research directions
+    
+    Args:
+        model: Trained GraphSAGE model
+        node_features: Original node embeddings (N, 384) - ✅ USE THIS FOR FORWARD PASS
+        final_emb: GNN output embeddings (N, 128) - for reference only
+        ... other args
+    """
     
     n_concepts = len(valid_concepts)
     if n_concepts < 3:
@@ -782,9 +789,11 @@ def compute_research_direction_scores(
     
     model.eval()
     with torch.no_grad():
+        # ✅ FIX: Pass node_features (384-dim) NOT final_emb (128-dim)
         _, _, h2 = model(
             adj_indices, adj_values, n_concepts,
-            final_emb.to(DEVICE), u_tensor, v_tensor, u_tensor, v_tensor
+            node_features.to(DEVICE),  # ✅ CORRECT: original 384-dim embeddings
+            u_tensor, v_tensor, u_tensor, v_tensor
         )
         pair_features = torch.cat([h2, h2], dim=1)
         gnn_logits = model.decoder(pair_features).squeeze(1)
@@ -1017,13 +1026,17 @@ def main():
             # ✅ FIX: Use 0.0-1.0 range
             progress_bar.progress(0.80)
             
-            # Step 6: Scoring
+            # Step 6: Scoring - ✅ FIX: Pass node_features to scoring function
             with st.status("📈 Scoring novel directions..."):
                 concept_properties, ridge = compute_microstructure_quantification(
                     valid_concepts, concept_abstract_map, all_metrics, nx_graph
                 )
+                # ✅ FIX: Pass node_features (384-dim) as second arg, final_emb as third
                 top_scores = compute_research_direction_scores(
-                    gnn_model, final_emb, nx_graph, valid_concepts, concept_properties,
+                    gnn_model,
+                    node_features,  # ✅ CORRECT: original 384-dim embeddings for forward pass
+                    final_emb,      # Reference only (128-dim GNN output)
+                    nx_graph, valid_concepts, concept_properties,
                     ridge, embed_model, d_prev_dict, adj_indices, adj_values
                 )
                 st.write(f"✅ Scored **{len(top_scores)}** novel pairs")

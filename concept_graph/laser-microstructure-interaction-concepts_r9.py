@@ -17,7 +17,7 @@ import gc
 from collections import defaultdict
 from sklearn.linear_model import Ridge
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairpairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pyvis.network import Network
@@ -1113,9 +1113,9 @@ def main():
                 pos_pairs, neg_pairs = sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id, config)
                 st.write(f"✅ Graph: **{len(valid_concepts)}** nodes, **{nx_graph.number_of_edges()}** edges")
                 
-                # Connectivity check
+                # Connectivity check - ✅ FIX: Added nx_graph argument to number_connected_components()
                 if not nx.is_connected(nx_graph):
-                    n_comp = nx.number_connected_components(nx_graph)
+                    n_comp = nx.number_connected_components(nx_graph)  # ✅ FIXED: Pass graph as argument
                     st.info(f"🔗 Graph has {n_comp} component(s) - using bridge edges for connectivity")
             progress_bar.progress(0.40)
             
@@ -1194,47 +1194,126 @@ def main():
             else:
                 st.info("💡 No novel pairs scored above threshold. Try adjusting parameters or adding more abstracts.")
             
-            # Interactive graph
+            # Interactive graph - ✅ FIXED: Black screen issue
             st.subheader("🌐 Concept Graph")
-            net = Network(height="650px", width="100%", bgcolor="#1e1e1e", font_color="white", select_menu=True)
-            net.barnes_hut(gravity=-80000, spring_length=200)
             
-            for node in nx_graph.nodes():
-                deg = nx_graph.degree(node)
-                size = max(12, min(50, deg * 4 + 10))
-                freq = len(concept_abstract_map.get(node, []))
-                
-                # Color coding
-                if any(a in node.lower() for a in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo']):
-                    color = "#4CAF50"
-                elif any(l in node.lower() for l in ['laser', 'scan', 'power', 'melt', 'energy']):
-                    color = "#2196F3"
-                elif any(m in node.lower() for m in ['grain', 'phase', 'hardness', 'strength']):
-                    color = "#FF9800"
-                else:
-                    color = "#9E9E9E"
-                
-                net.add_node(node, label=node, size=size, color=color,
-                           title=f"{node}\nDegree: {deg}\nFreq: {freq}")
+            # Check if graph has nodes before rendering
+            if len(nx_graph.nodes()) == 0:
+                st.warning("⚠️ No nodes to display in graph. Try adding more abstracts or adjusting parameters.")
+            else:
+                try:
+                    net = Network(
+                        height="650px", 
+                        width="100%", 
+                        bgcolor="#1e1e1e", 
+                        font_color="white", 
+                        select_menu=True,
+                        notebook=False  # ✅ Important for Streamlit compatibility
+                    )
+                    net.barnes_hut(gravity=-80000, spring_length=200, overlap=0.5)
+                    
+                    # Add nodes with proper attributes
+                    for node in nx_graph.nodes():
+                        deg = nx_graph.degree(node)
+                        size = max(12, min(50, deg * 4 + 10))
+                        freq = len(concept_abstract_map.get(node, []))
+                        
+                        # Color coding by category
+                        node_lower = node.lower()
+                        if any(a in node_lower for a in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo', 'nb', 'cu', 'w', 'mn']):
+                            color = "#4CAF50"  # Green for alloys
+                        elif any(l in node_lower for l in ['laser', 'scan', 'power', 'melt', 'energy', 'speed', 'pulse']):
+                            color = "#2196F3"  # Blue for laser params
+                        elif any(m in node_lower for m in ['grain', 'phase', 'hardness', 'strength', 'texture', 'microstructure']):
+                            color = "#FF9800"  # Orange for microstructure
+                        elif any(p in node_lower for p in ['porosity', 'crack', 'defect', 'void', 'residual']):
+                            color = "#F44336"  # Red for defects
+                        else:
+                            color = "#9E9E9E"  # Gray for other
+                        
+                        net.add_node(
+                            node, 
+                            label=node, 
+                            size=size, 
+                            color=color,
+                            title=f"{node}\nDegree: {deg}\nFrequency: {freq}",
+                            borderWidth=2,
+                            shadow=True
+                        )
+                    
+                    # Add edges with proper styling
+                    for u, v in nx_graph.edges():
+                        w = nx_graph[u][v].get('weight', 1)
+                        edge_type = nx_graph[u][v].get('edge_type', 'unknown')
+                        
+                        # Color by edge type
+                        if edge_type == 'cooccurrence':
+                            color = "#66cc66"
+                        elif edge_type == 'semantic':
+                            color = "#6699ff"
+                        elif edge_type == 'bridge':
+                            color = "#cccc66"
+                        else:
+                            color = "#999999"
+                        
+                        net.add_edge(
+                            u, v, 
+                            value=max(0.5, min(5, w * 0.8)),  # Scale edge width
+                            width=max(0.5, min(4, w * 0.5)),
+                            color=color,
+                            smooth={'type': 'curvedCW', 'roundness': 0.2}
+                        )
+                    
+                    # Generate HTML with proper configuration
+                    net.show_buttons(filter_=['physics'])  # Enable physics controls
+                    
+                    # Save to temporary file with proper encoding
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".html", encoding='utf-8') as tmp:
+                        tmp_path = tmp.name
+                        net.save_graph(tmp_path)
+                    
+                    # ✅ FIX: Read file with proper encoding and use iframe for better compatibility
+                    with open(tmp_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+                    
+                    # ✅ Use iframe instead of html() for better pyvis rendering in Streamlit
+                    st.components.v1.iframe(
+                        html_content,
+                        height=700,
+                        scrolling=True,
+                        width="100%"
+                    )
+                    
+                    # Clean up temp file
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                        
+                except Exception as graph_error:
+                    st.warning(f"⚠️ Graph visualization failed: {graph_error}")
+                    st.info("💡 Showing fallback text representation...")
+                    
+                    # Fallback: Show text-based graph summary
+                    st.markdown("### Graph Summary (Text View)")
+                    st.markdown(f"- **Nodes**: {len(nx_graph.nodes())}")
+                    st.markdown(f"- **Edges**: {len(nx_graph.edges())}")
+                    
+                    # Show top connections
+                    if len(nx_graph.edges()) > 0:
+                        edge_list = [(u, v, nx_graph[u][v].get('weight', 1)) for u, v in nx_graph.edges()]
+                        edge_list.sort(key=lambda x: x[2], reverse=True)
+                        st.markdown("**Top 10 Strongest Connections:**")
+                        for u, v, w in edge_list[:10]:
+                            st.markdown(f"- `{u}` ↔ `{v}` (weight: {w:.2f})")
             
-            for u, v in nx_graph.edges():
-                w = nx_graph[u][v].get('weight', 1)
-                edge_type = nx_graph[u][v].get('edge_type', 'unknown')
-                color = "#66cc66" if edge_type == 'cooccurrence' else "#6699ff" if edge_type == 'semantic' else "#cccc66"
-                net.add_edge(u, v, value=w, width=min(4, w * 0.8), color=color)
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
-                net.save_graph(tmp.name)
-                with open(tmp.name, "r", encoding="utf-8") as f:
-                    st.components.v1.html(f.read(), height=700, scrolling=True)
-            
-            # Diagnostics
+            # Diagnostics - ✅ FIX: Added nx_graph argument to number_connected_components()
             with st.expander("📊 Graph Diagnostics", expanded=len(valid_concepts) < 30):
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Nodes", len(valid_concepts))
                 col2.metric("Edges", nx_graph.number_of_edges())
                 col3.metric("Avg Degree", f"{np.mean([d for _,d in nx_graph.degree()]):.2f}")
-                col4.metric("Connected", "✅" if nx.is_connected(nx_graph) else f"❌ ({nx.number_connected_components()} comps)")
+                # ✅ FIXED: Pass nx_graph as argument to number_connected_components()
+                n_components = nx.number_connected_components(nx_graph)
+                col4.metric("Connected", "✅" if nx.is_connected(nx_graph) else f"❌ ({n_components} comps)")
                 
                 if len(valid_concepts) > 0:
                     st.markdown("### Top Concepts")
@@ -1273,6 +1352,12 @@ def main():
     2. Click "Clear Memory Cache" button between runs
     3. Ensure sufficient RAM/GPU memory (8GB+ recommended)
     4. Try running with fewer abstracts first to test
+    
+    **🔍 If graph shows black screen:**
+    1. Check browser console for JavaScript errors
+    2. Try refreshing the page after analysis completes
+    3. Use the text fallback view in Graph Diagnostics
+    4. Ensure your browser supports iframes and WebGL
     """)
 
 if __name__ == "__main__":

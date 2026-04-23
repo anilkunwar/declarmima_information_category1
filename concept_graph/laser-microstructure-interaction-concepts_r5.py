@@ -752,7 +752,7 @@ def compute_microstructure_quantification(valid_concepts, concept_abstract_map, 
     return concept_properties, ridge
 
 
-# ✅ FIXED: Added node_features parameter and use it instead of final_emb
+# ✅ FULLY FIXED: Filter early + correct pair concatenation
 def compute_research_direction_scores(
     model, node_features, final_emb, nx_graph, valid_concepts, concept_properties, 
     ridge, embed_model, d_prev_dict, adj_indices, adj_values,
@@ -762,7 +762,7 @@ def compute_research_direction_scores(
     
     Args:
         model: Trained GraphSAGE model
-        node_features: Original node embeddings (N, 384) - ✅ USE THIS FOR FORWARD PASS
+        node_features: Original node embeddings (N, 384) - USE THIS FOR FORWARD PASS
         final_emb: GNN output embeddings (N, 128) - for reference only
         ... other args
     """
@@ -774,42 +774,57 @@ def compute_research_direction_scores(
     u_ids = np.random.randint(n_concepts, size=min(n_samples, n_concepts * 10))
     v_ids = np.random.randint(n_concepts, size=min(n_samples, n_concepts * 10))
     
+    # ✅ FIX 1: Filter candidate pairs BEFORE computing GNN scores
+    # This ensures perfect alignment between candidate_pairs and gnn_scores
     candidate_pairs = []
     for u_idx, v_idx in zip(u_ids, v_ids):
-        if u_idx == v_idx: continue
+        if u_idx == v_idx: 
+            continue
         u_c, v_c = valid_concepts[u_idx], valid_concepts[v_idx]
-        if nx_graph.has_edge(u_c, v_c): continue
-        candidate_pairs.append((u_idx, v_idx, u_c, v_c))
+        if nx_graph.has_edge(u_c, v_c): 
+            continue
+        
+        # ✅ Check graph distance EARLY - skip if too closely related
+        try:
+            d_prev = d_prev_dict[u_c][v_c]
+        except KeyError:
+            d_prev = 4
+        
+        if d_prev < 2:
+            continue  # Skip this pair entirely - don't add to candidate_pairs
+        
+        candidate_pairs.append((u_idx, v_idx, u_c, v_c, d_prev))  # Store d_prev too
     
     if not candidate_pairs:
         return pd.DataFrame()
     
+    # Extract tensors for GNN forward pass
     u_tensor = torch.tensor([p[0] for p in candidate_pairs], dtype=torch.long, device=DEVICE)
     v_tensor = torch.tensor([p[1] for p in candidate_pairs], dtype=torch.long, device=DEVICE)
     
     model.eval()
     with torch.no_grad():
-        # ✅ FIX: Pass node_features (384-dim) NOT final_emb (128-dim)
+        # ✅ Use node_features (384-dim) NOT final_emb (128-dim)
         _, _, h2 = model(
             adj_indices, adj_values, n_concepts,
-            node_features.to(DEVICE),  # ✅ CORRECT: original 384-dim embeddings
+            node_features.to(DEVICE),  # Original 384-dim embeddings
             u_tensor, v_tensor, u_tensor, v_tensor
         )
-        pair_features = torch.cat([h2, h2], dim=1)
+        
+        # ✅ FIX 2: Correct pair feature concatenation
+        # Concatenate the EMBEDDINGS OF THE SPECIFIC PAIR ENDPOINTS
+        pair_features = torch.cat([h2[u_tensor], h2[v_tensor]], dim=1)
+        
         gnn_logits = model.decoder(pair_features).squeeze(1)
         gnn_scores = torch.sigmoid(gnn_logits).cpu().numpy()
     
+    # Compute semantic similarity for novelty scoring
     emb_np = embed_model.encode(valid_concepts, show_progress_bar=False)
     cos_sims = np.sum(emb_np[u_tensor.cpu().numpy()] * emb_np[v_tensor.cpu().numpy()], axis=1)
     
+    # ✅ Now iterate with PERFECT alignment: len(candidate_pairs) == len(gnn_scores)
     results = []
-    for i, (u_idx, v_idx, u_c, v_c) in enumerate(candidate_pairs):
-        try:
-            d_prev = d_prev_dict[u_c][v_c]
-        except KeyError:
-            d_prev = 4
-        if d_prev < 2: continue
-        
+    for i, (u_idx, v_idx, u_c, v_c, d_prev) in enumerate(candidate_pairs):
         p_u = concept_properties.get(u_c, 0)
         p_v = concept_properties.get(v_c, 0)
         

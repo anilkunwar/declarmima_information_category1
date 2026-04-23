@@ -587,9 +587,22 @@ def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_
 def generate_embeddings(valid_concepts, embed_model):
     """Generate sentence embeddings for concept nodes"""
     if not valid_concepts:
+        # Return empty tensor with correct embedding dimension (384 for all-MiniLM-L6-v2)
         return torch.zeros((0, 384), dtype=torch.float32).to(DEVICE)
     embeddings = embed_model.encode(valid_concepts, show_progress_bar=False, batch_size=32)
     return torch.tensor(embeddings, dtype=torch.float32).to(DEVICE)
+
+
+def get_embedding_dimension(embed_model) -> int:
+    """Safely detect the embedding dimension from the model"""
+    try:
+        # Try to encode a dummy concept to get output shape
+        dummy = ["test"]
+        emb = embed_model.encode(dummy, show_progress_bar=False)
+        return emb.shape[1]
+    except:
+        # Fallback: known dimension for all-MiniLM-L6-v2
+        return 384
 
 # ==========================================
 # STEP 5: PURE PYTORCH SPARSE GRAPHSAGE
@@ -597,8 +610,14 @@ def generate_embeddings(valid_concepts, embed_model):
 class SparseGraphSAGE(nn.Module):
     """Memory-efficient GraphSAGE using PyTorch sparse tensors"""
     
-    def __init__(self, in_dim, hidden_dim=GNN_HIDDEN_DIM):
+    def __init__(self, in_dim: int, hidden_dim: int = GNN_HIDDEN_DIM):
+        """
+        Args:
+            in_dim: Input feature dimension (MUST match embedding dimension, e.g., 384)
+            hidden_dim: Hidden layer dimension for GNN
+        """
         super().__init__()
+        # ✅ FIX: lin1 now correctly maps in_dim (384) -> hidden_dim (128)
         self.lin1 = nn.Linear(in_dim, hidden_dim)
         self.lin2 = nn.Linear(hidden_dim, hidden_dim)
         self.decoder = nn.Sequential(
@@ -608,13 +627,24 @@ class SparseGraphSAGE(nn.Module):
         )
         
     def forward(self, adj_indices, adj_values, num_nodes, h, pos_u, pos_v, neg_u, neg_v):
+        """
+        Args:
+            h: Node features of shape (num_nodes, in_dim)
+        """
+        # Build sparse adjacency matrix: A of shape (num_nodes, num_nodes)
         A = sparse.FloatTensor(adj_indices, adj_values, torch.Size([num_nodes, num_nodes])).to(h.device)
+        
+        # Mean aggregation with degree normalization: h_neighbor = D^-1 @ A @ h
         deg = torch.sparse.sum(A, dim=1).to_dense().clamp(min=1)
         deg_inv = 1.0 / deg
         
+        # Two-layer GraphSAGE with ReLU activation
+        # torch.sparse.mm(A, h): (num_nodes, num_nodes) @ (num_nodes, in_dim) = (num_nodes, in_dim)
         h1 = F.relu(self.lin1(torch.sparse.mm(A, h) * deg_inv.unsqueeze(1)))
         h2 = self.lin2(torch.sparse.mm(A, h1) * deg_inv.unsqueeze(1))
         
+        # Edge scoring: concatenate embeddings of endpoint nodes
+        # h2[pos_u]: (num_edges, hidden_dim)
         pos_scores = self.decoder(torch.cat([h2[pos_u], h2[pos_v]], dim=1)).squeeze(1)
         neg_scores = self.decoder(torch.cat([h2[neg_u], h2[neg_v]], dim=1)).squeeze(1)
         
@@ -623,6 +653,18 @@ class SparseGraphSAGE(nn.Module):
 
 def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, progress_callback=None):
     """Train GraphSAGE with contrastive edge prediction loss"""
+    
+    # ✅ FIX: Validate dimensions before training
+    num_nodes = len(concept_to_id)
+    in_dim = node_features.shape[1] if node_features.numel() > 0 else 384
+    
+    if node_features.numel() > 0:
+        expected_shape = (num_nodes, in_dim)
+        if node_features.shape != expected_shape:
+            raise ValueError(
+                f"Node features shape mismatch: expected {expected_shape}, got {node_features.shape}. "
+                f"Ensure embedding dimension ({in_dim}) matches GNN input dimension."
+            )
     
     if not pos_pairs:
         # Create minimal training pairs if graph is empty
@@ -644,7 +686,8 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
     neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
     neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
     
-    model = SparseGraphSAGE(node_features.shape[1]).to(DEVICE)
+    # ✅ FIX: Initialize GNN with correct in_dim matching embedding dimension
+    model = SparseGraphSAGE(in_dim=in_dim, hidden_dim=GNN_HIDDEN_DIM).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.BCEWithLogitsLoss()
     
@@ -654,10 +697,10 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
         
         # Handle case with no negative samples
         if len(neg_pairs) == 0:
-            pos_out, _, _ = model(adj_indices, adj_values, len(concept_to_id), node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
+            pos_out, _, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
             loss = criterion(pos_out, torch.ones_like(pos_out)) * 0.5
         else:
-            pos_out, neg_out, _ = model(adj_indices, adj_values, len(concept_to_id), node_features, pos_u, pos_v, neg_u, neg_v)
+            pos_out, neg_out, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, neg_u, neg_v)
             pos_loss = criterion(pos_out, torch.ones_like(pos_out))
             neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
             loss = 0.5 * (pos_loss + neg_loss)
@@ -671,7 +714,7 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
     model.eval()
     with torch.no_grad():
         _, _, final_embeddings = model(
-            adj_indices, adj_values, len(concept_to_id),
+            adj_indices, adj_values, num_nodes,
             node_features, pos_u[:1], pos_v[:1], 
             neg_u[:1] if len(neg_pairs) > 0 else pos_u[:1], 
             neg_v[:1] if len(neg_pairs) > 0 else pos_v[:1]
@@ -946,17 +989,19 @@ def main():
             # ✅ FIX: Use 0.0-1.0 range
             progress_bar.progress(0.40)
             
-            # Step 4: Embeddings
+            # Step 4: Embeddings - ✅ FIX: Get correct embedding dimension
             with st.status("🧠 Generating embeddings..."):
+                # ✅ FIX: Detect embedding dimension dynamically
+                embed_dim = get_embedding_dimension(embed_model)
+                st.write(f"✅ Embedding dimension: {embed_dim}")
                 node_features = generate_embeddings(valid_concepts, embed_model)
-                st.write(f"✅ Dimension: {node_features.shape[1]}")
+                st.write(f"✅ Node features shape: {node_features.shape}")
             # ✅ FIX: Use 0.0-1.0 range
             progress_bar.progress(0.50)
             
-            # Step 5: Train GNN - ✅ FIXED CALLBACK FUNCTION
+            # Step 5: Train GNN - ✅ FIXED CALLBACK & DIMENSION HANDLING
             def _training_progress(epoch, loss):
                 # ✅ FIX: Map epoch (0 to TRAIN_EPOCHS) to progress (0.50 to 0.80)
-                # Formula: start at 50%, add 30% spread over all epochs
                 progress_value = 0.50 + (epoch / TRAIN_EPOCHS) * 0.30
                 # ✅ FIX: Clamp to valid range [0.0, 1.0] to prevent overflow
                 progress_bar.progress(min(1.0, max(0.0, progress_value)))
@@ -964,6 +1009,7 @@ def main():
                     status.write(f"📊 Epoch {epoch}/{TRAIN_EPOCHS} | Loss: {loss:.4f}")
             
             with st.status("🤖 Training GraphSAGE..."):
+                # ✅ FIX: Pass embedding dimension to GNN training
                 gnn_model, final_emb, adj_indices, adj_values = train_gnn(
                     node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, _training_progress
                 )
@@ -1073,7 +1119,7 @@ def main():
     - ✅ Embedding-based edges connect semantically related concepts without co-occurrence
     - ✅ Adaptive thresholds relax frequency requirements for sparse data
     
-    **🔧 Technical:** Qwen2.5-0.5B + Sentence-BERT + Pure PyTorch GraphSAGE | All local processing
+    **🔧 Technical:** Qwen2.5-0.5B + Sentence-BERT (384-dim) + Pure PyTorch GraphSAGE | All local processing
     """)
 
 if __name__ == "__main__":

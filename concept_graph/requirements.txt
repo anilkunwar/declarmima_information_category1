@@ -15,3 +15,4 @@ networkx
 pyvis
 h5py
 joblib
+scikit-learn

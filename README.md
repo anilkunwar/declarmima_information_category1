@@ -68,7 +68,9 @@ the files need to be run in local computer with Ollama and  llama3.1:8b installe
 
 [![meaningtowords](https://img.shields.io/badge/conceptgraph-v8.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts8.streamlit.app/)  (improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, needs improvement in the concept graph screen )
 
-[![meaningtowords](https://img.shields.io/badge/conceptgraph-v9.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts9.streamlit.app/)  (improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, concept graph screen visualization enabled)
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v9.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts9.streamlit.app/)  (improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, concept graph screen visualization not yet enabled)
+
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v10.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts10.streamlit.app/)  (improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, concept graph screen visualization enabled)
 
 
 

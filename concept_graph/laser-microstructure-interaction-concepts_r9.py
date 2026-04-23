@@ -17,7 +17,7 @@ import gc
 from collections import defaultdict
 from sklearn.linear_model import Ridge
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.metrics.pairpairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pyvis.network import Network

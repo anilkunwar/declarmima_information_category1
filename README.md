@@ -60,9 +60,14 @@ the files need to be run in local computer with Ollama and  llama3.1:8b installe
 
 [![meaningtowords](https://img.shields.io/badge/conceptgraph-v4.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts4.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images ) 
 
-[![meaningtowords](https://img.shields.io/badge/conceptgraph-v5.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts5.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code usable ) 
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v5.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts5.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code usable, code stops after generate hypothesis stage ) 
 
-[![meaningtowords](https://img.shields.io/badge/conceptgraph-v6.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts6.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment ) 
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v6.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts6.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code stops after generate hypothesis stage ) 
+
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v7.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts7.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code stops after generate hypothesis stage )
+
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v8.0-brightgreen.svg)](https://laser-microstructure-interaction-concepts8.streamlit.app/)  (a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage )
+
 
 
 # local computer (working)

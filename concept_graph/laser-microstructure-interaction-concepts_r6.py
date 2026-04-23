@@ -718,8 +718,8 @@ def compute_research_direction_scores(
     """
     Score novel concept pairs for promising microstructure research directions.
     
-    FIXED: Uses pre-computed GNN embeddings directly instead of re-running forward pass.
-    final_emb has shape [n_concepts, hidden_dim=128] - already aggregated by GraphSAGE.
+    FIXED: Uses pre-computed GNN embeddings directly (no forward pass through GNN layers).
+    Inference wrapped in torch.no_grad() to prevent gradient tracking and allow .numpy().
     """
     n_concepts = len(valid_concepts)
     if n_concepts < 3:
@@ -741,19 +741,19 @@ def compute_research_direction_scores(
     u_tensor = torch.tensor([p[0] for p in candidate_pairs], dtype=torch.long, device=DEVICE)
     v_tensor = torch.tensor([p[1] for p in candidate_pairs], dtype=torch.long, device=DEVICE)
     
-    # ✅ FIX: Use pre-computed GNN embeddings directly (already on CPU, move to device)
+    # ✅ FIX: Use pre-computed GNN embeddings (already aggregated, no gradient needed)
     h2 = final_emb.to(DEVICE)  # shape: [n_concepts, GNN_HIDDEN_DIM=128]
     
-    # Look up embeddings for candidate pairs
     u_emb = h2[u_tensor]  # [num_pairs, 128]
     v_emb = h2[v_tensor]  # [num_pairs, 128]
-    
-    # Concatenate and score through decoder only (decoder expects [batch, 256])
     pair_features = torch.cat([u_emb, v_emb], dim=1)  # [num_pairs, 256]
-    gnn_logits = model.decoder(pair_features).squeeze(1)  # [num_pairs]
-    gnn_scores = torch.sigmoid(gnn_logits).cpu().numpy()
     
-    # Semantic novelty using original embeddings
+    # ✅ CRITICAL FIX: Disable gradient tracking to allow .numpy() conversion
+    with torch.no_grad():
+        gnn_logits = model.decoder(pair_features).squeeze(1)  # [num_pairs]
+        gnn_scores = torch.sigmoid(gnn_logits).cpu().numpy()
+    
+    # Semantic novelty using original embeddings (no gradients involved)
     emb_np = embed_model.encode(valid_concepts, show_progress_bar=False)
     cos_sims = np.sum(emb_np[u_tensor.cpu().numpy()] * emb_np[v_tensor.cpu().numpy()], axis=1)
     

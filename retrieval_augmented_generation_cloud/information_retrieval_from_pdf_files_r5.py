@@ -61,7 +61,7 @@ except ImportError:
 try:
     import pdf2doi
     PDF2DOI_AVAILABLE = True
-except ImportError:
+except (ImportError, PermissionError, Exception):
     PDF2DOI_AVAILABLE = False
 
 try:

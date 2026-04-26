@@ -595,7 +595,10 @@ class RetrievalEvaluator:
         if self.embed_model is not None:
             return self.embed_model
         if self._embeddings_instance is None:
-            self._embeddings_instance = load_local_embeddings()
+            try:
+                self._embeddings_instance = load_local_embeddings()
+            except Exception:
+                self._embeddings_instance = None
         return self._embeddings_instance
 
     def compute_recall_at_k(self, retrieved: List[str], relevant: Set[str], k_values=(3, 5, 10)) -> Dict[int, float]:
@@ -1105,7 +1108,10 @@ class PhysicsFaithfulnessChecker:
         if self.embed_model is not None:
             return self.embed_model
         if self._embeddings_instance is None:
-            self._embeddings_instance = load_local_embeddings()
+            try:
+                self._embeddings_instance = load_local_embeddings()
+            except Exception:
+                self._embeddings_instance = None
         return self._embeddings_instance
 
     def extract_numerical_claims(self, text: str) -> List[Dict]:
@@ -1707,10 +1713,6 @@ def initialize_session_state():
         "cross_doc_consensus": True,
         # New evaluation state
         "app_mode": "Chat",
-        "retrieval_evaluator": None,
-        "faithfulness_checker": None,
-        "microstructure_comparator": None,
-        "equation_checker": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2003,6 +2005,7 @@ def create_local_vector_store(chunks: List[Document], embedding_model_key: str):
         if embeddings is None:
             return None
         vectorstore = FAISS.from_documents(chunks, embeddings)
+        st.session_state.embeddings = embeddings
         vectorstore.metadata = {
             "total_chunks": len(chunks),
             "embedding_model": embedding_model_key,
@@ -2314,14 +2317,14 @@ def render_evaluation_dashboard():
         st.warning("Please upload and process documents first.")
         return
 
-    # Initialize evaluators in session state
-    if "retrieval_evaluator" not in st.session_state:
-        st.session_state.retrieval_evaluator = RetrievalEvaluator(st.session_state.embeddings)
-    if "faithfulness_checker" not in st.session_state:
-        st.session_state.faithfulness_checker = PhysicsFaithfulnessChecker(st.session_state.embeddings)
-    if "microstructure_comparator" not in st.session_state:
+    # Initialize evaluators in session state (lazy init, handles None embeddings)
+    if st.session_state.get("retrieval_evaluator") is None:
+        st.session_state.retrieval_evaluator = RetrievalEvaluator(st.session_state.get("embeddings"))
+    if st.session_state.get("faithfulness_checker") is None:
+        st.session_state.faithfulness_checker = PhysicsFaithfulnessChecker(st.session_state.get("embeddings"))
+    if st.session_state.get("microstructure_comparator") is None:
         st.session_state.microstructure_comparator = MicrostructureComparator()
-    if "equation_checker" not in st.session_state:
+    if st.session_state.get("equation_checker") is None:
         st.session_state.equation_checker = EquationConsistencyChecker()
 
     evaluator = st.session_state.retrieval_evaluator
@@ -2343,6 +2346,9 @@ def render_evaluation_dashboard():
         if st.button("Evaluate Retrieval", key="eval_retrieval"):
             with st.spinner("Evaluating..."):
                 try:
+                    if evaluator is None:
+                        st.error("Evaluator not initialized. Please process documents first.")
+                        st.stop()
                     retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": k_eval})
                     retrieved = retriever.invoke(test_query)
                     metrics = evaluator.evaluate_query(test_query, retrieved, set(), {})
@@ -2368,6 +2374,9 @@ def render_evaluation_dashboard():
             key="sample_answer"
         )
         if st.button("Validate Physics", key="validate_physics") and sample_answer:
+            if faithfulness_checker is None:
+                st.error("Faithfulness checker not initialized. Please process documents first.")
+                st.stop()
             dummy_chunks = st.session_state.all_chunks[:3] if st.session_state.all_chunks else []
             result = faithfulness_checker.full_check(sample_answer, dummy_chunks)
             trust = result["overall_trust_score"]
@@ -2391,6 +2400,9 @@ def render_evaluation_dashboard():
             default=["gibbs_energy", "arrhenius_diffusion"]
         )
         if st.button("Check Equations", key="check_eq") and eq_answer:
+            if eq_checker is None:
+                st.error("Equation checker not initialized.")
+                st.stop()
             eq_results = eq_checker.validate_answer_equations(eq_answer, eq_types)
             for r in eq_results:
                 if r.get("match"):
@@ -2408,6 +2420,9 @@ def render_evaluation_dashboard():
         if st.button("Run Full Benchmark", key="run_benchmark"):
             with st.spinner("Running benchmark suite (this may take a while)..."):
                 try:
+                    if evaluator is None:
+                        st.error("Evaluator not initialized. Please process documents first.")
+                        st.stop()
                     benchmark_df = run_benchmark_evaluation(st.session_state.vectorstore, evaluator, k=k_bench)
                     if PANDAS_AVAILABLE and hasattr(benchmark_df, 'to_dict'):
                         st.dataframe(benchmark_df, use_container_width=True)
@@ -2431,6 +2446,9 @@ def render_evaluation_dashboard():
             gt_file = st.file_uploader("Ground truth field", type=["csv", "npy", "png", "tif"], key="gt_field")
         field_name = st.text_input("Field name", "concentration", key="field_name")
         if st.button("Compare Fields", key="compare_fields") and pred_file and gt_file:
+            if comparator is None:
+                st.error("Comparator not initialized.")
+                st.stop()
             with tempfile.NamedTemporaryFile(delete=False, suffix="."+pred_file.name.split('.')[-1]) as tmp_pred,                  tempfile.NamedTemporaryFile(delete=False, suffix="."+gt_file.name.split('.')[-1]) as tmp_gt:
                 tmp_pred.write(pred_file.getbuffer())
                 tmp_gt.write(gt_file.getbuffer())
@@ -2448,7 +2466,7 @@ def render_evaluation_dashboard():
     # Tab 5: Trends
     with tabs[4]:
         st.subheader("Performance Trends")
-        if evaluator.query_history:
+        if evaluator is not None and evaluator.query_history:
             trend_df = evaluator.get_aggregate_report()
             if trend_df is not None:
                 st.dataframe(trend_df, use_container_width=True)
@@ -2662,7 +2680,7 @@ def render_chat_interface():
 
     # Initialize faithfulness checker if not present
     if st.session_state.get("faithfulness_checker") is None:
-        st.session_state.faithfulness_checker = PhysicsFaithfulnessChecker(st.session_state.embeddings)
+        st.session_state.faithfulness_checker = PhysicsFaithfulnessChecker(st.session_state.get("embeddings"))
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):

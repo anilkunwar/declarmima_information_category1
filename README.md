@@ -41,6 +41,8 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v7.0-blue)](https://information-retrieval-from-scientific-documents-and-reasoning7.streamlit.app/) (API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced)
 
+[![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v8.0-turquoise)](https://information-retrieval-from-scientific-documents-and-reasoning8.streamlit.app/) (API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced)
+
 
 # local computer (working)
 

@@ -20,6 +20,7 @@ For enhanced metadata extraction: pip install pdf2doi crossrefapi (optional)
 """
 import streamlit as st
 import os
+os.environ["HOME"] = "/tmp"   # or any writable path
 import tempfile
 import time
 import re

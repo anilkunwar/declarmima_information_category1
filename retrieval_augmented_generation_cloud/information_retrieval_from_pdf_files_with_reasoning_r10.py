@@ -545,7 +545,7 @@ class BibliographicMetadata:
         }
     
     @classmethod
-    def from_dict(cls,  Dict[str, Any]) -> 'BibliographicMetadata':
+    def from_dict(cls, data: Dict[str, Any]) -> 'BibliographicMetadata':
         meta = cls(data.get("source", "unknown"))
         meta.doi = data.get("doi")
         meta.arxiv_id = data.get("arxiv_id")

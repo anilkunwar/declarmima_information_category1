@@ -2113,7 +2113,7 @@ def process_documents(uploaded_files):
             st.error(traceback.format_exc())
             return False
 
-def render_fusion_metrics_panel(fusion_meta Dict[str, Any]):
+def render_fusion_metrics_panel(fusion_meta: Dict[str, Any]):
     if not fusion_metadata.get("fusion_enabled"):
         return
     metrics_display = fusion_metadata.get("fusion_metrics", {}).get("display", {})

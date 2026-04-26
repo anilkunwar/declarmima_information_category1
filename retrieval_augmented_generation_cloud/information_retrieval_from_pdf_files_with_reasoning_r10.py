@@ -833,7 +833,7 @@ class MultiDocumentPropertyExtractor:
             r'(' + '|'.join(re.escape(m) for m in material_list) + r').{0,200}?' +
             r'([\w\s]+?\s*(?:is|was|of|at|:|=)\s*[\d.]+)', re.I | re.DOTALL)
     
-    def extract_properties_from_chunk(self, chunk_text: str, chunk_meta Dict[str, Any]) -> DocumentFusionRecord:
+    def extract_properties_from_chunk(self, chunk_text: str, chunk_metadata: Dict[str, Any]) -> DocumentFusionRecord:
         record = DocumentFusionRecord(
             source_filename=chunk_metadata.get('source', 'unknown'),
             chunk_index=chunk_metadata.get('chunk_index', 0),

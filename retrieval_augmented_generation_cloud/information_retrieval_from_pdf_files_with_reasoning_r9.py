@@ -30,6 +30,41 @@ from pathlib import Path
 from collections import defaultdict, Counter
 import hashlib
 
+# =============================================
+# OPTIONAL: Scientific Computing & Evaluation Imports
+# =============================================
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+try:
+    from dataclasses import dataclass, field
+    DATACLASS_AVAILABLE = True
+except ImportError:
+    DATACLASS_AVAILABLE = False
+
+try:
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
+try:
+    from skimage.metrics import structural_similarity as ssim
+    from skimage.metrics import peak_signal_noise_ratio as psnr
+    from skimage import measure
+    SKIMAGE_AVAILABLE = True
+except ImportError:
+    SKIMAGE_AVAILABLE = False
+
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+
 # LangChain / RAG imports
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -520,6 +555,247 @@ class MetadataCache:
 metadata_cache = MetadataCache()
 
 
+# =============================================
+# EVALUATION: RETRIEVAL QUALITY METRICS MODULE
+# =============================================
+
+if DATACLASS_AVAILABLE:
+    @dataclass
+    class RetrievalMetrics:
+        """Container for retrieval quality metrics"""
+        recall_at_k: Dict[int, float] = field(default_factory=dict)
+        precision_at_k: Dict[int, float] = field(default_factory=dict)
+        mrr: float = 0.0
+        context_relevance: float = 0.0
+        ndcg_at_k: Dict[int, float] = field(default_factory=dict)
+        coverage: float = 0.0
+else:
+    class RetrievalMetrics:
+        def __init__(self):
+            self.recall_at_k = {}
+            self.precision_at_k = {}
+            self.mrr = 0.0
+            self.context_relevance = 0.0
+            self.ndcg_at_k = {}
+            self.coverage = 0.0
+
+
+class RetrievalEvaluator:
+    """
+    Evaluates RAG retrieval quality against ground-truth relevance judgments.
+    For DECLARMIMA: ground truth = manually labeled relevant chunks per query.
+    """
+    def __init__(self, embed_model=None):
+        self.embed_model = embed_model
+        self.query_history: List[Dict] = []
+        self._embeddings_instance = None
+
+    def _get_embeddings(self):
+        """Lazy load embeddings if not provided"""
+        if self.embed_model is not None:
+            return self.embed_model
+        if self._embeddings_instance is None:
+            self._embeddings_instance = load_local_embeddings()
+        return self._embeddings_instance
+
+    def compute_recall_at_k(self, retrieved: List[str], relevant: Set[str], k_values=(3, 5, 10)) -> Dict[int, float]:
+        """Fraction of relevant documents found in top-k"""
+        results = {}
+        for k in k_values:
+            retrieved_k = set(retrieved[:k])
+            if len(relevant) == 0:
+                results[k] = 0.0
+            else:
+                results[k] = len(retrieved_k & relevant) / len(relevant)
+        return results
+
+    def compute_precision_at_k(self, retrieved: List[str], relevant: Set[str], k_values=(3, 5, 10)) -> Dict[int, float]:
+        """Fraction of top-k documents that are relevant"""
+        results = {}
+        for k in k_values:
+            retrieved_k = set(retrieved[:k])
+            if k == 0:
+                results[k] = 0.0
+            else:
+                results[k] = len(retrieved_k & relevant) / k
+        return results
+
+    def compute_mrr(self, retrieved: List[str], relevant: Set[str]) -> float:
+        """Mean Reciprocal Rank: 1/rank of first relevant doc"""
+        for i, doc_id in enumerate(retrieved, 1):
+            if doc_id in relevant:
+                return 1.0 / i
+        return 0.0
+
+    def compute_ndcg_at_k(self, retrieved: List[str], relevance_scores: Dict[str, float], k_values=(3, 5, 10)) -> Dict[int, float]:
+        """Normalized Discounted Cumulative Gain"""
+        results = {}
+        for k in k_values:
+            dcg = 0.0
+            for i, doc_id in enumerate(retrieved[:k], 1):
+                rel = relevance_scores.get(doc_id, 0.0)
+                dcg += rel / np.log2(i + 1)
+            ideal_rels = sorted(relevance_scores.values(), reverse=True)[:k]
+            idcg = sum(rel / np.log2(i + 1) for i, rel in enumerate(ideal_rels, 1))
+            results[k] = dcg / idcg if idcg > 0 else 0.0
+        return results
+
+    def compute_context_relevance(self, query: str, retrieved_chunks: List[Document]) -> float:
+        """Average cosine similarity between query and retrieved chunks"""
+        if not retrieved_chunks or not SKLEARN_AVAILABLE:
+            return 0.0
+        try:
+            emb = self._get_embeddings()
+            if emb is None:
+                return 0.0
+            query_emb = np.array(emb.embed_query(query)).reshape(1, -1)
+            chunk_texts = [c.page_content[:500] for c in retrieved_chunks]
+            chunk_embs = np.array([emb.embed_query(t) for t in chunk_texts])
+            if query_emb.shape[1] != chunk_embs.shape[1]:
+                return 0.0
+            similarities = cosine_similarity(query_emb, chunk_embs)[0]
+            return float(np.mean(similarities))
+        except Exception as e:
+            st.warning(f"Context relevance computation failed: {e}")
+            return 0.0
+
+    def evaluate_query(self, query: str, retrieved_docs: List[Document],
+                       relevant_doc_ids: Optional[Set[str]] = None,
+                       relevance_scores: Optional[Dict[str, float]] = None) -> RetrievalMetrics:
+        """Full evaluation for a single query"""
+        relevant_doc_ids = relevant_doc_ids or set()
+        relevance_scores = relevance_scores or {}
+        retrieved_ids = [f"{d.metadata.get('source', 'unknown')}:{d.metadata.get('chunk_index', -1)}" for d in retrieved_docs]
+
+        metrics = RetrievalMetrics()
+        metrics.recall_at_k = self.compute_recall_at_k(retrieved_ids, relevant_doc_ids)
+        metrics.precision_at_k = self.compute_precision_at_k(retrieved_ids, relevant_doc_ids)
+        metrics.mrr = self.compute_mrr(retrieved_ids, relevant_doc_ids)
+        metrics.context_relevance = self.compute_context_relevance(query, retrieved_docs)
+        metrics.ndcg_at_k = self.compute_ndcg_at_k(retrieved_ids, relevance_scores)
+        metrics.coverage = len(set(retrieved_ids) & relevant_doc_ids) / len(relevant_doc_ids) if relevant_doc_ids else 0.0
+
+        self.query_history.append({
+            "query": query,
+            "metrics": metrics,
+            "timestamp": datetime.now().isoformat()
+        })
+        return metrics
+
+    def get_aggregate_report(self):
+        """Aggregate metrics across all evaluated queries"""
+        if not self.query_history or not PANDAS_AVAILABLE:
+            return None
+        records = []
+        for entry in self.query_history:
+            m = entry["metrics"]
+            records.append({
+                "query": entry["query"][:50],
+                "recall@3": m.recall_at_k.get(3, 0),
+                "recall@5": m.recall_at_k.get(5, 0),
+                "precision@3": m.precision_at_k.get(3, 0),
+                "precision@5": m.precision_at_k.get(5, 0),
+                "mrr": m.mrr,
+                "context_relevance": m.context_relevance,
+                "ndcg@5": m.ndcg_at_k.get(5, 0),
+                "coverage": m.coverage
+            })
+        df = pd.DataFrame(records)
+        means = df.select_dtypes(include=[np.number]).mean()
+        means["query"] = "AVERAGE"
+        df = pd.concat([df, pd.DataFrame([means])], ignore_index=True)
+        return df
+
+
+# =============================================
+# BENCHMARK QUERY SUITE FOR DECLARMIMA
+# =============================================
+DECLARMIMA_BENCHMARK_QUERIES = [
+    {
+        "query": "What is the Gibbs free energy function for FCC phase in Fe-Cr system at 843K?",
+        "category": "thermodynamics",
+        "relevant_keywords": ["gibbs free energy", "fcc", "fe-cr", "thermodynamic", "calphad"],
+        "expected_parameters": {"temperature_K": 843, "phase": "fcc"}
+    },
+    {
+        "query": "Plot the phase diagram for AlSi10Mg alloy under laser powder bed fusion conditions",
+        "category": "phase_diagram",
+        "relevant_keywords": ["alsi10mg", "phase diagram", "lpbf", "solidification", "eutectic"],
+        "expected_parameters": {"alloy": "alsi10mg", "process": "lpbf"}
+    },
+    {
+        "query": "What laser power and scan speed prevent porosity in Ti6Al4V selective laser melting?",
+        "category": "process_optimization",
+        "relevant_keywords": ["ti6al4v", "laser power", "scan speed", "porosity", "slm"],
+        "expected_parameters": {"defect": "porosity", "alloy": "ti6al4v"}
+    },
+    {
+        "query": "Calculate the diffusion coefficient of Cu in Sn-Ag-Cu solder at 250°C",
+        "category": "diffusion",
+        "relevant_keywords": ["diffusion coefficient", "cu", "sn-ag-cu", "solder", "atomic mobility"],
+        "expected_parameters": {"temperature_C": 250, "diffusing_species": "cu"}
+    },
+    {
+        "query": "How does Marangoni convection affect melt pool geometry in laser processing?",
+        "category": "mechanism",
+        "relevant_keywords": ["marangoni", "convection", "melt pool", "fluid flow", "surface tension"],
+        "expected_parameters": {"phenomenon": "marangoni convection"}
+    },
+    {
+        "query": "What is the yield strength of CoCrFeNi high-entropy alloy after direct energy deposition?",
+        "category": "mechanical_properties",
+        "relevant_keywords": ["cocrfeni", "yield strength", "hea", "ded", "mechanical property"],
+        "expected_parameters": {"property": "yield_strength", "alloy": "cocrfeni"}
+    },
+    {
+        "query": "Compare columnar and equiaxed grain formation during laser solidification",
+        "category": "microstructure",
+        "relevant_keywords": ["columnar grain", "equiaxed grain", "solidification", "grain morphology", "cet"],
+        "expected_parameters": {"feature": "grain_morphology"}
+    }
+]
+
+
+def run_benchmark_evaluation(vectorstore, evaluator: RetrievalEvaluator, k: int = 5):
+    """Run benchmark suite and report retrieval metrics"""
+    results = []
+    for bench in DECLARMIMA_BENCHMARK_QUERIES:
+        query = bench["query"]
+        try:
+            retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+            retrieved = retriever.invoke(query)
+            relevant_ids = set()
+            relevance_scores = {}
+            for doc in retrieved:
+                doc_id = f"{doc.metadata.get('source', 'unknown')}:{doc.metadata.get('chunk_index', -1)}"
+                score = sum(1 for kw in bench["relevant_keywords"] if kw in doc.page_content.lower())
+                if score > 0:
+                    relevant_ids.add(doc_id)
+                relevance_scores[doc_id] = score
+            metrics = evaluator.evaluate_query(query, retrieved, relevant_ids, relevance_scores)
+            results.append({
+                "query": query,
+                "category": bench["category"],
+                "recall@5": metrics.recall_at_k.get(5, 0),
+                "precision@5": metrics.precision_at_k.get(5, 0),
+                "mrr": metrics.mrr,
+                "context_relevance": metrics.context_relevance
+            })
+        except Exception as e:
+            results.append({
+                "query": query,
+                "category": bench["category"],
+                "recall@5": 0.0,
+                "precision@5": 0.0,
+                "mrr": 0.0,
+                "context_relevance": 0.0,
+                "error": str(e)
+            })
+    if PANDAS_AVAILABLE:
+        return pd.DataFrame(results)
+    return results
+
+
 def compute_file_hash(filepath: str) -> str:
     try:
         with open(filepath, 'rb') as f:
@@ -800,6 +1076,530 @@ class CrossDocumentKnowledgeGraph:
         }
 
 
+
+
+# =============================================
+# EVALUATION: PHYSICS-AWARE HALLUCINATION DETECTOR
+# =============================================
+
+class PhysicsFaithfulnessChecker:
+    """
+    Detects when LLM outputs contradict retrieved context or violate physical laws.
+    Critical for DECLARMIMA: thermodynamic consistency, numerical correctness.
+    """
+    PHYSICAL_CONSTRAINTS = {
+        "temperature": {"min": 0, "max": 10000, "unit": "K"},
+        "energy_density": {"min": 0, "max": 1000, "unit": "J/mm³"},
+        "diffusion_coefficient": {"min": 0, "max": 1e-3, "unit": "m²/s"},
+        "grain_size": {"min": 1e-9, "max": 1e-2, "unit": "m"},
+        "hardness": {"min": 0, "max": 3000, "unit": "HV"},
+        "yield_strength": {"min": 0, "max": 5000, "unit": "MPa"},
+    }
+
+    def __init__(self, embed_model=None):
+        self.embed_model = embed_model
+        self.violation_log: List[Dict] = []
+        self._embeddings_instance = None
+
+    def _get_embeddings(self):
+        if self.embed_model is not None:
+            return self.embed_model
+        if self._embeddings_instance is None:
+            self._embeddings_instance = load_local_embeddings()
+        return self._embeddings_instance
+
+    def extract_numerical_claims(self, text: str) -> List[Dict]:
+        """Extract all numerical claims with units from text"""
+        patterns = [
+            r'(\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*(?:J/mm³|J\s*mm[-3⁻³])\s*(?:energy\s*density)?',
+            r'(\d+(?:\.\d+)?)\s*(?:K|°C|°F)\s*(?:temperature)?',
+            r'(\d+(?:\.\d+)?)\s*(?:HV|Vickers|GPa|MPa)\s*(?:hardness|strength)?',
+            r'(\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*(?:m²/s|m\^2/s|cm²/s)\s*(?:diffusion)?',
+            r'(\d+(?:\.\d+)?)\s*(?:μm|um|nm|mm)\s*(?:grain)?',
+        ]
+        claims = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, re.I):
+                try:
+                    val = float(match.group(1))
+                    claims.append({
+                        "value": val,
+                        "context": text[max(0, match.start()-30):min(len(text), match.end()+30)],
+                        "span": (match.start(), match.end())
+                    })
+                except:
+                    pass
+        return claims
+
+    def check_numerical_bounds(self, claims: List[Dict]) -> List[Dict]:
+        """Check if numerical values are physically plausible"""
+        violations = []
+        for claim in claims:
+            ctx_lower = claim["context"].lower()
+            param_type = None
+            if "energy density" in ctx_lower or "j/mm" in ctx_lower:
+                param_type = "energy_density"
+            elif "temperature" in ctx_lower or "k" in ctx_lower:
+                param_type = "temperature"
+            elif "hardness" in ctx_lower or "hv" in ctx_lower:
+                param_type = "hardness"
+            elif "diffusion" in ctx_lower:
+                param_type = "diffusion_coefficient"
+            elif "grain" in ctx_lower:
+                param_type = "grain_size"
+
+            if param_type and param_type in self.PHYSICAL_CONSTRAINTS:
+                bounds = self.PHYSICAL_CONSTRAINTS[param_type]
+                val = claim["value"]
+                if val < bounds["min"] or val > bounds["max"]:
+                    violations.append({
+                        "type": "physical_bound_violation",
+                        "parameter": param_type,
+                        "value": val,
+                        "bounds": bounds,
+                        "context": claim["context"],
+                        "severity": "HIGH" if val < 0 else "MEDIUM"
+                    })
+        return violations
+
+    def check_thermodynamic_consistency(self, text: str) -> List[Dict]:
+        """Check for thermodynamic rule violations"""
+        violations = []
+        if "gibbs" in text.lower() and "convex" in text.lower():
+            if re.search(r'non-convex.*stable', text, re.I):
+                violations.append({
+                    "type": "thermodynamic_inconsistency",
+                    "rule": "Gibbs energy must be convex for stability",
+                    "context": text[:200],
+                    "severity": "HIGH"
+                })
+        phase_fractions = re.findall(r'(\d+(?:\.\d+)?)\s*%?\s*(?:phase|fraction)', text, re.I)
+        if phase_fractions:
+            total = sum(float(f) for f in phase_fractions if float(f) < 100)
+            if total > 100.1 or (total < 99.9 and len(phase_fractions) > 1):
+                violations.append({
+                    "type": "thermodynamic_inconsistency",
+                    "rule": "Phase fractions must sum to 100%",
+                    "calculated_sum": total,
+                    "severity": "HIGH"
+                })
+        return violations
+
+    def check_faithfulness_to_context(self, llm_answer: str, retrieved_chunks: List[Document]) -> Dict:
+        """Check if LLM answer is supported by retrieved context."""
+        if not retrieved_chunks:
+            return {
+                "faithfulness_score": 0.0,
+                "max_context_similarity": 0.0,
+                "mean_context_similarity": 0.0,
+                "keyword_overlap": 0.0,
+                "hallucinated_numbers": [],
+                "is_faithful": False
+            }
+        try:
+            emb = self._get_embeddings()
+            if emb is None or not SKLEARN_AVAILABLE:
+                return {
+                    "faithfulness_score": 0.5,
+                    "max_context_similarity": 0.5,
+                    "mean_context_similarity": 0.5,
+                    "keyword_overlap": 0.5,
+                    "hallucinated_numbers": [],
+                    "is_faithful": True
+                }
+            answer_emb = np.array(emb.embed_query(llm_answer)).reshape(1, -1)
+            chunk_texts = [c.page_content[:500] for c in retrieved_chunks]
+            chunk_embs = np.array([emb.embed_query(t) for t in chunk_texts])
+            if answer_emb.shape[1] != chunk_embs.shape[1]:
+                return {"faithfulness_score": 0.5, "max_context_similarity": 0.5,
+                        "mean_context_similarity": 0.5, "keyword_overlap": 0.5,
+                        "hallucinated_numbers": [], "is_faithful": True}
+            similarities = cosine_similarity(answer_emb, chunk_embs)[0]
+            max_sim = float(np.max(similarities))
+            mean_sim = float(np.mean(similarities))
+        except Exception:
+            max_sim = 0.5
+            mean_sim = 0.5
+
+        answer_words = set(re.findall(r'\b\w+\b', llm_answer.lower()))
+        chunk_words = set()
+        for c in retrieved_chunks:
+            chunk_words.update(re.findall(r'\b\w+\b', c.page_content.lower()))
+        overlap = len(answer_words & chunk_words) / len(answer_words) if answer_words else 0
+
+        answer_numbers = set(re.findall(r'\d+\.\d+', llm_answer))
+        chunk_numbers = set()
+        for c in retrieved_chunks:
+            chunk_numbers.update(re.findall(r'\d+\.\d+', c.page_content))
+        hallucinated_numbers = answer_numbers - chunk_numbers
+
+        faithfulness_score = (
+            0.4 * max_sim +
+            0.3 * overlap +
+            0.3 * (1.0 if len(hallucinated_numbers) < 3 else 0.5)
+        )
+
+        return {
+            "faithfulness_score": float(np.clip(faithfulness_score, 0, 1)),
+            "max_context_similarity": max_sim,
+            "mean_context_similarity": mean_sim,
+            "keyword_overlap": overlap,
+            "hallucinated_numbers": list(hallucinated_numbers),
+            "is_faithful": faithfulness_score > 0.7 and len(hallucinated_numbers) < 3
+        }
+
+    def full_check(self, llm_answer: str, retrieved_chunks: List[Document]) -> Dict:
+        """Run all faithfulness and physics checks"""
+        numerical_claims = self.extract_numerical_claims(llm_answer)
+        bound_violations = self.check_numerical_bounds(numerical_claims)
+        thermo_violations = self.check_thermodynamic_consistency(llm_answer)
+        faithfulness = self.check_faithfulness_to_context(llm_answer, retrieved_chunks)
+
+        result = {
+            "faithfulness": faithfulness,
+            "numerical_claims": len(numerical_claims),
+            "physical_violations": bound_violations,
+            "thermodynamic_violations": thermo_violations,
+            "total_violations": len(bound_violations) + len(thermo_violations),
+            "is_physics_valid": len(bound_violations) == 0 and len(thermo_violations) == 0,
+            "overall_trust_score": self._compute_trust_score(faithfulness, bound_violations, thermo_violations)
+        }
+        self.violation_log.append(result)
+        return result
+
+    def _compute_trust_score(self, faithfulness, bound_violations, thermo_violations) -> float:
+        base = faithfulness.get("faithfulness_score", 0.5)
+        penalty = 0.1 * len(bound_violations) + 0.2 * len(thermo_violations)
+        return float(np.clip(base - penalty, 0, 1))
+
+    def render_violation_report(self):
+        """Streamlit component for violation reporting"""
+        if not self.violation_log:
+            st.info("No violations detected yet.")
+            return
+        latest = self.violation_log[-1]
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Trust Score", f"{latest['overall_trust_score']:.2f}")
+        col2.metric("Physical Violations", len(latest['physical_violations']))
+        col3.metric("Thermo Violations", len(latest['thermodynamic_violations']))
+
+        if latest['physical_violations']:
+            with st.expander("⚠️ Physical Bound Violations"):
+                for v in latest['physical_violations']:
+                    st.error(f"**{v['parameter']}**: {v['value']} outside bounds [{v['bounds']['min']}, {v['bounds']['max']}]")
+                    st.caption(f"Context: ...{v['context']}...")
+        if latest['thermodynamic_violations']:
+            with st.expander("⚠️ Thermodynamic Inconsistencies"):
+                for v in latest['thermodynamic_violations']:
+                    st.error(f"**{v['rule']}**")
+                    st.caption(f"Severity: {v['severity']}")
+        if latest['faithfulness']['hallucinated_numbers']:
+            with st.expander("🔍 Potentially Hallucinated Values"):
+                st.warning(f"Numbers in answer not found in retrieved context: {latest['faithfulness']['hallucinated_numbers']}")
+
+
+# =============================================
+# EVALUATION: MICROSTRUCTURE FIELD COMPARISON METRICS
+# =============================================
+
+class MicrostructureComparator:
+    """
+    Compare LLM-generated or RAG-retrieved microstructure descriptions
+    against ground-truth simulation outputs (phase-field, PINN, experimental).
+    """
+    def __init__(self):
+        self.comparison_history: List[Dict] = []
+
+    def load_field_data(self, file_path: str) -> np.ndarray:
+        """Load simulation field data (CSV, VTK, or image)"""
+        if file_path.endswith('.csv'):
+            if PANDAS_AVAILABLE:
+                return pd.read_csv(file_path).values
+            else:
+                raise ImportError("pandas required for CSV loading")
+        elif file_path.endswith('.npy'):
+            return np.load(file_path)
+        elif file_path.endswith(('.png', '.jpg', '.tif')):
+            if CV2_AVAILABLE:
+                img = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
+                return img.astype(np.float32) / 255.0
+            else:
+                raise ImportError("opencv-python required for image loading")
+        else:
+            raise ValueError(f"Unsupported format: {file_path}")
+
+    def compute_rmse(self, predicted: np.ndarray, ground_truth: np.ndarray) -> float:
+        return float(np.sqrt(np.mean((predicted - ground_truth) ** 2)))
+
+    def compute_mae(self, predicted: np.ndarray, ground_truth: np.ndarray) -> float:
+        return float(np.mean(np.abs(predicted - ground_truth)))
+
+    def compute_ssim(self, predicted: np.ndarray, ground_truth: np.ndarray) -> float:
+        if not SKIMAGE_AVAILABLE:
+            return 0.0
+        pred_norm = ((predicted - predicted.min()) / (predicted.max() - predicted.min() + 1e-8) * 255).astype(np.uint8)
+        gt_norm = ((ground_truth - ground_truth.min()) / (ground_truth.max() - ground_truth.min() + 1e-8) * 255).astype(np.uint8)
+        return float(ssim(pred_norm, gt_norm))
+
+    def compute_psnr(self, predicted: np.ndarray, ground_truth: np.ndarray) -> float:
+        mse = np.mean((predicted - ground_truth) ** 2)
+        if mse == 0:
+            return float('inf')
+        max_val = max(predicted.max(), ground_truth.max())
+        return float(20 * np.log10(max_val / np.sqrt(mse)))
+
+    def compute_morphological_metrics(self, binary_image: np.ndarray) -> Dict:
+        """Extract microstructure morphology metrics from binarized field."""
+        if not SKIMAGE_AVAILABLE:
+            return {"n_grains": 0, "avg_grain_size": 0, "grain_size_std": 0,
+                    "interface_density": 0, "phase_fraction": 0}
+        labeled = measure.label(binary_image, connectivity=2)
+        regions = measure.regionprops(labeled)
+        if not regions:
+            return {"n_grains": 0, "avg_grain_size": 0, "grain_size_std": 0,
+                    "interface_density": 0, "phase_fraction": 0}
+        areas = [r.area for r in regions]
+        perimeters = [r.perimeter for r in regions]
+        total_area = binary_image.size
+        phase_area = np.sum(binary_image)
+        return {
+            "n_grains": len(regions),
+            "avg_grain_size": float(np.mean(areas)),
+            "grain_size_std": float(np.std(areas)),
+            "median_grain_size": float(np.median(areas)),
+            "max_grain_size": float(np.max(areas)),
+            "interface_density": float(np.sum(perimeters) / total_area),
+            "phase_fraction": float(phase_area / total_area),
+            "grain_size_cv": float(np.std(areas) / np.mean(areas)) if np.mean(areas) > 0 else 0
+        }
+
+    def compare_fields(self, predicted_path: str, ground_truth_path: str,
+                       field_name: str = "concentration") -> Dict:
+        """Full comparison between predicted and ground-truth fields"""
+        pred = self.load_field_data(predicted_path)
+        gt = self.load_field_data(ground_truth_path)
+        if pred.shape != gt.shape:
+            if CV2_AVAILABLE:
+                pred = cv2.resize(pred, (gt.shape[1], gt.shape[0]))
+            else:
+                raise ImportError("opencv-python required for resizing")
+        result = {
+            "field_name": field_name,
+            "rmse": self.compute_rmse(pred, gt),
+            "mae": self.compute_mae(pred, gt),
+            "ssim": self.compute_ssim(pred, gt),
+            "psnr": self.compute_psnr(pred, gt),
+            "predicted_morphology": self.compute_morphological_metrics(pred > 0.5),
+            "ground_truth_morphology": self.compute_morphological_metrics(gt > 0.5),
+        }
+        pred_morph = result["predicted_morphology"]
+        gt_morph = result["ground_truth_morphology"]
+        result["morphology_error"] = {
+            "grain_count_error": abs(pred_morph["n_grains"] - gt_morph["n_grains"]) / max(gt_morph["n_grains"], 1),
+            "grain_size_error": abs(pred_morph["avg_grain_size"] - gt_morph["avg_grain_size"]) / max(gt_morph["avg_grain_size"], 1),
+            "phase_fraction_error": abs(pred_morph["phase_fraction"] - gt_morph["phase_fraction"])
+        }
+        self.comparison_history.append(result)
+        return result
+
+    def render_comparison_dashboard(self):
+        """Streamlit dashboard for field comparison"""
+        if not self.comparison_history:
+            st.info("No comparisons yet. Upload predicted and ground-truth fields.")
+            return
+        latest = self.comparison_history[-1]
+        st.subheader(f"📊 Field Comparison: {latest['field_name']}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("RMSE", f"{latest['rmse']:.4f}")
+        col2.metric("MAE", f"{latest['mae']:.4f}")
+        col3.metric("SSIM", f"{latest['ssim']:.3f}")
+        col4.metric("PSNR", f"{latest['psnr']:.2f} dB")
+
+        st.markdown("### 🔬 Morphological Metrics")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Predicted**")
+            pm = latest["predicted_morphology"]
+            st.write(f"Grains: {pm['n_grains']}")
+            st.write(f"Avg Size: {pm['avg_grain_size']:.1f} px²")
+            st.write(f"Phase Fraction: {pm['phase_fraction']:.3f}")
+        with col2:
+            st.markdown("**Ground Truth**")
+            gm = latest["ground_truth_morphology"]
+            st.write(f"Grains: {gm['n_grains']}")
+            st.write(f"Avg Size: {gm['avg_grain_size']:.1f} px²")
+            st.write(f"Phase Fraction: {gm['phase_fraction']:.3f}")
+
+        st.markdown("### ⚠️ Morphology Errors")
+        me = latest["morphology_error"]
+        st.progress(min(1.0, 1.0 - me["grain_count_error"]), text=f"Grain Count Accuracy: {max(0,(1-me['grain_count_error'])*100):.1f}%")
+        st.progress(min(1.0, 1.0 - me["grain_size_error"]), text=f"Grain Size Accuracy: {max(0,(1-me['grain_size_error'])*100):.1f}%")
+        st.progress(min(1.0, 1.0 - me["phase_fraction_error"]), text=f"Phase Fraction Accuracy: {max(0,(1-me['phase_fraction_error'])*100):.1f}%")
+
+
+# =============================================
+# EVALUATION: EQUATION CONSISTENCY CHECKER
+# =============================================
+
+class EquationConsistencyChecker:
+    """
+    Validates that mathematical expressions in LLM outputs
+    match standard forms from retrieved literature.
+    """
+    STANDARD_FORMS = {
+        "gibbs_energy": {
+            "patterns": [
+                r'G\s*=\s*H\s*-\s*T\s*S',
+                r'G\s*=\s*G_0\s*+\s*RT\s*ln\s*\(\s*a\s*\)',
+                r'G\s*=\s*A\s*+\s*B\s*T\s*+\s*C\s*T\s*ln\s*T',
+            ],
+            "variables": ["G", "H", "T", "S", "R", "a"],
+            "constraints": ["G must be convex in composition"]
+        },
+        "arrhenius_diffusion": {
+            "patterns": [
+                r'D\s*=\s*D_0\s*exp\s*\(\s*-\s*Q\s*/\s*\(\s*R\s*T\s*\)\s*\)',
+                r'D\s*=\s*D_0\s*e\^\{\s*-\s*Q\s*/\s*RT\s*\}',
+            ],
+            "variables": ["D", "D_0", "Q", "R", "T"],
+            "constraints": ["D > 0", "Q > 0"]
+        },
+        "fick_first": {
+            "patterns": [
+                r'J\s*=\s*-\s*D\s*\\nabla\s*c',
+                r'J\s*=\s*-\s*D\s*\(\s*dc/dx\s*\)',
+            ],
+            "variables": ["J", "D", "c", "x"],
+            "constraints": ["D > 0"]
+        }
+    }
+
+    def extract_equations(self, text: str) -> List[str]:
+        """Extract LaTeX/math equations from text"""
+        inline = re.findall(r'\$(.*?)\$', text)
+        display = re.findall(r'\$\$(.*?)\$\$', text, re.DOTALL)
+        eqn = re.findall(r'\\begin\{equation\}(.*?)\\end\{equation\}', text, re.DOTALL)
+        return inline + display + eqn
+
+    def check_equation_against_standard(self, equation: str, equation_type: str) -> Dict:
+        """Check if an equation matches known standard forms"""
+        if equation_type not in self.STANDARD_FORMS:
+            return {"match": False, "reason": "Unknown equation type"}
+        standard = self.STANDARD_FORMS[equation_type]
+        matches = any(re.search(p, equation, re.I) for p in standard["patterns"])
+        present_vars = [v for v in standard["variables"] if v in equation]
+        missing_vars = [v for v in standard["variables"] if v not in equation]
+        return {
+            "match": matches,
+            "structural_match": matches,
+            "variables_present": present_vars,
+            "variables_missing": missing_vars,
+            "completeness": len(present_vars) / len(standard["variables"]),
+            "type": equation_type
+        }
+
+    def validate_answer_equations(self, answer: str, expected_types: Optional[List[str]] = None) -> List[Dict]:
+        """Validate all equations in an LLM answer"""
+        equations = self.extract_equations(answer)
+        if not equations:
+            return [{"match": False, "reason": "No equations found"}]
+        results = []
+        for eq in equations:
+            eq_lower = eq.lower()
+            eq_type = None
+            if "gibbs" in eq_lower or "g =" in eq_lower:
+                eq_type = "gibbs_energy"
+            elif "diffusion" in eq_lower or ("d =" in eq_lower and "exp" in eq_lower):
+                eq_type = "arrhenius_diffusion"
+            elif "j =" in eq_lower and "dc" in eq_lower:
+                eq_type = "fick_first"
+            if eq_type and (expected_types is None or eq_type in expected_types):
+                result = self.check_equation_against_standard(eq, eq_type)
+                result["equation"] = eq[:100]
+                results.append(result)
+        return results
+
+
+# =============================================
+# EVALUATION: STRUCTURED DATA LOADER
+# =============================================
+
+class StructuredDataLoader:
+    """
+    Load and chunk structured simulation data (CSV, TDB snippets, VTK metadata)
+    for inclusion in the RAG knowledge base alongside PDFs.
+    """
+    def load_csv_dataset(self, file_path: str, description: str = "") -> List[Document]:
+        """Convert CSV data into descriptive text chunks"""
+        if not PANDAS_AVAILABLE:
+            st.error("pandas required for CSV loading")
+            return []
+        df = pd.read_csv(file_path)
+        documents = []
+        global_desc = f"Dataset: {os.path.basename(file_path)}. {description}. "
+        global_desc += f"Columns: {', '.join(df.columns)}. "
+        global_desc += f"Shape: {df.shape[0]} rows × {df.shape[1]} columns. "
+        global_desc += "Value ranges: "
+        for col in df.select_dtypes(include=[np.number]).columns[:5]:
+            global_desc += f"{col}=[{df[col].min():.3f}, {df[col].max():.3f}]; "
+        documents.append(Document(
+            page_content=global_desc,
+            metadata={"source": file_path, "type": "csv_global", "chunk_index": 0}
+        ))
+        desc = df.describe()
+        for col in df.select_dtypes(include=[np.number]).columns:
+            chunk_text = f"Column '{col}' statistics: "
+            chunk_text += f"mean={desc.loc['mean', col]:.4f}, "
+            chunk_text += f"std={desc.loc['std', col]:.4f}, "
+            chunk_text += f"min={desc.loc['min', col]:.4f}, "
+            chunk_text += f"max={desc.loc['max', col]:.4f}, "
+            chunk_text += f"median={df[col].median():.4f}. "
+            sample_vals = [f'{v:.4f}' for v in df[col].dropna().head(5)]
+            chunk_text += f"Sample values: {', '.join(sample_vals)}"
+            documents.append(Document(
+                page_content=chunk_text,
+                metadata={"source": file_path, "type": "csv_column", "column": col, "chunk_index": len(documents)}
+            ))
+        if len(df) <= 100:
+            for idx, row in df.iterrows():
+                row_text = f"Row {idx}: " + ", ".join([f"{k}={v}" for k, v in row.items() if pd.notna(v)])
+                documents.append(Document(
+                    page_content=row_text,
+                    metadata={"source": file_path, "type": "csv_row", "row_index": idx, "chunk_index": len(documents)}
+                ))
+        return documents
+
+    def load_tdb_thermodynamic_database(self, file_path: str) -> List[Document]:
+        """Parse TDB (Thermo-Calc DataBase) file into chunks"""
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        documents = []
+        phase_blocks = re.split(r'\n\s*PHASE\s+', content)
+        for block in phase_blocks[1:]:
+            lines = block.strip().split('\n')
+            phase_name = lines[0].split()[0] if lines else "UNKNOWN"
+            constituents = re.findall(r'CONSTITUENT\s+[^:]+:\s*([^!]+)', block)
+            chunk_text = f"Phase: {phase_name}. "
+            if constituents:
+                chunk_text += f"Constituents: {constituents[0].strip()}. "
+            gibbs_params = re.findall(r'PARAMETER\s+G\([^)]+\),\s*([^;]+)', block)
+            if gibbs_params:
+                chunk_text += f"Gibbs energy parameters: {len(gibbs_params)} defined. "
+                chunk_text += f"First parameter: {gibbs_params[0][:200]}... "
+            documents.append(Document(
+                page_content=chunk_text,
+                metadata={"source": file_path, "type": "tdb_phase", "phase": phase_name, "chunk_index": len(documents)}
+            ))
+        system_chunk = "Thermodynamic database overview: "
+        elements = re.findall(r'ELEMENT\s+(\w+)', content)
+        system_chunk += f"Elements: {', '.join(elements)}. "
+        system_chunk += f"Phases defined: {len(phase_blocks)-1}. "
+        documents.insert(0, Document(
+            page_content=system_chunk,
+            metadata={"source": file_path, "type": "tdb_system", "chunk_index": 0}
+        ))
+        return documents
+
 # =============================================
 # REASONING: SEMANTIC CHUNKING WITH STRUCTURE AWARENESS
 # =============================================
@@ -881,6 +1681,7 @@ def semantic_chunk_document(pages: List[Document], filename: str) -> List[Docume
 # SESSION STATE & UTILITIES
 # =============================================
 
+
 def initialize_session_state():
     defaults = {
         "processed_files": set(),
@@ -904,11 +1705,16 @@ def initialize_session_state():
         "reasoning_mode": True,
         "show_reasoning_chain": True,
         "cross_doc_consensus": True,
+        # New evaluation state
+        "app_mode": "Chat",
+        "retrieval_evaluator": None,
+        "faithfulness_checker": None,
+        "microstructure_comparator": None,
+        "equation_checker": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-
 
 def is_ollama_model(model_key: str) -> bool:
     return model_key.startswith("ollama:") or model_key.startswith("[Ollama]")
@@ -1099,12 +1905,21 @@ def extract_laser_metadata(text: str, filename: str) -> Dict[str, any]:
     return metadata
 
 
+
 def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document], CrossDocumentKnowledgeGraph]:
     all_chunks = []
     graph = CrossDocumentKnowledgeGraph()
+    structured_loader = StructuredDataLoader()
 
     for uploaded_file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf" if uploaded_file.name.endswith('.pdf') else ".txt") as tmp:
+        # Determine suffix and create temp file
+        suffix = ".pdf" if uploaded_file.name.endswith('.pdf') else ".txt"
+        if uploaded_file.name.endswith('.csv'):
+            suffix = ".csv"
+        elif uploaded_file.name.endswith('.tdb'):
+            suffix = ".tdb"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded_file.getbuffer())
             tmp_path = tmp.name
 
@@ -1118,6 +1933,17 @@ def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document]
             else:
                 if uploaded_file.name.endswith('.pdf'):
                     bib_meta = extract_metadata_from_pdf_file(tmp_path, uploaded_file.name)
+                elif uploaded_file.name.endswith('.tdb'):
+                    # TDB files: minimal metadata
+                    bib_meta = BibliographicMetadata(uploaded_file.name)
+                    bib_meta.title = f"Thermodynamic Database: {uploaded_file.name}"
+                    bib_meta.extraction_method = "tdb_parser"
+                    bib_meta.confidence = 0.6
+                elif uploaded_file.name.endswith('.csv'):
+                    bib_meta = BibliographicMetadata(uploaded_file.name)
+                    bib_meta.title = f"Simulation Dataset: {uploaded_file.name}"
+                    bib_meta.extraction_method = "csv_parser"
+                    bib_meta.confidence = 0.6
                 else:
                     with open(tmp_path, 'r', encoding='utf-8', errors='ignore') as f:
                         text_content = f.read()
@@ -1125,15 +1951,29 @@ def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document]
                 st.session_state.metadata_cache.set(uploaded_file.name, bib_meta, file_hash)
                 st.info(f"📚 Extracted metadata: {bib_meta.format_citation('apa')}")
 
+            # Load based on file type
             if uploaded_file.name.endswith('.pdf'):
                 loader = PyPDFLoader(tmp_path)
+                pages = loader.load()
+                chunks = semantic_chunk_document(pages, uploaded_file.name)
+            elif uploaded_file.name.endswith('.csv'):
+                chunks = structured_loader.load_csv_dataset(tmp_path, description="Simulation output data")
+                for i, chunk in enumerate(chunks):
+                    chunk.metadata["source"] = uploaded_file.name
+                    chunk.metadata["chunk_index"] = i
+                    chunk.metadata["total_chunks"] = len(chunks)
+            elif uploaded_file.name.endswith('.tdb'):
+                chunks = structured_loader.load_tdb_thermodynamic_database(tmp_path)
+                for i, chunk in enumerate(chunks):
+                    chunk.metadata["source"] = uploaded_file.name
+                    chunk.metadata["chunk_index"] = i
+                    chunk.metadata["total_chunks"] = len(chunks)
             else:
                 loader = TextLoader(tmp_path, encoding='utf-8')
+                pages = loader.load()
+                chunks = semantic_chunk_document(pages, uploaded_file.name)
 
-            pages = loader.load()
-
-            chunks = semantic_chunk_document(pages, uploaded_file.name)
-
+            # Enrich all chunks with metadata
             for chunk in chunks:
                 chunk.metadata.update({
                     **extract_laser_metadata(chunk.page_content, uploaded_file.name),
@@ -1142,7 +1982,6 @@ def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document]
                 })
 
             graph.add_document(uploaded_file.name, chunks, bib_meta)
-
             all_chunks.extend(chunks)
             st.info(f"✅ Loaded {len(chunks)} semantic chunks from `{uploaded_file.name}`")
 
@@ -1460,6 +2299,167 @@ def retrieve_and_answer(
 # STREAMLIT UI
 # =============================================
 
+
+
+# =============================================
+# EVALUATION DASHBOARD UI
+# =============================================
+
+def render_evaluation_dashboard():
+    """Full evaluation dashboard for DECLARMIMA RAG system"""
+    st.header("📊 RAG Evaluation Dashboard")
+    st.caption("Physics-aware quality assessment for laser-microstructure retrieval")
+
+    if not st.session_state.get('vectorstore'):
+        st.warning("Please upload and process documents first.")
+        return
+
+    # Initialize evaluators in session state
+    if "retrieval_evaluator" not in st.session_state:
+        st.session_state.retrieval_evaluator = RetrievalEvaluator(st.session_state.embeddings)
+    if "faithfulness_checker" not in st.session_state:
+        st.session_state.faithfulness_checker = PhysicsFaithfulnessChecker(st.session_state.embeddings)
+    if "microstructure_comparator" not in st.session_state:
+        st.session_state.microstructure_comparator = MicrostructureComparator()
+    if "equation_checker" not in st.session_state:
+        st.session_state.equation_checker = EquationConsistencyChecker()
+
+    evaluator = st.session_state.retrieval_evaluator
+    faithfulness_checker = st.session_state.faithfulness_checker
+    comparator = st.session_state.microstructure_comparator
+    eq_checker = st.session_state.equation_checker
+
+    tabs = st.tabs(["🔍 Retrieval Metrics", "🧮 Physics Validation", "🎯 Benchmark Suite", "🔬 Microstructure Compare", "📈 Trends"])
+
+    # Tab 1: Retrieval Quality
+    with tabs[0]:
+        st.subheader("Retrieval Quality Analysis")
+        test_query = st.text_input(
+            "Enter test query:",
+            "What is the Gibbs free energy for FCC Fe-Cr at 843K?",
+            key="eval_query"
+        )
+        k_eval = st.slider("Top-k to evaluate", 3, 15, 5, key="eval_k")
+        if st.button("Evaluate Retrieval", key="eval_retrieval"):
+            with st.spinner("Evaluating..."):
+                try:
+                    retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": k_eval})
+                    retrieved = retriever.invoke(test_query)
+                    metrics = evaluator.evaluate_query(test_query, retrieved, set(), {})
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Recall@5", f"{metrics.recall_at_k.get(5, 0):.2f}")
+                    col2.metric("Precision@5", f"{metrics.precision_at_k.get(5, 0):.2f}")
+                    col3.metric("MRR", f"{metrics.mrr:.3f}")
+                    col4.metric("Context Relevance", f"{metrics.context_relevance:.3f}")
+                    st.markdown("### Retrieved Chunks")
+                    for i, doc in enumerate(retrieved[:k_eval], 1):
+                        sim = evaluator.compute_context_relevance(test_query, [doc])
+                        st.markdown(f"**[{i}]** `{doc.metadata.get('source', 'unknown')}` (relevance: {sim:.3f})")
+                        st.caption(doc.page_content[:200] + "...")
+                except Exception as e:
+                    st.error(f"Evaluation failed: {e}")
+
+    # Tab 2: Physics Validation
+    with tabs[1]:
+        st.subheader("Physics-Aware Output Validation")
+        sample_answer = st.text_area(
+            "Paste LLM answer to validate:",
+            height=200,
+            key="sample_answer"
+        )
+        if st.button("Validate Physics", key="validate_physics") and sample_answer:
+            dummy_chunks = st.session_state.all_chunks[:3] if st.session_state.all_chunks else []
+            result = faithfulness_checker.full_check(sample_answer, dummy_chunks)
+            trust = result["overall_trust_score"]
+            st.progress(min(1.0, trust), text=f"Trust Score: {trust*100:.0f}%")
+            if result["is_physics_valid"]:
+                st.success("✅ No physical violations detected")
+            else:
+                st.error(f"❌ {result['total_violations']} violation(s) found")
+            faithfulness_checker.render_violation_report()
+
+        st.markdown("---")
+        st.subheader("Equation Consistency Check")
+        eq_answer = st.text_area(
+            "Paste text with equations to validate:",
+            height=150,
+            key="eq_answer"
+        )
+        eq_types = st.multiselect(
+            "Expected equation types:",
+            ["gibbs_energy", "arrhenius_diffusion", "fick_first"],
+            default=["gibbs_energy", "arrhenius_diffusion"]
+        )
+        if st.button("Check Equations", key="check_eq") and eq_answer:
+            eq_results = eq_checker.validate_answer_equations(eq_answer, eq_types)
+            for r in eq_results:
+                if r.get("match"):
+                    st.success(f"✅ **{r['type']}**: Structural match, completeness {r['completeness']*100:.0f}%")
+                else:
+                    st.warning(f"⚠️ **{r.get('type', 'unknown')}**: {r.get('reason', 'No match')}")
+                if 'variables_missing' in r and r['variables_missing']:
+                    st.caption(f"Missing variables: {', '.join(r['variables_missing'])}")
+
+    # Tab 3: Benchmark Suite
+    with tabs[2]:
+        st.subheader("DECLARMIMA Benchmark Suite")
+        st.write(f"Running {len(DECLARMIMA_BENCHMARK_QUERIES)} benchmark queries...")
+        k_bench = st.slider("Benchmark k", 3, 10, 5, key="bench_k")
+        if st.button("Run Full Benchmark", key="run_benchmark"):
+            with st.spinner("Running benchmark suite (this may take a while)..."):
+                try:
+                    benchmark_df = run_benchmark_evaluation(st.session_state.vectorstore, evaluator, k=k_bench)
+                    if PANDAS_AVAILABLE and hasattr(benchmark_df, 'to_dict'):
+                        st.dataframe(benchmark_df, use_container_width=True)
+                        if "category" in benchmark_df.columns:
+                            st.markdown("### Performance by Category")
+                            cat_perf = benchmark_df.groupby("category")[["recall@5", "precision@5", "mrr"]].mean()
+                            st.bar_chart(cat_perf)
+                    else:
+                        st.json(benchmark_df)
+                except Exception as e:
+                    st.error(f"Benchmark failed: {e}")
+
+    # Tab 4: Microstructure Comparison
+    with tabs[3]:
+        st.subheader("Microstructure Field Comparison")
+        st.info("Upload predicted and ground-truth fields (CSV, NPY, PNG, TIF) to compute SSIM, RMSE, and morphological metrics.")
+        col1, col2 = st.columns(2)
+        with col1:
+            pred_file = st.file_uploader("Predicted field", type=["csv", "npy", "png", "tif"], key="pred_field")
+        with col2:
+            gt_file = st.file_uploader("Ground truth field", type=["csv", "npy", "png", "tif"], key="gt_field")
+        field_name = st.text_input("Field name", "concentration", key="field_name")
+        if st.button("Compare Fields", key="compare_fields") and pred_file and gt_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix="."+pred_file.name.split('.')[-1]) as tmp_pred,                  tempfile.NamedTemporaryFile(delete=False, suffix="."+gt_file.name.split('.')[-1]) as tmp_gt:
+                tmp_pred.write(pred_file.getbuffer())
+                tmp_gt.write(gt_file.getbuffer())
+                pred_path = tmp_pred.name
+                gt_path = tmp_gt.name
+            try:
+                result = comparator.compare_fields(pred_path, gt_path, field_name)
+                comparator.render_comparison_dashboard()
+            except Exception as e:
+                st.error(f"Comparison failed: {e}")
+            finally:
+                os.remove(pred_path)
+                os.remove(gt_path)
+
+    # Tab 5: Trends
+    with tabs[4]:
+        st.subheader("Performance Trends")
+        if evaluator.query_history:
+            trend_df = evaluator.get_aggregate_report()
+            if trend_df is not None:
+                st.dataframe(trend_df, use_container_width=True)
+                numeric_cols = [c for c in trend_df.columns if c not in ["query"]]
+                if numeric_cols:
+                    st.line_chart(trend_df.set_index("query")[numeric_cols])
+            else:
+                st.info("No trend data available.")
+        else:
+            st.info("Run evaluations to see trends.")
+
 def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
@@ -1568,15 +2568,15 @@ def render_sidebar():
             st.info("ℹ️ Crossref: Optional for metadata enrichment")
 
 
+
 def render_document_uploader():
     st.markdown("### 📁 Upload Laser Microstructure Documents")
     uploaded_files = st.file_uploader(
-        "Select PDF or TXT files about laser processing, ablation, microstructuring, additive manufacturing, etc.",
-        type=["pdf", "txt"], accept_multiple_files=True,
-        help="Documents will be processed with semantic section detection and cross-document entity linking."
+        "Select PDF, TXT, CSV (simulation data), or TDB (thermodynamic database) files.",
+        type=["pdf", "txt", "csv", "tdb"], accept_multiple_files=True,
+        help="Documents will be processed with semantic section detection and cross-document entity linking. CSV/TDB files are parsed as structured simulation/thermodynamic data."
     )
     return uploaded_files
-
 
 def process_documents(uploaded_files):
     if not uploaded_files:
@@ -1629,6 +2629,7 @@ def process_documents(uploaded_files):
             return False
 
 
+
 def render_chat_interface():
     if not st.session_state.get('vectorstore'):
         st.info("👆 Upload documents above to start chatting with cross-document reasoning")
@@ -1658,6 +2659,10 @@ def render_chat_interface():
     if not has_model:
         st.warning("Please select and load a model in the sidebar first")
         return
+
+    # Initialize faithfulness checker if not present
+    if st.session_state.get("faithfulness_checker") is None:
+        st.session_state.faithfulness_checker = PhysicsFaithfulnessChecker(st.session_state.embeddings)
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -1691,6 +2696,24 @@ def render_chat_interface():
                     if meta.get('relevance'):
                         st.markdown(f"**Response relevance:** {meta['relevance']:.2f}/1.0")
 
+            # NEW: Show faithfulness/trust score for assistant messages
+            if message.get("faithfulness_result") and message["role"] == "assistant":
+                fr = message["faithfulness_result"]
+                with st.expander("🔐 Physics Validation & Trust Score"):
+                    trust = fr.get("overall_trust_score", 0)
+                    st.progress(min(1.0, trust), text=f"Trust Score: {trust*100:.0f}%")
+                    st.markdown(f"**Faithful to context:** {'✅ Yes' if fr['faithfulness']['is_faithful'] else '⚠️ Caution'}")
+                    st.markdown(f"**Physics valid:** {'✅ Yes' if fr['is_physics_valid'] else '❌ Violations detected'}")
+                    st.markdown(f"**Numerical claims:** {fr['numerical_claims']}")
+                    if fr['physical_violations']:
+                        st.markdown("**Physical violations:**")
+                        for v in fr['physical_violations']:
+                            st.error(f"- {v['parameter']} = {v['value']} (bounds: {v['bounds']['min']}-{v['bounds']['max']})")
+                    if fr['thermodynamic_violations']:
+                        st.markdown("**Thermodynamic violations:**")
+                        for v in fr['thermodynamic_violations']:
+                            st.error(f"- {v['rule']}")
+
     if prompt := st.chat_input("Ask about laser parameters, ablation thresholds, LIPSS formation, SLM process, HEAs, etc."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -1712,8 +2735,11 @@ def render_chat_interface():
                         query=prompt,
                         k=st.session_state.max_retrieved_chunks
                     )
-
                     reasoning_meta["relevance"] = relevance
+
+                    # NEW: Run physics faithfulness check
+                    faithfulness_result = st.session_state.faithfulness_checker.full_check(answer, retrieved_docs)
+                    reasoning_meta["faithfulness"] = faithfulness_result
 
                     display_text = ""
                     for word in answer.split():
@@ -1727,14 +2753,14 @@ def render_chat_interface():
                         "content": answer,
                         "sources": retrieved_docs if st.session_state.show_sources else None,
                         "relevance": relevance,
-                        "reasoning_meta": reasoning_meta
+                        "reasoning_meta": reasoning_meta,
+                        "faithfulness_result": faithfulness_result
                     })
 
                 except Exception as e:
                     error_msg = f"❌ Error: {str(e)[:300]}"
                     st.error(error_msg)
                     st.session_state.messages.append({"role": "assistant", "content": error_msg})
-
 
 def render_footer():
     st.markdown("---")
@@ -1759,9 +2785,10 @@ def render_footer():
         st.caption("• Uncertainty is explicitly reported, never hidden")
 
 
+
 def main():
     st.set_page_config(
-        page_title="🔬 DECLARMIMA RAG + Cross-Doc Reasoning",
+        page_title="🔬 DECLARMIMA RAG + Cross-Doc Reasoning + Physics Evaluation",
         page_icon="🔬",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -1812,22 +2839,34 @@ def main():
         font-size: 0.85rem;
         margin: 0.1rem 0.2rem 0.1rem 0;
     }
+    .trust-high { color: #059669; font-weight: bold; }
+    .trust-medium { color: #d97706; font-weight: bold; }
+    .trust-low { color: #dc2626; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown('<h1 class="main-header">🔬 DECLARMIMA RAG + Cross-Doc Reasoning</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔬 DECLARMIMA RAG + Cross-Doc Reasoning + Physics Evaluation</h1>', unsafe_allow_html=True)
     st.markdown("""
     <div style="text-align:center;color:#64748b;margin-bottom:1.5rem">
-    Upload research papers and get <strong>scientifically rigorous answers</strong> with 
-    <span class="consensus-badge">cross-document consensus</span>, 
-    <span class="contradiction-badge">contradiction detection</span>, and 
-    <span class="reasoning-badge">multi-hop reasoning</span>.
+    Upload research papers and get <strong>scientifically rigorous answers</strong> with
+    <span class="consensus-badge">cross-document consensus</span>,
+    <span class="contradiction-badge">contradiction detection</span>,
+    <span class="reasoning-badge">multi-hop reasoning</span>, and
+    <span class="reasoning-badge">physics-aware validation</span>.
     <br><em>Specialized for Additive Manufacturing, SLM/LPBF, High Entropy Alloys, and Laser-Microstructure Interaction.</em>
     </div>
     """, unsafe_allow_html=True)
 
     initialize_session_state()
     render_sidebar()
+
+    # NEW: App mode selector
+    st.session_state.app_mode = st.radio(
+        "Select Mode:",
+        ["💬 Chat", "📊 Evaluation Dashboard"],
+        horizontal=True,
+        index=0 if st.session_state.app_mode == "Chat" else 1
+    )
 
     if st.session_state.llm_model_choice and not is_ollama_model(st.session_state.llm_model_choice):
         mem_info = estimate_model_memory(st.session_state.llm_model_choice, st.session_state.get('use_4bit_quantization', True))
@@ -1842,6 +2881,13 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
+    if st.session_state.app_mode == "📊 Evaluation Dashboard":
+        # Evaluation mode: show dashboard
+        render_evaluation_dashboard()
+        render_footer()
+        return
+
+    # Chat mode: original layout
     col1, col2 = st.columns([1, 2])
 
     with col1:
@@ -1862,7 +2908,7 @@ def main():
         elif uploaded_files:
             st.warning("⏳ Click 'Process Documents' to begin")
         else:
-            st.info("📁 Upload PDF/TXT files to start")
+            st.info("📁 Upload PDF/TXT/CSV/TDB files to start")
 
         if st.session_state.processed_files:
             if st.button("🗑️ Clear All", use_container_width=True):
@@ -1885,13 +2931,15 @@ def main():
             <li><strong>Contradiction Flagging:</strong> Highlights when papers disagree significantly</li>
             <li><strong>Multi-Hop Retrieval:</strong> Follows entity links to find related evidence</li>
             <li><strong>Uncertainty Calibration:</strong> Explicit confidence levels in every answer</li>
+            <li><strong>Physics Validation:</strong> Checks numerical bounds, thermodynamic consistency, equation correctness</li>
+            <li><strong>Faithfulness Scoring:</strong> Detects hallucinated values not present in retrieved context</li>
             </ul>
             <p><strong>Getting started:</strong></p>
             <ol>
-            <li>Upload 2+ PDF/TXT papers on the same topic</li>
+            <li>Upload 2+ PDF/TXT/CSV/TDB files on the same topic</li>
             <li>Enable "Cross-document reasoning" in sidebar</li>
             <li>Ask comparative or synthesizing questions</li>
-            <li>Expand "🧠 Reasoning Chain" to see the logical steps</li>
+            <li>Expand "🧠 Reasoning Chain" and "🔐 Physics Validation" for transparency</li>
             </ol>
             </div>
             """, unsafe_allow_html=True)
@@ -1914,7 +2962,5 @@ def main():
         st.session_state.messages.append({"role": "user", "content": st.session_state.demo_question})
         del st.session_state.demo_question
         st.rerun()
-
-
 if __name__ == "__main__":
     main()

@@ -2628,8 +2628,8 @@ class ChatDrivenVisualization:
                 docs = data['document_count'].sum()
                 lines.append(f"**Documents Covered:** {docs}")
 
-        return "
-".join(lines)
+        return "\n".join(lines)
+
 
     def get_suggested_queries(self) -> List[str]:
         """Return suggested visualization queries."""

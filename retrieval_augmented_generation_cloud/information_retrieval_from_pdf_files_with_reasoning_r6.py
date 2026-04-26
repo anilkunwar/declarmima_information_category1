@@ -3,12 +3,14 @@
 """
 LASER MICROSTRUCTURE RAG CHATBOT - CROSS-DOCUMENT SCIENTIFIC REASONING VERSION
 ========================================================================================
+DECLARMIMA-ENHANCED: Physics-informed digital twin for laser-multicomponent alloy interaction
 ✅ Zero API keys required - all models run locally
 ✅ Cross-document reasoning: consensus, contradiction, and gap detection
 ✅ Scientific entity extraction and alignment across papers
 ✅ Multi-hop retrieval via knowledge graph traversal
 ✅ Uncertainty-calibrated responses with structured provenance
 ✅ Enhanced citations with bibliographic metadata
+✅ DOMAIN: Additive Manufacturing, SLM/LPBF, HEAs, Sn/Al-based multicomponent alloys
 """
 import streamlit as st
 import os
@@ -105,18 +107,30 @@ LASER_DOMAIN_CONFIG = {
     "score_threshold": 0.25,
     "max_context_tokens": 2048,
     "max_new_tokens": 512,
-    "temperature": 0.05,  # Lower for scientific accuracy
+    "temperature": 0.05,
 }
 
+# DECLARMIMA-ENHANCED: Expanded laser keywords for AM/SLM/HEA domain
 LASER_KEYWORDS = {
     "ablation": ["ablation", "material removal", "threshold fluence", "laser ablation", "ablation threshold"],
     "plasma": ["plasma formation", "ionization", "electron density", "plume", "plasma shielding"],
-    "thermal": ["heat affected zone", "melting", "thermal diffusion", "resolidification", "heat-affected zone"],
+    "thermal": ["heat affected zone", "melting", "thermal diffusion", "resolidification", "heat-affected zone", "cooling rate"],
     "ultrafast": ["femtosecond", "picosecond", "pulse duration", "ultrafast laser", "fs laser"],
     "morphology": ["ripples", "LIPSS", "surface structuring", "periodic structures", "nanostructures", "microstructures"],
     "parameters": ["fluence", "wavelength", "pulse energy", "repetition rate", "spot size", "scan speed", "overlap"],
     "materials": ["silicon", "steel", "titanium", "polymer", "glass", "ceramic", "aluminum", "copper", "tungsten"],
     "characterization": ["SEM", "AFM", "profilometry", "spectroscopy", "microscopy", "Raman", "XRD", "EDX"],
+    # DECLARMIMA additions
+    "additive_manufacturing": ["additive manufacturing", "3d printing", "selective laser melting", "slm", "laser powder bed fusion", "lpbf", "wire-feed laser additive manufacturing", "wflam", "direct energy deposition"],
+    "melt_pool": ["melt pool", "meltpool", "molten pool", "melt track", "melt-track", "keyhole", "vapor channel", "melt pool geometry", "melt pool dynamics"],
+    "defects": ["porosity", "pore", "spatter", "spatter ejection", "defect", "crack", "lack of fusion", "depression", "denuded zone", "balling"],
+    "high_entropy_alloys": ["high entropy alloy", "hea", "multi-principal component alloy", "mpea", "multi-principal element alloy", "multi-component alloy"],
+    "intermetallic": ["intermetallic", "imc", "intermetallic compound", "cu6sn5", "interfacial intermetallic"],
+    "marangoni": ["marangoni", "marangoni convection", "thermocapillary", "surface tension driven flow"],
+    "powder": ["powder", "powdered alloy", "particle size", "powder size", "d50", "d10", "d90", "packing density", "flowability", "powder layer", "powder bed"],
+    "solidification": ["solidification", "grain growth", "grain boundary", "microstructure evolution", "phase evolution", "dendrite", "epitaxial growth"],
+    "residual_stress": ["residual stress", "thermal stress", "stress distribution", "distortion", "warpage"],
+    "digital_twin": ["digital twin", "physics-informed", "physics informed", "machine learning", "data-driven", "computational model"],
 }
 
 MODEL_MEMORY_ESTIMATES = {
@@ -139,7 +153,7 @@ MODEL_MEMORY_ESTIMATES = {
 # REASONING: SCIENTIFIC ENTITY & CLAIM PATTERNS
 # =============================================
 
-# Quantitative patterns for scientific findings
+# DECLARMIMA-ENHANCED: Quantitative patterns for AM/SLM scientific findings
 QUANTITY_PATTERNS = {
     "wavelength": re.compile(r'(\d+(?:\.\d+)?)\s*(?:nm|nanometers?)\s*(?:wavelength|λ|lambda)', re.I),
     "pulse_duration": re.compile(r'(\d+(?:\.\d+)?)\s*(?:fs|femtoseconds?|ps|picoseconds?|ns|nanoseconds?)\s*(?:pulse|duration)', re.I),
@@ -151,9 +165,17 @@ QUANTITY_PATTERNS = {
     "threshold": re.compile(r'(?:threshold|ablation\s*threshold)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2|mJ/cm²|GW/cm²|TW/cm²)', re.I),
     "power": re.compile(r'(\d+(?:\.\d+)?)\s*(?:W|mW|kW|MW)\s*(?:power|average\s*power)', re.I),
     "pulse_energy": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µJ|uJ|mJ|nJ)\s*(?:pulse\s*energy|energy\s*per\s*pulse)', re.I),
+    # DECLARMIMA AM-specific parameters
+    "scan_speed": re.compile(r'(\d+(?:\.\d+)?)\s*(?:mm/s|mm/min|m/s)\s*(?:scan\s*speed|scanning\s*speed|speed)', re.I),
+    "hatch_distance": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:hatch\s*distance|hatch\s*spacing)', re.I),
+    "layer_thickness": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:layer\s*thickness|layer\s*height)', re.I),
+    "bed_temperature": re.compile(r'(\d+(?:\.\d+)?)\s*(?:°?C|K)\s*(?:bed\s*temperature|preheat|substrate\s*temperature|build\s*plate)', re.I),
+    "laser_power": re.compile(r'(\d+(?:\.\d+)?)\s*(?:W|kW|mW)\s*(?:laser\s*power|power)', re.I),
+    "absorptivity": re.compile(r'(\d+(?:\.\d+)?)\s*(?:absorptivity|absorptance|absorption)', re.I),
+    "powder_size": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:powder\s*size|particle\s*size|d50|d10|d90)', re.I),
 }
 
-# Material normalizations
+# DECLARMIMA-ENHANCED: Material normalizations including AM alloys
 MATERIAL_ALIASES = {
     "silicon": ["silicon", "si", "crystalline silicon", "c-si", "si(100)", "si(111)"],
     "titanium": ["titanium", "ti", "cp-ti", "ti-6al-4v", "ti6al4v"],
@@ -164,9 +186,16 @@ MATERIAL_ALIASES = {
     "glass": ["glass", "fused silica", "sio2", "borosilicate"],
     "polymer": ["polymer", "pmma", "polyimide", "pei", "pc", "polycarbonate", "ptfe"],
     "ceramic": ["ceramic", "alumina", "al2o3", "zirconia", "zro2"],
+    # DECLARMIMA additions
+    "ti6al4v": ["ti6al4v", "ti-6al-4v", "ti 6al 4v", "titanium alloy"],
+    "inconel_718": ["inconel 718", "inconel-718", "nickel superalloy"],
+    "invar_36": ["invar 36", "invar-36"],
+    "sac": ["sac", "sn-ag-cu", "sn-ag-cu-x", "sn-3.5ag-0.5cu", "sac305", "sn-ag-cu-bi", "sn-ag-cu-zn", "sn-ag-cu-ni"],
+    "alcrfeni": ["al-cr-fe-ni", "alcrfeni", "al-ni-cr", "al-ni-fe-cr", "al-ni", "al-ni-cu"],
+    "hea": ["high entropy alloy", "hea", "co-cr-fe-mn-ni", "al-co-cr-fe-ni"],
 }
 
-# Method normalizations
+# DECLARMIMA-ENHANCED: Method normalizations including AM characterization
 METHOD_ALIASES = {
     "sem": ["sem", "scanning electron microscopy", "scanning electron microscope"],
     "afm": ["afm", "atomic force microscopy", "atomic force microscope"],
@@ -174,10 +203,17 @@ METHOD_ALIASES = {
     "raman": ["raman", "raman spectroscopy", "micro-raman"],
     "xrd": ["xrd", "x-ray diffraction"],
     "edx": ["edx", "eds", "energy dispersive x-ray", "energy-dispersive"],
+    # DECLARMIMA additions
+    "x_ray_imaging": ["x-ray imaging", "x-ray radiography", "x-ray radiographic", "synchrotron x-ray", "computed tomography", "ct scan", "tomography"],
+    "high_speed_camera": ["high speed camera", "high-speed camera", "photron", "fastcam", "in-situ imaging"],
+    "phase_field": ["phase field", "phase-field", "pfm", "phase field model", "phase-field model", "phase field simulation"],
+    "molecular_dynamics": ["molecular dynamics", "md simulation", "lammps", "ase", "atomic simulation"],
+    "finite_element": ["finite element", "fem", "finite element method", "moose framework", "multiphysics simulation", "finite element analysis"],
+    "calphad": ["calphad", "thermocalc", "thermodynamic database", "tcni8", "tchea2", "mobni5", "mobhea2"],
 }
 
 # =============================================
-# BIBLIOGRAPHIC METADATA (unchanged from r5)
+# BIBLIOGRAPHIC METADATA
 # =============================================
 
 class BibliographicMetadata:
@@ -297,18 +333,18 @@ class BibliographicMetadata:
 def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMetadata:
     meta = BibliographicMetadata(filename)
     text_sample = text[:10000]
-    
+
     doi_match = BibliographicMetadata.DOI_PATTERN.search(text_sample)
     if doi_match:
         meta.doi = doi_match.group(1).lower()
         meta.confidence = max(meta.confidence, 0.9)
         meta.extraction_method = "regex_doi"
-    
+
     arxiv_match = BibliographicMetadata.ARXIV_PATTERN.search(text_sample)
     if arxiv_match:
         meta.arxiv_id = arxiv_match.group(1)
         meta.confidence = max(meta.confidence, 0.85)
-    
+
     year_matches = BibliographicMetadata.YEAR_PATTERN.findall(text_sample)
     for year_str in year_matches:
         year = int(year_str)
@@ -319,7 +355,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
                 meta.year = year
                 meta.confidence = max(meta.confidence, 0.7)
                 break
-    
+
     for pattern in BibliographicMetadata.JOURNAL_PATTERNS:
         journal_match = pattern.search(text_sample)
         if journal_match:
@@ -328,14 +364,14 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
                 meta.journal = journal
                 meta.confidence = max(meta.confidence, 0.6)
                 break
-    
+
     vol_match = BibliographicMetadata.VOLUME_PATTERN.search(text_sample)
     if vol_match:
         meta.volume = vol_match.group(1)
     iss_match = BibliographicMetadata.ISSUE_PATTERN.search(text_sample)
     if iss_match:
         meta.issue = iss_match.group(1)
-    
+
     author_section = text_sample[:2000]
     author_matches = BibliographicMetadata.AUTHOR_PATTERN.findall(author_section)
     if author_matches:
@@ -350,7 +386,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
             meta.authors = [raw_authors.strip()]
         if meta.authors:
             meta.confidence = max(meta.confidence, 0.5)
-    
+
     title_patterns = [
         re.compile(r'(?:^|\n)([A-Z][^.\n]{20,150}(?:\.[^A-Z]|$))'),
         re.compile(r'(?:title:?\s*)([A-Z][^.\n]{20,200}?)\.?(?:\n|$)', re.I),
@@ -363,13 +399,13 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
                 meta.title = title
                 meta.confidence = max(meta.confidence, 0.55)
                 break
-    
+
     return meta
 
 
 def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> BibliographicMetadata:
     meta = BibliographicMetadata(filename)
-    
+
     if PYPDF2_AVAILABLE:
         try:
             reader = PdfReader(pdf_path)
@@ -391,13 +427,13 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
                 meta.extraction_method = "pdf_metadata"
         except Exception as e:
             st.warning(f"Could not read PDF metadata: {e}")
-    
+
     try:
         loader = PyPDFLoader(pdf_path)
         pages = loader.load()
         text_sample = "\n".join([p.page_content for p in pages[:3]])
         text_meta = extract_metadata_from_pdf_text(text_sample, filename)
-        
+
         for field in ['doi', 'arxiv_id', 'title', 'journal', 'year', 'volume', 'issue']:
             text_val = getattr(text_meta, field)
             current_val = getattr(meta, field)
@@ -410,7 +446,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
             meta.extraction_method = text_meta.extraction_method
     except Exception as e:
         st.warning(f"Text extraction for metadata failed: {e}")
-    
+
     if PDF2DOI_AVAILABLE and not meta.doi:
         try:
             result = pdf2doi.pdf2doi(pdf_path)
@@ -433,7 +469,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
                             pass
         except Exception as e:
             st.warning(f"pdf2doi lookup failed: {e}")
-    
+
     if CROSSREF_AVAILABLE and meta.doi and not meta.journal:
         try:
             cr = CrossrefAPI()
@@ -452,7 +488,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
                 meta.extraction_method = "crossref_api"
         except Exception as e:
             st.warning(f"Crossref API lookup failed: {e}")
-    
+
     return meta
 
 
@@ -464,18 +500,18 @@ class MetadataCache:
     def __init__(self):
         self._cache: Dict[str, BibliographicMetadata] = {}
         self._file_hashes: Dict[str, str] = {}
-    
+
     def get(self, filename: str, file_hash: str = None) -> Optional[BibliographicMetadata]:
         if filename in self._cache:
             if file_hash is None or self._file_hashes.get(filename) == file_hash:
                 return self._cache[filename]
         return None
-    
+
     def set(self, filename: str, metadata: BibliographicMetadata, file_hash: str = None):
         self._cache[filename] = metadata
         if file_hash:
             self._file_hashes[filename] = file_hash
-    
+
     def clear(self):
         self._cache.clear()
         self._file_hashes.clear()
@@ -497,11 +533,10 @@ def compute_file_hash(filepath: str) -> str:
 # =============================================
 
 class ScientificEntity:
-    """Represents an extracted scientific entity with provenance."""
     def __init__(self, text: str, label: str, value: Optional[float], unit: Optional[str],
                  doc_source: str, chunk_id: int, context: str, confidence: float = 1.0):
         self.text = text
-        self.label = label  # MATERIAL, PARAMETER, METHOD, FINDING, etc.
+        self.label = label
         self.value = value
         self.unit = unit
         self.doc_source = doc_source
@@ -509,22 +544,18 @@ class ScientificEntity:
         self.context = context
         self.confidence = confidence
         self.normalized = self._normalize()
-    
+
     def _normalize(self) -> str:
-        """Normalize entity text for cross-document matching."""
         text = self.text.lower().strip()
-        # Normalize materials
         for canonical, aliases in MATERIAL_ALIASES.items():
             if any(alias in text for alias in aliases):
                 return canonical
-        # Normalize methods
         for canonical, aliases in METHOD_ALIASES.items():
             if any(alias in text for alias in aliases):
                 return canonical
-        # Normalize parameters by removing spaces
         text = re.sub(r'\s+', '', text)
         return text
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "text": self.text, "label": self.label, "value": self.value, "unit": self.unit,
@@ -534,19 +565,18 @@ class ScientificEntity:
 
 
 class ScientificClaim:
-    """A scientific claim with supporting evidence and cross-document links."""
     def __init__(self, claim_text: str, subject: str, predicate: str, object_val: str,
                  doc_source: str, chunk_id: int, confidence: float):
         self.claim_text = claim_text
-        self.subject = subject  # e.g., "silicon"
-        self.predicate = predicate  # e.g., "has_ablation_threshold"
-        self.object_val = object_val  # e.g., "1.2 J/cm2"
+        self.subject = subject
+        self.predicate = predicate
+        self.object_val = object_val
         self.doc_source = doc_source
         self.chunk_id = chunk_id
         self.confidence = confidence
-        self.supporting: List[Tuple[str, int]] = []  # (doc, chunk_id) that support
-        self.contradicting: List[Tuple[str, int]] = []  # (doc, chunk_id) that contradict
-    
+        self.supporting: List[Tuple[str, int]] = []
+        self.contradicting: List[Tuple[str, int]] = []
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "claim": self.claim_text, "subject": self.subject, "predicate": self.predicate,
@@ -556,42 +586,35 @@ class ScientificClaim:
 
 
 class CrossDocumentKnowledgeGraph:
-    """
-    REASONING CORE: Builds a knowledge graph across documents to enable
-    consensus detection, contradiction finding, and multi-hop retrieval.
-    """
     def __init__(self):
         self.entities: Dict[str, List[ScientificEntity]] = defaultdict(list)
         self.claims: List[ScientificClaim] = []
         self.documents: Dict[str, Dict[str, Any]] = {}
-        self.entity_index: Dict[str, Set[str]] = defaultdict(set)  # normalized -> doc names
-    
+        self.entity_index: Dict[str, Set[str]] = defaultdict(set)
+
     def add_document(self, doc_id: str, chunks: List[Document], bib_meta: BibliographicMetadata):
-        """Process all chunks from a document and extract entities/claims."""
         self.documents[doc_id] = {
             "bib_meta": bib_meta.to_dict(),
             "chunk_count": len(chunks),
             "topics": set()
         }
-        
+
         for i, chunk in enumerate(chunks):
             entities = self._extract_entities_from_chunk(chunk, i)
             for ent in entities:
                 self.entities[ent.normalized].append(ent)
                 self.entity_index[ent.normalized].add(doc_id)
                 self.documents[doc_id]["topics"].add(ent.label)
-            
+
             claims = self._extract_claims_from_chunk(chunk, i)
             for claim in claims:
                 self.claims.append(claim)
-    
+
     def _extract_entities_from_chunk(self, chunk: Document, chunk_id: int) -> List[ScientificEntity]:
-        """Extract scientific entities from a text chunk."""
         text = chunk.page_content
         doc = chunk.metadata.get("source", "unknown")
         entities = []
-        
-        # Extract quantitative parameters
+
         for param_name, pattern in QUANTITY_PATTERNS.items():
             for match in pattern.finditer(text):
                 val_str = match.group(1)
@@ -599,22 +622,20 @@ class CrossDocumentKnowledgeGraph:
                     val = float(val_str)
                 except:
                     val = None
-                unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ)', match.group(0), re.I)
+                unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ|mm/s|mm/min|°?C|K)', match.group(0), re.I)
                 unit = unit_match.group(1) if unit_match else None
-                
-                # Get context window
+
                 start = max(0, match.start() - 100)
                 end = min(len(text), match.end() + 100)
                 context = text[start:end].replace('\n', ' ')
-                
+
                 ent = ScientificEntity(
                     text=match.group(0), label=param_name, value=val, unit=unit,
                     doc_source=doc, chunk_id=chunk_id, context=context,
                     confidence=0.85
                 )
                 entities.append(ent)
-        
-        # Extract materials
+
         text_lower = text.lower()
         for canonical, aliases in MATERIAL_ALIASES.items():
             for alias in aliases:
@@ -628,8 +649,7 @@ class CrossDocumentKnowledgeGraph:
                         confidence=0.9
                     )
                     entities.append(ent)
-        
-        # Extract methods
+
         for canonical, aliases in METHOD_ALIASES.items():
             for alias in aliases:
                 for match in re.finditer(r'\b' + re.escape(alias) + r'\b', text_lower):
@@ -642,23 +662,25 @@ class CrossDocumentKnowledgeGraph:
                         confidence=0.9
                     )
                     entities.append(ent)
-        
+
         return entities
-    
+
     def _extract_claims_from_chunk(self, chunk: Document, chunk_id: int) -> List[ScientificClaim]:
-        """Extract subject-predicate-object claims from text."""
         text = chunk.page_content
         doc = chunk.metadata.get("source", "unknown")
         claims = []
-        
-        # Pattern: "Material + verb + value/unit" or "Parameter + of + material + is + value"
+
         claim_patterns = [
             (r'(?:ablation\s*threshold|threshold\s*fluence)\s*(?:of|for)\s+([a-z\s]+?)\s+(?:is|was|were|are|≈|~|about)\s+(\d+\.?\d*\s*[A-Za-z/²]+)', 'has_ablation_threshold'),
             (r'([a-z\s]+?)\s+(?:exhibits|shows|displays|forms|produces)\s+([a-z\s]+?(?:ripples|LIPSS|structures|morphology))', 'exhibits_morphology'),
             (r'(?:periodicity|period|spacing)\s*(?:of|for)\s+([a-z\s]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:nm|µm|um))', 'has_periodicity'),
             (r'(?:roughness|Ra)\s*(?:of|for)\s+([a-z\s]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:nm|µm|um))', 'has_roughness'),
+            # DECLARMIMA-specific claim patterns
+            (r'(?:melt\s*pool\s*(?:depth|width|length))\s*(?:of|for)\s+([a-z\s]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:µm|um|mm|nm))', 'has_melt_pool_dimension'),
+            (r'(?:porosity|pore\s*(?:fraction|density))\s*(?:of|for|in)\s+([a-z\s]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:%|pct|percent|vol\.?%))', 'has_porosity'),
+            (r'(?:scan\s*speed|scanning\s*speed)\s*(?:of|for)\s+([a-z\s]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:mm/s|mm/min))', 'has_scan_speed'),
         ]
-        
+
         for pattern, predicate in claim_patterns:
             for match in re.finditer(pattern, text, re.I):
                 subject = match.group(1).strip()
@@ -666,38 +688,32 @@ class CrossDocumentKnowledgeGraph:
                 start = max(0, match.start() - 120)
                 end = min(len(text), match.end() + 120)
                 context = text[start:end]
-                
+
                 claim = ScientificClaim(
                     claim_text=context, subject=subject, predicate=predicate,
                     object_val=obj, doc_source=doc, chunk_id=chunk_id,
                     confidence=0.7
                 )
                 claims.append(claim)
-        
+
         return claims
-    
+
     def find_consensus(self, entity_normalized: str) -> Optional[Dict[str, Any]]:
-        """
-        Find consensus across documents for a given entity.
-        Returns statistical consensus if multiple docs report values.
-        """
         ents = self.entities.get(entity_normalized, [])
         if len(ents) < 2:
             return None
-        
-        # Group by document
+
         by_doc = defaultdict(list)
         for e in ents:
             by_doc[e.doc_source].append(e)
-        
-        # Only consider if multiple documents
+
         if len(by_doc) < 2:
             return None
-        
+
         values = [e.value for e in ents if e.value is not None]
         if not values:
             return None
-        
+
         return {
             "entity": entity_normalized,
             "doc_count": len(by_doc),
@@ -709,15 +725,14 @@ class CrossDocumentKnowledgeGraph:
             "unit": ents[0].unit,
             "sources": list(by_doc.keys())
         }
-    
+
     def find_contradictions(self, entity_normalized: str, threshold_factor: float = 2.0) -> List[Dict[str, Any]]:
-        """Find contradictions where values differ significantly across docs."""
         ents = self.entities.get(entity_normalized, [])
         by_doc = defaultdict(list)
         for e in ents:
             if e.value is not None:
                 by_doc[e.doc_source].append(e.value)
-        
+
         contradictions = []
         docs = list(by_doc.keys())
         for i in range(len(docs)):
@@ -736,53 +751,46 @@ class CrossDocumentKnowledgeGraph:
                             "severity": "high" if ratio > 5 else "moderate"
                         })
         return contradictions
-    
+
     def get_related_chunks(self, query_entities: List[str], chunks: List[Document], 
                           depth: int = 2) -> List[Tuple[Document, float, str]]:
-        """
-        Multi-hop retrieval: start with query entities, find connected docs,
-        then retrieve their most relevant chunks.
-        Returns list of (chunk, relevance_score, reason).
-        """
         related_docs = set()
         for ent_norm in query_entities:
             related_docs.update(self.entity_index.get(ent_norm, set()))
-        
-        # Score chunks by entity overlap and semantic relevance
+
         scored = []
         for chunk in chunks:
             doc = chunk.metadata.get("source", "unknown")
             score = 0.0
             reason = "semantic"
-            
-            # Direct entity match
+
             chunk_text = chunk.page_content.lower()
             for ent_norm in query_entities:
                 if ent_norm in chunk_text:
                     score += 0.3
-            
-            # Cross-document link bonus
+
             if doc in related_docs:
                 score += 0.2
                 reason = "cross-doc-link"
-            
-            # Claim relevance
+
             for claim in self.claims:
                 if claim.doc_source == doc and claim.chunk_id == chunk.metadata.get("chunk_index", -1):
                     if any(ent in claim.subject.lower() or ent in claim.object_val.lower() 
                            for ent in query_entities):
                         score += 0.25
                         reason = "claim-evidence"
-            
+
             if score > 0:
                 scored.append((chunk, score, reason))
-        
+
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored
-    
+
     def get_knowledge_summary(self) -> Dict[str, Any]:
-        """Get a summary of the knowledge graph for display."""
+        """FIXED: Now includes total_chunks to prevent KeyError."""
+        total_chunks = sum(d.get("chunk_count", 0) for d in self.documents.values())
         return {
+            "total_chunks": total_chunks,
             "total_entities": sum(len(v) for v in self.entities.values()),
             "unique_entities": len(self.entities),
             "total_claims": len(self.claims),
@@ -797,10 +805,6 @@ class CrossDocumentKnowledgeGraph:
 # =============================================
 
 def detect_scientific_sections(text: str) -> List[Tuple[str, str]]:
-    """
-    Detect scientific paper sections to enable section-aware chunking.
-    Returns list of (section_name, section_text).
-    """
     section_patterns = [
         (r'(?:^|\n)\s*Abstract\s*\n', 'ABSTRACT'),
         (r'(?:^|\n)\s*1\.\s*Introduction\s*\n', 'INTRODUCTION'),
@@ -808,57 +812,54 @@ def detect_scientific_sections(text: str) -> List[Tuple[str, str]]:
         (r'(?:^|\n)\s*(?:3\.)?\s*Results\s*(?:and\s*Discussion)?\s*\n', 'RESULTS'),
         (r'(?:^|\n)\s*(?:4\.)?\s*Discussion\s*\n', 'DISCUSSION'),
         (r'(?:^|\n)\s*Conclusion', 'CONCLUSION'),
+        # DECLARMIMA-specific sections
+        (r'(?:^|\n)\s*(?:5\.)?\s*Research\s*Methodology\s*\n', 'METHODOLOGY'),
+        (r'(?:^|\n)\s*(?:6\.)?\s*References\s*\n', 'REFERENCES'),
     ]
-    
-    # Find section boundaries
+
     boundaries = []
     for pattern, name in section_patterns:
         for match in re.finditer(pattern, text, re.I):
             boundaries.append((match.start(), name))
-    
+
     if not boundaries:
         return [("BODY", text)]
-    
+
     boundaries.sort()
-    
-    # Extract sections
+
     sections = []
     for i, (pos, name) in enumerate(boundaries):
         end = boundaries[i+1][0] if i+1 < len(boundaries) else len(text)
         section_text = text[pos:end].strip()
         if len(section_text) > 50:
             sections.append((name, section_text))
-    
+
     return sections if sections else [("BODY", text)]
 
 
 def semantic_chunk_document(pages: List[Document], filename: str) -> List[Document]:
-    """
-    REASONING: Section-aware semantic chunking that preserves scientific structure.
-    """
     all_text = "\n\n".join([p.page_content for p in pages])
-    
-    # Detect sections
+
     sections = detect_scientific_sections(all_text)
-    
-    # Split each section with appropriate chunk size
+
     chunks = []
     for section_name, section_text in sections:
-        # Use smaller chunks for methods, larger for discussion
         if section_name in ['ABSTRACT', 'CONCLUSION']:
             chunk_size, overlap = 400, 50
         elif section_name == 'METHODS':
             chunk_size, overlap = 600, 100
+        elif section_name == 'REFERENCES':
+            continue  # Skip references
         else:
             chunk_size, overlap = LASER_DOMAIN_CONFIG["chunk_size"], LASER_DOMAIN_CONFIG["chunk_overlap"]
-        
+
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap,
             separators=["\n\n", "\n", ". ", "; ", ", "],
             length_function=len
         )
-        
+
         section_chunks = splitter.create_documents([section_text])
         for i, chunk in enumerate(section_chunks):
             chunk.metadata.update({
@@ -868,12 +869,11 @@ def semantic_chunk_document(pages: List[Document], filename: str) -> List[Docume
                 "section_chunk_index": i,
             })
         chunks.extend(section_chunks)
-    
-    # Re-index
+
     for i, chunk in enumerate(chunks):
         chunk.metadata["chunk_index"] = i
         chunk.metadata["total_chunks"] = len(chunks)
-    
+
     return chunks
 
 
@@ -900,7 +900,6 @@ def initialize_session_state():
         "use_4bit_quantization": True,
         "ollama_host": "http://localhost:11434",
         "metadata_cache": metadata_cache,
-        # REASONING: New session state
         "knowledge_graph": None,
         "reasoning_mode": True,
         "show_reasoning_chain": True,
@@ -1084,6 +1083,11 @@ def extract_laser_metadata(text: str, filename: str) -> Dict[str, any]:
         "fluence_Jcm2": r'(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2|fluence)',
         "repetition_rate": r'(\d+(?:\.\d+)?)\s*(?:kHz|MHz|Hz)\s*(?:repetition|rate|freq)',
         "spot_size_um": r'(\d+(?:\.\d+)?)\s*(?:µm|um|microns?)\s*(?:spot|diameter)',
+        # DECLARMIMA-specific
+        "scan_speed": r'(\d+(?:\.\d+)?)\s*(?:mm/s|mm/min)\s*(?:scan\s*speed|scanning\s*speed)',
+        "laser_power_W": r'(\d+(?:\.\d+)?)\s*(?:W|kW)\s*(?:laser\s*power|power)',
+        "hatch_distance_um": r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:hatch\s*distance|hatch\s*spacing)',
+        "layer_thickness_um": r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:layer\s*thickness|layer\s*height)',
     }
     for param, pattern in param_patterns.items():
         match = re.search(pattern, text, re.I)
@@ -1096,22 +1100,18 @@ def extract_laser_metadata(text: str, filename: str) -> Dict[str, any]:
 
 
 def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document], CrossDocumentKnowledgeGraph]:
-    """
-    REASONING: Enhanced document loading with semantic chunking and knowledge graph construction.
-    Returns (chunks, knowledge_graph).
-    """
     all_chunks = []
     graph = CrossDocumentKnowledgeGraph()
-    
+
     for uploaded_file in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf" if uploaded_file.name.endswith('.pdf') else ".txt") as tmp:
             tmp.write(uploaded_file.getbuffer())
             tmp_path = tmp.name
-        
+
         try:
             file_hash = compute_file_hash(tmp_path)
             cached_meta = st.session_state.metadata_cache.get(uploaded_file.name, file_hash)
-            
+
             if cached_meta:
                 bib_meta = cached_meta
                 st.info(f"📚 Using cached metadata for `{uploaded_file.name}`")
@@ -1124,32 +1124,28 @@ def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document]
                     bib_meta = extract_metadata_from_text_file(text_content, uploaded_file.name)
                 st.session_state.metadata_cache.set(uploaded_file.name, bib_meta, file_hash)
                 st.info(f"📚 Extracted metadata: {bib_meta.format_citation('apa')}")
-            
-            # Load document
+
             if uploaded_file.name.endswith('.pdf'):
                 loader = PyPDFLoader(tmp_path)
             else:
                 loader = TextLoader(tmp_path, encoding='utf-8')
-            
+
             pages = loader.load()
-            
-            # REASONING: Use semantic chunking
+
             chunks = semantic_chunk_document(pages, uploaded_file.name)
-            
-            # Add laser metadata and bibliographic info
+
             for chunk in chunks:
                 chunk.metadata.update({
                     **extract_laser_metadata(chunk.page_content, uploaded_file.name),
                     "bibliographic": bib_meta.to_dict(),
                     "citation_display": bib_meta.format_citation(st.session_state.get('citation_style', 'apa')),
                 })
-            
-            # REASONING: Build knowledge graph
+
             graph.add_document(uploaded_file.name, chunks, bib_meta)
-            
+
             all_chunks.extend(chunks)
             st.info(f"✅ Loaded {len(chunks)} semantic chunks from `{uploaded_file.name}`")
-            
+
         except Exception as e:
             st.error(f"❌ Error processing `{uploaded_file.name}`: {e}")
             import traceback
@@ -1157,7 +1153,7 @@ def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document]
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-    
+
     return all_chunks, graph
 
 
@@ -1187,30 +1183,25 @@ def create_local_vector_store(chunks: List[Document], embedding_model_key: str):
 # =============================================
 
 def extract_query_entities(query: str) -> List[str]:
-    """Extract entities from user query for multi-hop retrieval."""
     entities = []
     query_lower = query.lower()
-    
-    # Check materials
+
     for canonical, aliases in MATERIAL_ALIASES.items():
         if any(alias in query_lower for alias in aliases):
             entities.append(canonical)
-    
-    # Check methods
+
     for canonical, aliases in METHOD_ALIASES.items():
         if any(alias in query_lower for alias in aliases):
             entities.append(canonical)
-    
-    # Check parameters
+
     for param_name in QUANTITY_PATTERNS.keys():
         if param_name.replace("_", " ") in query_lower or param_name in query_lower:
             entities.append(param_name)
-    
-    # Check laser topics
+
     for topic, keywords in LASER_KEYWORDS.items():
         if any(kw in query_lower for kw in keywords):
             entities.append(topic)
-    
+
     return entities
 
 
@@ -1221,41 +1212,34 @@ def create_scientific_reasoning_prompt(
     consensus_data: List[Dict],
     contradictions: List[Dict]
 ) -> str:
-    """
-    REASONING: Create a prompt that instructs the LLM to perform cross-document
-    scientific reasoning with explicit uncertainty quantification.
-    """
-    
-    # Format retrieved chunks with citations
+
     context_parts = []
     for i, chunk in enumerate(retrieved_chunks, 1):
         citation = chunk.metadata.get("citation_display")
         if not citation:
             source = chunk.metadata.get("source", "unknown")
             citation = f"[Source {i} - {source}]"
-        
+
         section = chunk.metadata.get("section", "UNKNOWN")
         content = chunk.page_content[:600] + "..." if len(chunk.page_content) > 600 else chunk.page_content
-        
+
         context_parts.append(f"---\n[{i}] {citation} | Section: {section}\n{content}\n")
-    
+
     context = "\n".join(context_parts)
-    
-    # Format consensus data
+
     consensus_text = ""
     if consensus_data:
         consensus_text = "\nCross-Document Consensus (statistical agreement across papers):\n"
         for cons in consensus_data[:3]:
             consensus_text += f"- {cons['entity']}: {cons['mean']:.2f} ± {cons['std']:.2f} {cons['unit']} (across {cons['doc_count']} papers, n={cons['value_count']})\n"
-    
-    # Format contradictions
+
     contradiction_text = ""
     if contradictions:
         contradiction_text = "\nDetected Contradictions Across Documents:\n"
         for contr in contradictions[:3]:
             contradiction_text += f"- {contr['entity']}: {contr['doc_a']} reports {contr['mean_a']:.2f} vs {contr['doc_b']} reports {contr['mean_b']:.2f} (ratio: {contr['ratio']:.1f}x, {contr['severity']})\n"
-    
-    system_prompt = """You are an expert scientific research assistant specializing in laser-microstructure interactions.
+
+    system_prompt = """You are an expert scientific research assistant specializing in laser-microstructure interactions and additive manufacturing.
 Your task is to synthesize evidence from multiple research papers and provide a scientifically rigorous answer.
 
 REASONING RULES:
@@ -1266,6 +1250,7 @@ REASONING RULES:
 5. If evidence is insufficient or contradictory, state this explicitly rather than fabricating consensus
 6. Distinguish between direct experimental results and inferred/theoretical claims
 7. For numerical values, include units and note if papers use different measurement conditions
+8. For DECLARMIMA-related queries, emphasize physics-informed digital twin concepts, multi-scale modeling, and process-structure-property relationships
 
 OUTPUT STRUCTURE:
 1. **Direct Answer**: Concise answer to the question
@@ -1275,7 +1260,7 @@ OUTPUT STRUCTURE:
 5. **Confidence Assessment**: State your confidence (High/Medium/Low) and why
 
 """
-    
+
     user_prompt = f"""Retrieved Document Context:
 {context}
 {consensus_text}
@@ -1284,7 +1269,7 @@ OUTPUT STRUCTURE:
 User Question: {query}
 
 Provide a scientifically rigorous answer following the structure above. Be precise about uncertainty and cross-document agreement."""
-    
+
     return system_prompt + user_prompt
 
 
@@ -1292,13 +1277,13 @@ def generate_local_response_transformers(tokenizer, model, device: str, prompt: 
     try:
         if "Qwen" in backend_name or "qwen" in backend_name.lower():
             messages = [
-                {"role": "system", "content": "You are an expert in laser-microstructure interaction research. Synthesize evidence across multiple papers rigorously."},
+                {"role": "system", "content": "You are an expert in laser-microstructure interaction and additive manufacturing research. Synthesize evidence across multiple papers rigorously."},
                 {"role": "user", "content": prompt}
             ]
             formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         elif "Llama" in backend_name or "llama" in backend_name.lower():
             messages = [
-                {"role": "system", "content": "You are an expert in laser-microstructure interaction research. Synthesize evidence across multiple papers rigorously."},
+                {"role": "system", "content": "You are an expert in laser-microstructure interaction and additive manufacturing research. Synthesize evidence across multiple papers rigorously."},
                 {"role": "user", "content": prompt}
             ]
             formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -1306,14 +1291,14 @@ def generate_local_response_transformers(tokenizer, model, device: str, prompt: 
             formatted_prompt = f"<s>[INST] {prompt} [/INST]"
         else:
             formatted_prompt = prompt
-        
+
         inputs = tokenizer.encode(
             formatted_prompt, return_tensors='pt', truncation=True,
             max_length=LASER_DOMAIN_CONFIG["max_context_tokens"]
         )
         if device == "cuda" and torch.cuda.is_available():
             inputs = inputs.to('cuda')
-        
+
         with torch.no_grad():
             outputs = model.generate(
                 inputs,
@@ -1325,19 +1310,19 @@ def generate_local_response_transformers(tokenizer, model, device: str, prompt: 
                 no_repeat_ngram_size=3,
                 early_stopping=True,
             )
-        
+
         full_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
+
         if "[/INST]" in full_text:
             answer = full_text.split("[/INST]")[-1].strip()
         elif "Confidence Assessment:" in full_text:
             answer = full_text[full_text.find("Direct Answer:"):].strip() if "Direct Answer:" in full_text else full_text[-1500:].strip()
         else:
             answer = full_text[-LASER_DOMAIN_CONFIG["max_new_tokens"]*2:].strip()
-        
+
         answer = re.sub(r'\s+', ' ', answer).strip()
         return answer if answer else "I was unable to generate a response. Please try rephrasing your question."
-        
+
     except Exception as e:
         st.error(f"Generation error: {e}")
         return f"Error generating response: {str(e)[:200]}..."
@@ -1347,7 +1332,7 @@ def generate_local_response_ollama(model_tag: str, ollama_host: str, prompt: str
     try:
         client = ollama.Client(host=ollama_host)
         messages = [
-            {"role": "system", "content": "You are an expert in laser-microstructure interaction research. Synthesize evidence across multiple papers rigorously."},
+            {"role": "system", "content": "You are an expert in laser-microstructure interaction and additive manufacturing research. Synthesize evidence across multiple papers rigorously."},
             {"role": "user", "content": prompt}
         ]
         try:
@@ -1376,7 +1361,7 @@ def generate_local_response_ollama(model_tag: str, ollama_host: str, prompt: str
                 full_response = response.message.content
             else:
                 full_response = str(response)
-        
+
         return full_response.strip() if full_response.strip() else "I was unable to generate a response. Please try rephrasing your question."
     except Exception as e:
         st.error(f"Ollama generation error: {e}")
@@ -1402,34 +1387,27 @@ def retrieve_and_answer(
     k: int = None,
     score_threshold: float = None
 ) -> Tuple[str, List[Document], float, Dict[str, Any]]:
-    """
-    REASONING: Enhanced retrieval with cross-document graph traversal.
-    """
+
     k = k or LASER_DOMAIN_CONFIG["retrieval_k"]
     score_threshold = score_threshold or LASER_DOMAIN_CONFIG["score_threshold"]
-    
-    # Step 1: Semantic retrieval
+
     retriever = vectorstore.as_retriever(
         search_type="similarity_score_threshold",
-        search_kwargs={"k": k*2, "score_threshold": score_threshold}  # Retrieve more for reasoning
+        search_kwargs={"k": k*2, "score_threshold": score_threshold}
     )
     semantic_docs = retriever.invoke(query)
-    
-    # Step 2: Extract query entities for multi-hop expansion
+
     query_entities = extract_query_entities(query)
-    
-    # Step 3: Multi-hop retrieval via knowledge graph
+
     if graph and query_entities and st.session_state.get("reasoning_mode", True):
         graph_results = graph.get_related_chunks(query_entities, st.session_state.all_chunks, depth=2)
-        # Merge graph results with semantic results, deduplicate
         seen = {(d.metadata.get("source"), d.metadata.get("chunk_index")) for d in semantic_docs}
         for chunk, score, reason in graph_results:
             key = (chunk.metadata.get("source"), chunk.metadata.get("chunk_index"))
             if key not in seen and len(semantic_docs) < k * 2:
                 semantic_docs.append(chunk)
                 seen.add(key)
-    
-    # Step 4: Re-rank by combined score (semantic + graph relevance)
+
     if semantic_docs:
         query_embedding = vectorstore.embedding_function.embed_query(query)
         scored_docs = []
@@ -1438,21 +1416,19 @@ def retrieve_and_answer(
             sim = np.dot(query_embedding, doc_embedding) / (
                 np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding) + 1e-8
             )
-            # Boost if section is Results or Discussion
             section_boost = 0.05 if doc.metadata.get("section") in ["RESULTS", "DISCUSSION"] else 0
             scored_docs.append((doc, sim + section_boost))
-        
+
         scored_docs.sort(key=lambda x: x[1], reverse=True)
         retrieved_docs = [d for d, s in scored_docs[:k]]
         avg_relevance = np.mean([s for d, s in scored_docs[:k]])
     else:
         retrieved_docs = []
         avg_relevance = 0.0
-    
+
     if not retrieved_docs:
         return "Based on the uploaded documents, I could not find information relevant to your question. Try rephrasing or checking document content.", [], avg_relevance, {}
-    
-    # Step 5: Cross-document analysis
+
     consensus_data = []
     contradictions = []
     if graph and st.session_state.get("cross_doc_consensus", True):
@@ -1462,23 +1438,21 @@ def retrieve_and_answer(
                 consensus_data.append(cons)
             contr = graph.find_contradictions(ent, threshold_factor=1.5)
             contradictions.extend(contr)
-    
-    # Step 6: Generate reasoning prompt
+
     prompt = create_scientific_reasoning_prompt(retrieved_docs, query, graph, consensus_data, contradictions)
-    
-    # Step 7: Generate response
+
     answer = generate_local_response(
         tokenizer=tokenizer, model_or_tag=model, device_or_host=device_or_host,
         prompt=prompt, backend=backend, backend_type=backend_type
     )
-    
+
     reasoning_meta = {
         "query_entities": query_entities,
         "consensus_found": len(consensus_data),
         "contradictions_found": len(contradictions),
         "multi_hop_expansion": len(semantic_docs) > k,
     }
-    
+
     return answer, retrieved_docs, avg_relevance, reasoning_meta
 
 
@@ -1489,14 +1463,14 @@ def retrieve_and_answer(
 def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
-        
+
         backend_option = st.radio(
             "🔧 Inference Backend",
             options=["Hugging Face Transformers", "Ollama (if installed)"],
             index=0
         )
         st.session_state.inference_backend = backend_option
-        
+
         if backend_option == "Ollama (if installed)":
             if not OLLAMA_AVAILABLE:
                 st.error("❌ ollama library not installed")
@@ -1514,19 +1488,19 @@ def render_sidebar():
                 options=hf_models,
                 index=2
             )
-        
+
         st.session_state.llm_model_choice = model_choice
-        
+
         if backend_option == "Hugging Face Transformers" and not is_ollama_model(model_choice):
             st.session_state.use_4bit_quantization = st.checkbox(
                 "🗜️ Use 4-bit quantization", value=True
             )
-        
+
         if backend_option == "Ollama (if installed)" or is_ollama_model(model_choice):
             st.session_state.ollama_host = st.text_input(
                 "🌐 Ollama Host", value=st.session_state.ollama_host
             )
-        
+
         st.markdown("#### 🔬 Reasoning Settings")
         st.session_state.reasoning_mode = st.checkbox(
             "🧠 Cross-document reasoning", value=True,
@@ -1540,11 +1514,11 @@ def render_sidebar():
             "🔍 Show reasoning chain", value=True,
             help="Display the logical steps and evidence linking"
         )
-        
+
         st.markdown("#### 🔬 Laser Domain Settings")
         st.session_state.laser_domain_boost = st.checkbox("Boost laser-topic relevance", value=True)
         st.session_state.show_sources = st.checkbox("Show source citations", value=True)
-        
+
         st.markdown("#### 📝 Citation Format")
         st.session_state.citation_style = st.selectbox(
             "Citation display style",
@@ -1557,36 +1531,37 @@ def render_sidebar():
                 "short": "Short: [FirstAuthor Year] or [DOI]"
             }[x]
         )
-        
+
         st.session_state.max_retrieved_chunks = st.slider(
             "Chunks to retrieve", min_value=2, max_value=10, value=6
         )
-        
+
         st.markdown("---")
         st.markdown("""
         <div style="background:#f0f9ff;padding:1rem;border-radius:0.5rem;border-left:4px solid #3b82f6">
-        <strong>💡 New Reasoning Features:</strong>
+        <strong>💡 DECLARMIMA Domain Features:</strong>
         <ul style="margin:0.5rem 0 0 1rem;padding:0">
+        <li><b>Materials:</b> Ti6Al4V, Inconel 718, SAC, Al-Cr-Fe-Ni, HEAs</li>
+        <li><b>Processes:</b> SLM, LPBF, WFLAM, DED</li>
+        <li><b>Parameters:</b> Laser power, scan speed, hatch distance, layer thickness</li>
+        <li><b>Methods:</b> Phase field, MD, FEM, CALPHAD, X-ray imaging</li>
         <li><b>Cross-doc consensus</b>: Statistical agreement across papers</li>
         <li><b>Contradiction detection</b>: Flags conflicting results</li>
-        <li><b>Multi-hop retrieval</b>: Follows entity links across documents</li>
-        <li><b>Section-aware chunking</b>: Preserves Abstract/Methods/Results structure</li>
-        <li><b>Uncertainty calibration</b>: Explicit confidence in answers</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
-        
+
         st.markdown("---")
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
         st.caption(f"🖥️ Device: {gpu_info}")
         st.caption(f"💾 Available VRAM: {vram_info}")
-        
+
         if PDF2DOI_AVAILABLE:
             st.success("✅ pdf2doi: Available")
         else:
             st.info("ℹ️ pdf2doi: Optional for DOI lookup")
-        
+
         if CROSSREF_AVAILABLE:
             st.success("✅ Crossref API: Available")
         else:
@@ -1596,7 +1571,7 @@ def render_sidebar():
 def render_document_uploader():
     st.markdown("### 📁 Upload Laser Microstructure Documents")
     uploaded_files = st.file_uploader(
-        "Select PDF or TXT files about laser processing, ablation, microstructuring, etc.",
+        "Select PDF or TXT files about laser processing, ablation, microstructuring, additive manufacturing, etc.",
         type=["pdf", "txt"], accept_multiple_files=True,
         help="Documents will be processed with semantic section detection and cross-document entity linking."
     )
@@ -1606,37 +1581,36 @@ def render_document_uploader():
 def process_documents(uploaded_files):
     if not uploaded_files:
         return False
-    
+
     new_files = [f for f in uploaded_files if f.name not in st.session_state.processed_files]
     if not new_files:
         st.info("✓ All uploaded files already processed")
         return st.session_state.processing_complete
-    
+
     st.session_state.messages = []
     st.session_state.vectorstore = None
     st.session_state.all_chunks = []
     st.session_state.knowledge_graph = None
-    
+
     with st.spinner(f"Processing {len(new_files)} document(s) with semantic reasoning..."):
         try:
             chunks, graph = load_and_chunk_laser_documents(new_files)
             if not chunks:
                 st.error("No chunks extracted. Check file format.")
                 return False
-            
+
             for f in new_files:
                 st.session_state.processed_files.add(f.name)
-            
+
             st.session_state.all_chunks.extend(chunks)
             st.session_state.knowledge_graph = graph
-            
+
             with st.spinner("Creating vector index and knowledge graph..."):
                 vectorstore = create_local_vector_store(st.session_state.all_chunks, LOCAL_EMBEDDING_MODEL)
                 if vectorstore is None:
                     return False
                 st.session_state.vectorstore = vectorstore
-            
-            # Show knowledge graph summary
+
             if graph:
                 summary = graph.get_knowledge_summary()
                 st.success(f"✅ Ready! Indexed {summary['total_chunks']} chunks, {summary['unique_entities']} unique entities, {summary['total_claims']} claims from {summary['document_count']} papers")
@@ -1644,10 +1618,10 @@ def process_documents(uploaded_files):
                     st.caption(f"🔗 Cross-document consensus available for: {', '.join(summary['consensus_topics'][:5])}")
             else:
                 st.success(f"✅ Ready! Indexed {len(st.session_state.all_chunks)} chunks")
-            
+
             st.session_state.processing_complete = True
             return True
-            
+
         except Exception as e:
             st.error(f"Processing failed: {e}")
             import traceback
@@ -1659,7 +1633,7 @@ def render_chat_interface():
     if not st.session_state.get('vectorstore'):
         st.info("👆 Upload documents above to start chatting with cross-document reasoning")
         return
-    
+
     if st.session_state.llm_tokenizer is None and st.session_state.llm_model_choice:
         backend_type = "ollama" if is_ollama_model(st.session_state.llm_model_choice) else "transformers"
         with st.spinner(f"Loading {st.session_state.llm_model_choice}..."):
@@ -1674,17 +1648,17 @@ def render_chat_interface():
             else:
                 st.error("Failed to load model. Try selecting a different option.")
                 return
-    
+
     has_model = (
         st.session_state.llm_backend_type == "ollama" and st.session_state.llm_model is not None
     ) or (
         st.session_state.llm_backend_type == "transformers" and st.session_state.llm_tokenizer is not None
     )
-    
+
     if not has_model:
         st.warning("Please select and load a model in the sidebar first")
         return
-    
+
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -1706,8 +1680,7 @@ def render_chat_interface():
                                 if bib.get('year'):
                                     st.markdown(f"**Year:** {bib['year']}")
                         st.markdown(f"> {src.page_content[:300]}...")
-            
-            # REASONING: Show reasoning chain
+
             if message.get("reasoning_meta") and st.session_state.show_reasoning_chain and message["role"] == "assistant":
                 meta = message["reasoning_meta"]
                 with st.expander("🧠 Reasoning Chain"):
@@ -1717,15 +1690,15 @@ def render_chat_interface():
                     st.markdown(f"**Multi-hop expansion:** {'Yes' if meta.get('multi_hop_expansion') else 'No'}")
                     if meta.get('relevance'):
                         st.markdown(f"**Response relevance:** {meta['relevance']:.2f}/1.0")
-    
-    if prompt := st.chat_input("Ask about laser parameters, ablation thresholds, LIPSS formation, etc."):
+
+    if prompt := st.chat_input("Ask about laser parameters, ablation thresholds, LIPSS formation, SLM process, HEAs, etc."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
-        
+
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
-            
+
             with st.spinner("🔍 Performing cross-document reasoning..."):
                 try:
                     answer, retrieved_docs, relevance, reasoning_meta = retrieve_and_answer(
@@ -1739,17 +1712,16 @@ def render_chat_interface():
                         query=prompt,
                         k=st.session_state.max_retrieved_chunks
                     )
-                    
+
                     reasoning_meta["relevance"] = relevance
-                    
-                    # Simulate streaming
+
                     display_text = ""
                     for word in answer.split():
                         display_text += word + " "
                         message_placeholder.markdown(display_text + "▌")
                         time.sleep(0.015)
                     message_placeholder.markdown(answer)
-                    
+
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
@@ -1757,7 +1729,7 @@ def render_chat_interface():
                         "relevance": relevance,
                         "reasoning_meta": reasoning_meta
                     })
-                    
+
                 except Exception as e:
                     error_msg = f"❌ Error: {str(e)[:300]}"
                     st.error(error_msg)
@@ -1767,19 +1739,19 @@ def render_chat_interface():
 def render_footer():
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         st.markdown("**📚 Example Questions:**")
         st.caption("• What is the consensus ablation threshold for silicon across papers?")
-        st.caption("• Do the papers agree on optimal fluence for LIPSS formation?")
-        st.caption("• What contradictions exist regarding pulse duration effects?")
-    
+        st.caption("• How does scan speed affect melt pool geometry in Ti6Al4V SLM?")
+        st.caption("• What contradictions exist regarding optimal laser power for Inconel 718?")
+
     with col2:
         st.markdown("**⚡ Reasoning Tips:**")
         st.caption("• Ask comparative questions to trigger consensus detection")
-        st.caption("• Query specific materials to activate entity linking")
+        st.caption("• Query specific materials (Ti6Al4V, SAC, HEA) to activate entity linking")
         st.caption("• Look for the 🧠 Reasoning Chain expander for transparency")
-    
+
     with col3:
         st.markdown("**🔐 Privacy & Science:**")
         st.caption("• All processing happens locally")
@@ -1789,12 +1761,12 @@ def render_footer():
 
 def main():
     st.set_page_config(
-        page_title="🔬 Laser Microstructure RAG + Cross-Doc Reasoning",
+        page_title="🔬 DECLARMIMA RAG + Cross-Doc Reasoning",
         page_icon="🔬",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
+
     st.markdown("""
     <style>
     .main-header {
@@ -1842,20 +1814,21 @@ def main():
     }
     </style>
     """, unsafe_allow_html=True)
-    
-    st.markdown('<h1 class="main-header">🔬 Laser Microstructure RAG + Cross-Doc Reasoning</h1>', unsafe_allow_html=True)
+
+    st.markdown('<h1 class="main-header">🔬 DECLARMIMA RAG + Cross-Doc Reasoning</h1>', unsafe_allow_html=True)
     st.markdown("""
     <div style="text-align:center;color:#64748b;margin-bottom:1.5rem">
     Upload research papers and get <strong>scientifically rigorous answers</strong> with 
     <span class="consensus-badge">cross-document consensus</span>, 
     <span class="contradiction-badge">contradiction detection</span>, and 
     <span class="reasoning-badge">multi-hop reasoning</span>.
+    <br><em>Specialized for Additive Manufacturing, SLM/LPBF, High Entropy Alloys, and Laser-Microstructure Interaction.</em>
     </div>
     """, unsafe_allow_html=True)
-    
+
     initialize_session_state()
     render_sidebar()
-    
+
     if st.session_state.llm_model_choice and not is_ollama_model(st.session_state.llm_model_choice):
         mem_info = estimate_model_memory(st.session_state.llm_model_choice, st.session_state.get('use_4bit_quantization', True))
         available_vram = get_available_gpu_memory()
@@ -1868,15 +1841,15 @@ def main():
                 You have ~{available_vram:.1f}GB available.
                 </div>
                 """, unsafe_allow_html=True)
-    
+
     col1, col2 = st.columns([1, 2])
-    
+
     with col1:
         uploaded_files = render_document_uploader()
-        
+
         if uploaded_files and st.button("🔄 Process Documents", type="primary", use_container_width=True):
             process_documents(uploaded_files)
-        
+
         if st.session_state.processing_complete:
             st.success("✅ Knowledge base ready")
             if st.session_state.knowledge_graph:
@@ -1890,12 +1863,12 @@ def main():
             st.warning("⏳ Click 'Process Documents' to begin")
         else:
             st.info("📁 Upload PDF/TXT files to start")
-        
+
         if st.session_state.processed_files:
             if st.button("🗑️ Clear All", use_container_width=True):
                 st.session_state.clear()
                 st.rerun()
-    
+
     with col2:
         if st.session_state.processing_complete and st.session_state.vectorstore:
             render_chat_interface()
@@ -1906,7 +1879,7 @@ def main():
             <p>This assistant goes beyond simple retrieval:</p>
             <ul>
             <li><strong>Semantic Chunking:</strong> Preserves Abstract/Methods/Results/Discussion structure</li>
-            <li><strong>Entity Extraction:</strong> Identifies materials, parameters, methods automatically</li>
+            <li><strong>Entity Extraction:</strong> Identifies materials (Ti6Al4V, Inconel, SAC, HEA), parameters, methods</li>
             <li><strong>Cross-Document Alignment:</strong> Links the same entity across different papers</li>
             <li><strong>Consensus Detection:</strong> Statistically aggregates values reported in multiple papers</li>
             <li><strong>Contradiction Flagging:</strong> Highlights when papers disagree significantly</li>
@@ -1922,21 +1895,21 @@ def main():
             </ol>
             </div>
             """, unsafe_allow_html=True)
-            
+
             st.markdown("**Try asking:**")
             demo_qs = [
                 "What is the consensus ablation threshold for silicon across all papers?",
-                "Do these papers agree on the effect of pulse duration on LIPSS periodicity?",
-                "What contradictions exist regarding optimal fluence for steel processing?",
+                "Do these papers agree on the effect of scan speed on melt pool depth in Ti6Al4V?",
+                "What contradictions exist regarding optimal laser power for Inconel 718 LPBF?",
                 "Summarize the characterization methods used across all uploaded papers.",
             ]
             for q in demo_qs:
                 if st.button(f"💬 {q}", use_container_width=True, key=f"demo_{q[:20]}"):
                     st.session_state.demo_question = q
                     st.rerun()
-    
+
     render_footer()
-    
+
     if hasattr(st.session_state, 'demo_question') and st.session_state.demo_question:
         st.session_state.messages.append({"role": "user", "content": st.session_state.demo_question})
         del st.session_state.demo_question

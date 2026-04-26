@@ -22,11 +22,15 @@ DECLARMIMA-ENHANCED: Physics-informed digital twin for laser-multicomponent allo
 DOMAIN: Additive Manufacturing, SLM/LPBF, HEAs, Sn/Al-based multicomponent alloys,
         Laser ablation, LIPSS formation, ultrafast processing, melt pool dynamics
 
-FIXES APPLIED:
+FIXES APPLIED (April 2026):
 • Robust numeric parsing: handles '.', '-', empty strings, malformed scientific notation
 • FusedPropertyEntry: fused_value now has default=None to prevent initialization errors
 • Additional error handling throughout property extraction pipeline
 • Knowledge graph summary now includes total_chunks to prevent KeyError
+• Removed 'uncertainty' attribute access in table generation to prevent AttributeError
+• Added categorical property extraction (heat sources, laser types, machine types)
+• Fusion engine now handles non‑numeric properties and displays them in prompt
+• Zero‑division protection in fusion metrics when no properties are extracted
 
 Deploy to Streamlit Cloud with requirements.txt below.
 For local use with Ollama: install ollama Python library and run `ollama pull <model>`
@@ -228,7 +232,7 @@ class ExtractedProperty:
     source_citation: str = ""          # Human-readable: "Smith et al., 2023"
     extraction_confidence: float = 0.5 # From metadata extraction
     context_snippet: str = ""          # Original text snippet for verification
-    property_type: str = "parameter"   # parameter, measurement, observation, comparison
+    property_type: str = "parameter"   # parameter, measurement, observation, comparison, category
     material_system: Optional[str] = None  # e.g., "silicon", "AlSi10Mg"
     experimental_conditions: Dict[str, Any] = field(default_factory=dict)
     
@@ -279,6 +283,11 @@ class ExtractedProperty:
             "laser power": "laser_power",
             "hatch distance": "hatch_distance",
             "layer thickness": "layer_thickness",
+            # Categorical additions
+            "heat source": "heat_source",
+            "heat_source_type": "heat_source",
+            "laser type": "laser_type",
+            "machine type": "machine_type",
         }
         name_lower = name.lower().strip()
         return synonym_map.get(name_lower, name_lower.replace(" ", "_"))
@@ -343,7 +352,7 @@ class FusedPropertyEntry:
     Contains consensus value, variation metrics, and source attribution.
     """
     property_name: str
-    fused_value: Optional[Union[float, str, Dict]] = None  # FIXED: Made optional with default=None
+    fused_value: Optional[Union[float, str, Dict]] = None
     unit: Optional[str] = None
     fusion_confidence: FusionConfidence = FusionConfidence.UNKNOWN
     source_count: int = 0
@@ -391,6 +400,9 @@ class FusionEfficiencyMetrics:
     answer_specificity_score: float = 0.0
     citation_density: float = 0.0
     overall_fusion_efficiency: float = 0.0
+    # Categorical fusion metrics (added)
+    categorical_properties_fused: int = 0
+    categorical_diversity_score: float = 0.0
     
     def compute_overall(self) -> float:
         """Compute composite efficiency score (0-1)."""
@@ -421,7 +433,7 @@ class FusionEfficiencyMetrics:
     
     def to_display_dict(self) -> Dict[str, str]:
         """Format metrics for UI display."""
-        return {
+        base = {
             "📚 Sources": f"{self.unique_sources_used} (div: {self.source_diversity_score:.2f})",
             "🔍 Properties": f"{self.properties_fused_successfully}/{self.total_properties_extracted}",
             "✅ Consistency": f"{self.consistency_ratio*100:.0f}%",
@@ -430,6 +442,9 @@ class FusionEfficiencyMetrics:
             "📝 Specificity": f"{self.answer_specificity_score:.2f}",
             "🏆 Overall": f"{self.overall_fusion_efficiency:.2f}/1.0"
         }
+        if self.categorical_properties_fused > 0:
+            base["🏷️ Categories"] = f"{self.categorical_properties_fused} (div: {self.categorical_diversity_score:.2f})"
+        return base
 
 
 # =============================================
@@ -1141,6 +1156,21 @@ class MultiDocumentPropertyExtractor:
     def __init__(self, laser_keywords: Dict[str, List[str]]):
         self.laser_keywords = laser_keywords
         self._compile_extraction_patterns()
+        # ADDED: Categorical extraction patterns
+        self.category_patterns = {
+            "heat_source": re.compile(
+                r'\b(laser|electron\s*beam|plasma\s*jet|arc|induction|resistance|microwave)\s+(?:heat\s*source|source)\b',
+                re.I
+            ),
+            "laser_type": re.compile(
+                r'\b(femtosecond|picosecond|nanosecond|continuous\s*wave|cw|pulsed|q-switched|mode-locked)\s+laser\b',
+                re.I
+            ),
+            "machine_type": re.compile(
+                r'\b((?:SLM|LPBF|DED|EBM|WFLAM)\s+machine|(?:selective laser melting|laser powder bed fusion|direct energy deposition|electron beam melting) machine)\b',
+                re.I
+            ),
+        }
     
     def _compile_extraction_patterns(self):
         numeric_pattern = r'([\d.]+(?:\s*[×x*]\s*10\^?-?\d+)?)(?:\s*([±\+-])\s*([\d.]+))?'
@@ -1183,7 +1213,33 @@ class MultiDocumentPropertyExtractor:
         comparative_props = self._extract_comparative_properties(chunk_text)
         for prop in comparative_props:
             record.add_property(prop)
+        # ADDED: Categorical properties extraction
+        categorical_props = self._extract_categorical_properties(chunk_text)
+        for prop in categorical_props:
+            prop.source_chunk_id = record.chunk_id
+            prop.source_citation = record.bibliographic_citation
+            record.add_property(prop)
         return record
+    
+    def _extract_categorical_properties(self, text: str) -> List[ExtractedProperty]:
+        """Extract non‑numeric facts like heat source type, laser type, etc."""
+        properties = []
+        for cat_name, pattern in self.category_patterns.items():
+            for match in pattern.finditer(text):
+                value = match.group(0).strip()
+                # clean up multiple spaces
+                value = re.sub(r'\s+', ' ', value)
+                prop = ExtractedProperty(
+                    name=cat_name,
+                    value=value,
+                    unit=None,
+                    property_type="category",
+                    extraction_confidence=0.75,
+                    context_snippet=text[max(0, match.start()-50):min(len(text), match.end()+50)],
+                    normalized_name=cat_name   # already canonical
+                )
+                properties.append(prop)
+        return properties
     
     def _detect_material_system(self, text: str) -> Optional[str]:
         text_lower = text.lower()
@@ -1529,7 +1585,7 @@ class MultiDocumentFusionEngine:
             # Statistical fusion for numeric properties
             values = [p.normalized_value for p in numeric_props if p.normalized_value is not None]
             if values:
-                fused.fused_value = np.mean(values)  # FIXED: Now this assignment works
+                fused.fused_value = np.mean(values)
                 fused.value_range = (min(values), max(values))
                 fused.standard_deviation = np.std(values) if len(values) > 1 else 0.0
                 
@@ -1581,8 +1637,24 @@ class MultiDocumentFusionEngine:
         metrics.source_diversity_score = min(1.0, len(unique_sources) / 3.0)
         total_extracted = sum(len(r.extracted_properties) for r in fusion_records)
         metrics.total_properties_extracted = total_extracted
+        # Zero‑division protection
+        if total_extracted == 0:
+            metrics.overall_fusion_efficiency = 0.0
+            return metrics
         metrics.properties_fused_successfully = len(fused_properties)
-        metrics.property_coverage_ratio = len(fused_properties) / total_extracted if total_extracted > 0 else 0.0
+        metrics.property_coverage_ratio = len(fused_properties) / total_extracted
+        # Separate numeric vs categorical for additional metrics
+        numeric_fusions = {k:v for k,v in fused_properties.items() if isinstance(v.fused_value, (int, float))}
+        categorical_fusions = {k:v for k,v in fused_properties.items() if not isinstance(v.fused_value, (int, float))}
+        metrics.categorical_properties_fused = len(categorical_fusions)
+        if categorical_fusions:
+            # Compute diversity: average number of unique values per categorical property
+            uniq_counts = []
+            for entry in categorical_fusions.values():
+                # count distinct values from sources (or just the fused value itself)
+                distinct_vals = set(str(s.get("citation")) for s in entry.sources)
+                uniq_counts.append(len(distinct_vals))
+            metrics.categorical_diversity_score = np.mean(uniq_counts) / max(1, len(uniq_counts))
         consistent = sum(1 for f in fused_properties.values() if not f.conflicts_detected and f.fusion_confidence != FusionConfidence.LOW)
         conflicting = sum(1 for f in fused_properties.values() if f.conflicts_detected)
         total_evaluated = consistent + conflicting
@@ -1639,6 +1711,7 @@ class MultiDocumentFusionEngine:
         else:
             return self._generate_plain_text_table(fused_properties)
     
+    # FIXED: Removed entry.uncertainty access – use standard deviation when appropriate
     def _generate_markdown_table(self, fused_props: Dict[str, FusedPropertyEntry]) -> str:
         lines = []
         lines.append("| Property | Value | Unit | Range | Sources | Confidence |")
@@ -1646,10 +1719,10 @@ class MultiDocumentFusionEngine:
         for prop_name, entry in sorted(fused_props.items(), key=lambda x: x[0]):
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
                 value_str = f"{entry.fused_value:.3f}"
+                if entry.standard_deviation is not None and entry.standard_deviation != 0.0:
+                    value_str = f"{value_str} ± {entry.standard_deviation:.3f}"
             else:
                 value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
-            if entry.uncertainty and entry.uncertainty not in value_str:
-                value_str = f"{value_str} {entry.uncertainty}"
             range_str = f"{entry.value_range[0]:.2f}–{entry.value_range[1]:.2f}" if entry.value_range else "–"
             confidence_icon = {"high": "🟢", "moderate": "🟡", "low": "🔴", "unknown": "⚪"}.get(entry.fusion_confidence.value, "⚪")
             lines.append(f"| {prop_name.replace('_', ' ').title()} | {value_str} | {entry.unit or '–'} | {range_str} | {entry.source_count} | {confidence_icon} {entry.fusion_confidence.value} |")
@@ -1661,6 +1734,8 @@ class MultiDocumentFusionEngine:
         for prop_name, entry in sorted(fused_props.items()):
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
                 value_str = f"{entry.fused_value:.3f}"
+                if entry.standard_deviation is not None and entry.standard_deviation != 0.0:
+                    value_str = f"{value_str} $\pm$ {entry.standard_deviation:.3f}"
             else:
                 value_str = str(entry.fused_value) if entry.fused_value is not None else "--"
             range_str = f"{entry.value_range[0]:.2f}--{entry.value_range[1]:.2f}" if entry.value_range else "--"
@@ -1678,6 +1753,8 @@ class MultiDocumentFusionEngine:
         for prop_name, entry in fused_props.items():
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
                 value_str = f"{entry.fused_value:.3f}"
+                if entry.standard_deviation is not None and entry.standard_deviation != 0.0:
+                    value_str = f"{value_str} ± {entry.standard_deviation:.3f}"
             else:
                 value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
             bg_color = {"high": "#dcfce7", "moderate": "#fef3c7", "low": "#fee2e2"}.get(entry.fusion_confidence.value, "#f1f5f9")
@@ -1700,6 +1777,8 @@ class MultiDocumentFusionEngine:
         for prop_name, entry in fused_props.items():
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
                 value_str = f"{entry.fused_value:.3f}"
+                if entry.standard_deviation is not None and entry.standard_deviation != 0.0:
+                    value_str = f"{value_str} ± {entry.standard_deviation:.3f}"
             else:
                 value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
             lines.append(f"{prop_name.replace('_', ' ').title():<30} {value_str:<15} {entry.unit or '–':<10} {entry.fusion_confidence.value:<10}")
@@ -2196,15 +2275,24 @@ def _create_fusion_aware_prompt(retrieved_docs: List[Document], query: str,
     context = "\n---\n".join(context_parts)
     
     properties_summary = ""
-    if fused_properties:
-        properties_summary = "**Fused Property Summary**:\n"
-        for prop_name, entry in list(fused_properties.items())[:8]:
-            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
-                value_str = f"{entry.fused_value:.3f}"
-            else:
-                value_str = str(entry.fused_value) if entry.fused_value is not None else "N/A"
-            properties_summary += f"• {prop_name.replace('_', ' ').title()}: {value_str} {entry.unit or ''} [conf: {entry.fusion_confidence.value}, sources: {entry.source_count}]\n"
+    categorical_summary = ""
+    numeric_fusions = {k:v for k,v in fused_properties.items() if isinstance(v.fused_value, (int, float))}
+    categorical_fusions = {k:v for k,v in fused_properties.items() if not isinstance(v.fused_value, (int, float))}
+    
+    if numeric_fusions:
+        properties_summary = "**Fused Numeric Properties**:\n"
+        for prop_name, entry in list(numeric_fusions.items())[:8]:
+            if entry.fused_value is not None:
+                value_str = f"{entry.fused_value:.3f}" if isinstance(entry.fused_value, (int, float)) else str(entry.fused_value)
+                properties_summary += f"• {prop_name.replace('_', ' ').title()}: {value_str} {entry.unit or ''} [conf: {entry.fusion_confidence.value}, sources: {entry.source_count}]\n"
         properties_summary += "\n"
+    
+    if categorical_fusions:
+        categorical_summary = "**Categorical Findings** (non‑numeric):\n"
+        for prop_name, entry in categorical_fusions.items():
+            value_str = str(entry.fused_value) if entry.fused_value is not None else "N/A"
+            categorical_summary += f"• {prop_name.replace('_', ' ').title()}: {value_str} (reported in {entry.source_count} source(s), confidence: {entry.fusion_confidence.value})\n"
+        categorical_summary += "\n"
     
     table_section = f"**Comparison Table**:\n{comparison_table}\n\n" if comparison_table else ""
     
@@ -2213,6 +2301,8 @@ def _create_fusion_aware_prompt(retrieved_docs: List[Document], query: str,
         efficiency_note = f"🎯 High-confidence fusion ({fusion_metrics.overall_fusion_efficiency:.2f}/1.0): Properties synthesized from {fusion_metrics.unique_sources_used} sources.\n\n"
     elif fusion_metrics.overall_fusion_efficiency >= 0.4:
         efficiency_note = f"⚠️ Moderate-confidence fusion ({fusion_metrics.overall_fusion_efficiency:.2f}/1.0): Some property variations detected across sources.\n\n"
+    elif fusion_metrics.categorical_properties_fused > 0 and fusion_metrics.total_properties_extracted == 0:
+        efficiency_note = f"🔍 Categorical information extracted from {fusion_metrics.unique_sources_used} source(s). No numeric properties were found for this query.\n\n"
     else:
         efficiency_note = f"🔍 Low-confidence fusion ({fusion_metrics.overall_fusion_efficiency:.2f}/1.0): Limited or conflicting data; interpret with caution.\n\n"
     
@@ -2235,7 +2325,7 @@ RESPONSE STRUCTURE:
 """
     user_prompt = f"""RETRIEVED DOCUMENT CONTEXT:
 {context}
-{efficiency_note}{properties_summary}{table_section}
+{efficiency_note}{properties_summary}{categorical_summary}{table_section}
 USER QUESTION: {query}
 SCIENTIFIC ANSWER (use fused properties when available, cite sources precisely):"""
     full_prompt = system_prompt + user_prompt
@@ -2491,7 +2581,7 @@ def retrieve_and_answer_with_fusion(vectorstore, graph: CrossDocumentKnowledgeGr
         prompt=prompt, backend=backend, backend_type=backend_type
     )
     
-    # Append comparison table if fusion was successful
+    # Append comparison table if fusion was successful (only for numeric properties)
     if enable_fusion and fusion_metrics.overall_fusion_efficiency > 0.5 and comparison_table:
         answer += f"\n\n---\n**📊 Property Comparison**:\n{comparison_table}"
     
@@ -3034,6 +3124,7 @@ def main():
                 "Compare porosity levels in SAC305 LPBF at different hatch distances",
                 "What contradictions exist regarding optimal laser power for Inconel 718 LPBF?",
                 "Summarize the characterization methods used across all uploaded papers.",
+                "What types of heat sources are mentioned in the uploaded documents?",
             ]
             for q in demo_qs:
                 if st.button(f"💬 {q}", use_container_width=True, key=f"demo_{q[:20]}"):

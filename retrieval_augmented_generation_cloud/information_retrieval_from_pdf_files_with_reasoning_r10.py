@@ -734,7 +734,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
     return meta
 
 
-def extract_metadata_from_text_file(text: str, filename: str) -> BibliographicMeta
+def extract_metadata_from_text_file(text: str, filename: str) -> BibliographicMeta:
     return extract_metadata_from_pdf_text(text, filename)
 
 

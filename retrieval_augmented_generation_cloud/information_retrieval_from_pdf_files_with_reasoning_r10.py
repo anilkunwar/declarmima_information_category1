@@ -561,8 +561,8 @@ class BibliographicMetadata:
         meta.confidence = data.get("confidence", 0.5)
         return meta
 
-
-def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMeta
+#
+def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMetadata:
     meta = BibliographicMetadata(filename)
     text_sample = text[:10000]
     text_lower = text_sample.lower()
@@ -583,7 +583,6 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
     for year_str in year_matches:
         year = int(year_str)
         if 1900 <= year <= 2030:
-            context_window = 100
             year_pos = text_sample.find(year_str)
             context = text_sample[max(0, year_pos-50):year_pos+50].lower()
             if any(kw in context for kw in ['published', 'received', 'accepted', 'copyright', '©', 'submitted']):
@@ -595,8 +594,9 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
         journal_match = pattern.search(text_sample)
         if journal_match:
             journal = journal_match.group(1).strip()
-            # ENHANCED: Filter out publisher noise and false positives
-            if len(journal) > 10 and not any(bad in journal.lower() for bad in ['introduction', 'abstract', 'references', 'elsevier', 'all rights', 'contents lists']):
+            if len(journal) > 10 and not any(bad in journal.lower() for bad in [
+                'introduction', 'abstract', 'references', 'elsevier', 'all rights', 'contents lists'
+            ]):
                 meta.journal = journal
                 meta.confidence = max(meta.confidence, 0.6)
                 break
@@ -604,6 +604,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
     vol_match = BibliographicMetadata.VOLUME_PATTERN.search(text_sample)
     if vol_match:
         meta.volume = vol_match.group(1)
+
     iss_match = BibliographicMetadata.ISSUE_PATTERN.search(text_sample)
     if iss_match:
         meta.issue = iss_match.group(1)
@@ -624,9 +625,10 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
             meta.confidence = max(meta.confidence, 0.5)
     
     title_patterns = [
-        re.compile(r'(?:^|\n)([A-Z][^.\n]{20,150?}(?:\.[^A-Z]|$))'),
+        re.compile(r'(?:^|\n)([A-Z][^.\n]{20,150}(?:\.[^A-Z]|$))'),
         re.compile(r'(?:title:?\s*)([A-Z][^.\n]{20,200}?)\.?(?:\n|$)', re.I),
     ]
+    
     for pattern in title_patterns:
         title_match = pattern.search(text_sample)
         if title_match:
@@ -637,7 +639,6 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
                 break
     
     return meta
-
 
 def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> BibliographicMeta
     meta = BibliographicMetadata(filename)

@@ -14,3 +14,4 @@ accelerate
 psutil
 crossrefapi
 pdf2doi
+plotly

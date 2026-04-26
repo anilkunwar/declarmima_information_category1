@@ -468,7 +468,7 @@ class BibliographicMetadata:
         self.issue: Optional[str] = None
         self.pages: Optional[str] = None
         self.publisher: Optional[str] = None
-        self.raw_meta Dict[str, Any] = {}
+        self.raw_meta: Dict[str, Any] = {}
         self.extraction_method: str = "none"
         self.confidence: float = 0.0
         

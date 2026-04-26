@@ -43,6 +43,13 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v8.0-turquoise)](https://information-retrieval-from-scientific-documents-and-reasoning8.streamlit.app/) (API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced)
 
+[![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v9.0-orange)](https://information-retrieval-from-scientific-documents-and-reasoning9.streamlit.app/) (v6 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced. NOT YET COMPLETED)
+
+[![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v10.0-blue)](https://information-retrieval-from-scientific-documents-and-reasoning10.streamlit.app/) (v7 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
+
+[![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v11.0-turquoise)](https://information-retrieval-from-scientific-documents-and-reasoning11.streamlit.app/) (v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
+
+
 
 # local computer (working)
 

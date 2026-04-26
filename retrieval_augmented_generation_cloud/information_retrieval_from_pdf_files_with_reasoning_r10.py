@@ -640,7 +640,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
     
     return meta
 
-def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> BibliographicMeta
+def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> BibliographicMetadata:
     meta = BibliographicMetadata(filename)
     
     if PYPDF2_AVAILABLE:

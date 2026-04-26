@@ -17,6 +17,11 @@ LASER MICROSTRUCTURE RAG CHATBOT - FULLY API-FREE VERSION WITH MULTI-DOCUMENT FU
 ✅ Memory-efficient loading with quantization support for large models
 ✅ Automatic fallback to smaller models if GPU memory is limited
 
+FIXES APPLIED:
+• Robust numeric parsing: handles '.', '-', empty strings, malformed scientific notation
+• FusedPropertyEntry: fused_value now has default=None to prevent initialization errors
+• Additional error handling throughout property extraction pipeline
+
 Deploy to Streamlit Cloud with requirements.txt below.
 For local use with Ollama: install ollama Python library and run `ollama pull <model>`
 For enhanced metadata extraction: pip install pdf2doi crossrefapi (optional)
@@ -215,6 +220,9 @@ class ExtractedProperty:
     def __post_init__(self):
         if not self.normalized_name:
             self.normalized_name = self._normalize_property_name(self.name)
+        # Ensure normalized_value is properly set
+        if self.normalized_value is None and isinstance(self.value, (int, float)):
+            self.normalized_value = self.value
     
     def _normalize_property_name(self, name: str) -> str:
         """Map property name synonyms to canonical form."""
@@ -308,7 +316,7 @@ class FusedPropertyEntry:
     Contains consensus value, variation metrics, and source attribution.
     """
     property_name: str
-    fused_value: Union[float, str, Dict]
+    fused_value: Optional[Union[float, str, Dict]] = None  # FIXED: Made optional with default=None
     unit: Optional[str] = None
     fusion_confidence: FusionConfidence = FusionConfidence.UNKNOWN
     source_count: int = 0
@@ -377,7 +385,11 @@ class FusionEfficiencyMetrics:
             self.answer_specificity_score * weights["specificity"]
         ]
         
-        self.overall_fusion_efficiency = sum(components) / sum(weights.values()) if sum(weights.values()) > 0 else 0.0
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            self.overall_fusion_efficiency = sum(components) / total_weight
+        else:
+            self.overall_fusion_efficiency = 0.0
         return self.overall_fusion_efficiency
     
     def to_display_dict(self) -> Dict[str, str]:
@@ -930,11 +942,14 @@ class MultiDocumentPropertyExtractor:
                     prop_name = ' '.join(tokens[:2]) if len(tokens[0]) < 15 else tokens[0]
                     value_match = re.match(r'([\d.]+)', numeric_tokens[0])
                     if value_match:
-                        prop = ExtractedProperty(
-                            name=prop_name, value=float(value_match.group(1)),
-                            extraction_confidence=0.6, context_snippet=line[:100], property_type="observation"
-                        )
-                        properties.append(prop)
+                        try:
+                            prop = ExtractedProperty(
+                                name=prop_name, value=float(value_match.group(1)),
+                                extraction_confidence=0.6, context_snippet=line[:100], property_type="observation"
+                            )
+                            properties.append(prop)
+                        except (ValueError, TypeError):
+                            continue
         return properties
     
     def _extract_inline_properties(self, text: str) -> List[ExtractedProperty]:
@@ -947,13 +962,10 @@ class MultiDocumentPropertyExtractor:
                 uncertainty = f"{groups[2]}{groups[3]}" if groups[2] and groups[3] else None
                 unit = groups[4].strip() if groups[4] else None
                 condition = groups[5].strip() if len(groups) > 5 and groups[5] else None
-                try:
-                    value_clean = re.sub(r'\s*[×x*]\s*10\^?', 'e', value_str)
-                    numeric_value = float(re.search(r'[\d.]+(?:e[+-]?\d+)?', value_clean, re.I).group())
-                except:
-                    numeric_value = None
+                # FIXED: Robust numeric parsing
+                numeric_value = self._safe_parse_numeric(value_str)
                 prop = ExtractedProperty(
-                    name=prop_name, value=numeric_value if numeric_value else value_str,
+                    name=prop_name, value=numeric_value if numeric_value is not None else value_str,
                     unit=unit, uncertainty=uncertainty, condition=condition,
                     extraction_confidence=0.7, context_snippet=match.group(0)[:150],
                     property_type="parameter" if any(kw in prop_name.lower() for kw in ['fluence', 'duration', 'wavelength', 'threshold']) else "measurement"
@@ -977,38 +989,91 @@ class MultiDocumentPropertyExtractor:
         return properties
     
     def _parse_property_value(self, raw_value: str, prop_name: str) -> Optional[Dict[str, Any]]:
-        if not raw_value or raw_value.strip() == '-':
+        """FIXED: Robust parsing with error handling for edge cases"""
+        if not raw_value or raw_value.strip() in ['-', '.', '', 'N/A', 'n/a', 'NA', 'na', '--']:
             return None
+        
         result = {"value": None, "unit": None, "uncertainty": None}
+        
+        # Extract uncertainty (± notation)
         uncertainty_match = re.search(r'([±\+-])\s*([\d.]+)', raw_value)
         if uncertainty_match:
             result["uncertainty"] = f"{uncertainty_match.group(1)}{uncertainty_match.group(2)}"
             raw_value = raw_value.replace(uncertainty_match.group(0), '').strip()
+        
+        # Extract unit (at end of string)
         for unit in sorted(self.UNIT_CONVERSIONS.keys(), key=len, reverse=True):
             if raw_value.lower().endswith(unit.lower()):
                 result["unit"] = unit
                 raw_value = raw_value[:-len(unit)].strip()
                 break
-        value_match = re.search(r'([\d.]+(?:\s*[×x*]\s*10\^?-?\d+)?)', raw_value)
-        if value_match:
-            value_str = value_match.group(1)
-            try:
-                value_clean = re.sub(r'\s*[×x*]\s*10\^?', 'e', value_str)
-                result["value"] = float(re.search(r'[\d.]+(?:e[+-]?\d+)?', value_clean, re.I).group())
-            except:
-                result["value"] = value_str
+        
+        # FIXED: Safe numeric value extraction
+        numeric_value = self._safe_parse_numeric(raw_value)
+        if numeric_value is not None:
+            result["value"] = numeric_value
         else:
-            result["value"] = raw_value
-        return result if result["value"] else None
+            # Keep as string if parsing fails
+            result["value"] = raw_value.strip() if raw_value.strip() else None
+        
+        return result if result["value"] is not None else None
+    
+    def _safe_parse_numeric(self, value_str: str) -> Optional[float]:
+        """
+        FIXED: Safely parse numeric value with comprehensive error handling.
+        Handles: '.', '-', empty strings, malformed scientific notation, ranges.
+        """
+        if not value_str:
+            return None
+        
+        # Clean the string
+        cleaned = value_str.strip()
+        
+        # Handle common non-numeric placeholders
+        if cleaned in ['.', '-', '--', '...', 'N/A', 'n/a', 'NA', 'na', 'null', 'None', '']:
+            return None
+        
+        # Handle ranges (take first value)
+        if '-' in cleaned and not cleaned.startswith('-'):
+            parts = cleaned.split('-')
+            if len(parts) == 2:
+                cleaned = parts[0].strip()
+        
+        # Handle scientific notation variations
+        cleaned = re.sub(r'\s*[×x*]\s*10\^?', 'e', cleaned)
+        cleaned = re.sub(r'\s*[×x*]\s*10', 'e', cleaned)
+        
+        # Extract numeric portion (handle trailing text)
+        match = re.match(r'^\s*([+-]?\s*[\d.]+(?:e[+-]?\d+)?)', cleaned, re.I)
+        if not match:
+            return None
+        
+        num_str = match.group(1).replace(' ', '')
+        
+        # Handle edge case: just a decimal point
+        if num_str in ['.', '+.', '-.']:
+            return None
+        
+        try:
+            return float(num_str)
+        except (ValueError, TypeError, OverflowError):
+            return None
     
     def _normalize_property_units(self, prop: ExtractedProperty):
         if not prop.unit or prop.unit not in self.UNIT_CONVERSIONS:
             prop.normalized_unit = prop.unit
-            prop.normalized_value = prop.value if isinstance(prop.value, (int, float)) else None
+            if isinstance(prop.value, (int, float)):
+                prop.normalized_value = prop.value
+            elif prop.normalized_value is None and isinstance(prop.value, str):
+                # Try to parse string value as numeric
+                prop.normalized_value = self._safe_parse_numeric(prop.value)
             return
         conversion = self.UNIT_CONVERSIONS[prop.unit]
         if isinstance(prop.value, (int, float)):
             prop.normalized_value = prop.value * conversion["factor"]
+            prop.normalized_unit = conversion["base"]
+        elif prop.normalized_value is not None:
+            prop.normalized_value = prop.normalized_value * conversion["factor"]
             prop.normalized_unit = conversion["base"]
         else:
             prop.normalized_unit = prop.unit
@@ -1075,20 +1140,32 @@ class MultiDocumentFusionEngine:
     def _fuse_property_group(self, prop_name: str, properties: List[ExtractedProperty]) -> Optional[FusedPropertyEntry]:
         if not properties:
             return None
-        numeric_props = [p for p in properties if isinstance(p.normalized_value, (int, float))]
+        
+        # Filter to numeric values for statistical fusion (if applicable)
+        numeric_props = [p for p in properties if p.normalized_value is not None and isinstance(p.normalized_value, (int, float))]
+        
+        # FIXED: Initialize with fused_value=None as default
         fused = FusedPropertyEntry(
             property_name=prop_name,
+            fused_value=None,  # Will be set below
             unit=properties[0].normalized_unit if properties[0].normalized_unit else properties[0].unit,
             source_count=len(properties),
             sources=[{"citation": p.source_citation, "chunk_id": p.source_chunk_id} for p in properties]
         )
+        
         if numeric_props and len(numeric_props) >= 1:
+            # Statistical fusion for numeric properties
             values = [p.normalized_value for p in numeric_props if p.normalized_value is not None]
             if values:
-                fused.fused_value = np.mean(values)
+                fused.fused_value = np.mean(values)  # FIXED: Now this assignment works
                 fused.value_range = (min(values), max(values))
                 fused.standard_deviation = np.std(values) if len(values) > 1 else 0.0
-                cv = fused.standard_deviation / abs(fused.fused_value) if fused.fused_value != 0 else 1.0
+                
+                # Determine fusion confidence based on variation
+                if fused.fused_value != 0:
+                    cv = fused.standard_deviation / abs(fused.fused_value)
+                else:
+                    cv = 1.0
                 if cv < 0.1 and len(numeric_props) >= 2:
                     fused.fusion_confidence = FusionConfidence.HIGH
                 elif cv < 0.3 or len(numeric_props) == 1:
@@ -1097,6 +1174,8 @@ class MultiDocumentFusionEngine:
                     fused.fusion_confidence = FusionConfidence.LOW
                     fused.conflicts_detected = True
                     fused.conflict_notes.append(f"High variation: CV={cv:.2f}")
+                
+                # Aggregate conditions
                 conditions = defaultdict(set)
                 for p in numeric_props:
                     if p.condition:
@@ -1106,16 +1185,19 @@ class MultiDocumentFusionEngine:
                             conditions[k].add(str(v))
                 fused.conditions_summary = {k: list(v) for k, v in conditions.items()}
         else:
-            value_counts = Counter(str(p.value) for p in properties)
-            fused.fused_value = value_counts.most_common(1)[0][0]
-            fused.fusion_confidence = (
-                FusionConfidence.HIGH if value_counts.most_common(1)[0][1] == len(properties)
-                else FusionConfidence.MODERATE if value_counts.most_common(1)[0][1] > len(properties) / 2
-                else FusionConfidence.LOW
-            )
-            if fused.fusion_confidence == FusionConfidence.LOW:
-                fused.conflicts_detected = True
-                fused.conflict_notes.append(f"Multiple distinct values: {list(value_counts.keys())[:3]}")
+            # Non-numeric or categorical fusion: use most frequent value
+            value_counts = Counter(str(p.value) for p in properties if p.value is not None)
+            if value_counts:
+                fused.fused_value = value_counts.most_common(1)[0][0]
+                fused.fusion_confidence = (
+                    FusionConfidence.HIGH if value_counts.most_common(1)[0][1] == len(properties)
+                    else FusionConfidence.MODERATE if value_counts.most_common(1)[0][1] > len(properties) / 2
+                    else FusionConfidence.LOW
+                )
+                if fused.fusion_confidence == FusionConfidence.LOW:
+                    fused.conflicts_detected = True
+                    fused.conflict_notes.append(f"Multiple distinct values: {list(value_counts.keys())[:3]}")
+        
         return fused
     
     def _compute_fusion_metrics(self, fusion_records: List[DocumentFusionRecord],
@@ -1138,8 +1220,14 @@ class MultiDocumentFusionEngine:
         numeric_with_uncertainty = [f for f in fused_properties.values() if f.standard_deviation is not None or any("±" in str(s.get("citation", "")) for s in f.sources)]
         metrics.numeric_properties_with_uncertainty = len(numeric_with_uncertainty)
         if fused_properties:
-            uncertainties = [f.standard_deviation / abs(f.fused_value) if isinstance(f.fused_value, (int, float)) and f.fused_value != 0 else 0.1 for f in fused_properties.values() if isinstance(f.fused_value, (int, float))]
-            metrics.average_uncertainty_magnitude = np.mean(uncertainties) if uncertainties else 0.1
+            uncertainties = []
+            for f in fused_properties.values():
+                if isinstance(f.fused_value, (int, float)) and f.fused_value != 0 and f.standard_deviation is not None:
+                    uncertainties.append(f.standard_deviation / abs(f.fused_value))
+            if uncertainties:
+                metrics.average_uncertainty_magnitude = np.mean(uncertainties)
+            else:
+                metrics.average_uncertainty_magnitude = 0.1
         confidence_weights = {FusionConfidence.HIGH: 1.0, FusionConfidence.MODERATE: 0.7, FusionConfidence.LOW: 0.4, FusionConfidence.UNKNOWN: 0.2}
         if fused_properties:
             weighted_sum = sum(confidence_weights.get(f.fusion_confidence, 0.5) for f in fused_properties.values())
@@ -1184,7 +1272,10 @@ class MultiDocumentFusionEngine:
         lines.append("| Property | Value | Unit | Range | Sources | Confidence |")
         lines.append("|----------|-------|------|-------|---------|------------|")
         for prop_name, entry in sorted(fused_props.items(), key=lambda x: x[0]):
-            value_str = f"{entry.fused_value:.3f}" if isinstance(entry.fused_value, (int, float)) else str(entry.fused_value)
+            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
+                value_str = f"{entry.fused_value:.3f}"
+            else:
+                value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
             if entry.uncertainty and entry.uncertainty not in value_str:
                 value_str = f"{value_str} {entry.uncertainty}"
             range_str = f"{entry.value_range[0]:.2f}–{entry.value_range[1]:.2f}" if entry.value_range else "–"
@@ -1196,7 +1287,10 @@ class MultiDocumentFusionEngine:
         lines = [r"\begin{tabular}{|l|c|c|c|c|c|}", r"\hline",
                 r"\textbf{Property} & \textbf{Value} & \textbf{Unit} & \textbf{Range} & \textbf{Sources} & \textbf{Confidence} \\", r"\hline"]
         for prop_name, entry in sorted(fused_props.items()):
-            value_str = f"{entry.fused_value:.3f}" if isinstance(entry.fused_value, (int, float)) else str(entry.fused_value)
+            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
+                value_str = f"{entry.fused_value:.3f}"
+            else:
+                value_str = str(entry.fused_value) if entry.fused_value is not None else "--"
             range_str = f"{entry.value_range[0]:.2f}--{entry.value_range[1]:.2f}" if entry.value_range else "--"
             conf_symbol = {"high": "high", "moderate": "mod", "low": "low"}.get(entry.fusion_confidence.value, "?")
             lines.append(f"{prop_name.replace('_', r'\_').title()} & {value_str} & {entry.unit or '--'} & {range_str} & {entry.source_count} & {conf_symbol} \\\\")
@@ -1210,7 +1304,10 @@ class MultiDocumentFusionEngine:
             lines.append(f'<th style="border: 1px solid #ccc; padding: 8px; text-align: left;">{header}</th>')
         lines.append('</tr></thead><tbody>')
         for prop_name, entry in fused_props.items():
-            value_str = f"{entry.fused_value:.3f}" if isinstance(entry.fused_value, (int, float)) else str(entry.fused_value)
+            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
+                value_str = f"{entry.fused_value:.3f}"
+            else:
+                value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
             bg_color = {"high": "#dcfce7", "moderate": "#fef3c7", "low": "#fee2e2"}.get(entry.fusion_confidence.value, "#f1f5f9")
             lines.append(f'<tr style="background: {bg_color};">')
             lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{prop_name.replace("_", " ").title()}</td>')
@@ -1229,7 +1326,10 @@ class MultiDocumentFusionEngine:
         lines.append(f"{'Property':<30} {'Value':<15} {'Unit':<10} {'Confidence':<10}")
         lines.append("-" * 70)
         for prop_name, entry in fused_props.items():
-            value_str = f"{entry.fused_value:.3f}" if isinstance(entry.fused_value, (int, float)) else str(entry.fused_value)
+            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
+                value_str = f"{entry.fused_value:.3f}"
+            else:
+                value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
             lines.append(f"{prop_name.replace('_', ' ').title():<30} {value_str:<15} {entry.unit or '–':<10} {entry.fusion_confidence.value:<10}")
         return "\n".join(lines)
 
@@ -1545,7 +1645,10 @@ def _create_fusion_aware_prompt(retrieved_docs: List[Document], query: str,
     if fused_properties:
         properties_summary = "**Fused Property Summary**:\n"
         for prop_name, entry in list(fused_properties.items())[:8]:
-            value_str = f"{entry.fused_value:.3f}" if isinstance(entry.fused_value, (int, float)) else str(entry.fused_value)
+            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
+                value_str = f"{entry.fused_value:.3f}"
+            else:
+                value_str = str(entry.fused_value) if entry.fused_value is not None else "N/A"
             properties_summary += f"• {prop_name.replace('_', ' ').title()}: {value_str} {entry.unit or ''} [conf: {entry.fusion_confidence.value}, sources: {entry.source_count}]\n"
         properties_summary += "\n"
     table_section = f"**Comparison Table**:\n{comparison_table}\n\n" if comparison_table else ""

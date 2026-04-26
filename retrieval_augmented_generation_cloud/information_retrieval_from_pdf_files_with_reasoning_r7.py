@@ -31,6 +31,7 @@ FIXES APPLIED (April 2026):
 • Added categorical property extraction (heat sources, laser types, machine types)
 • Fusion engine now handles non‑numeric properties and displays them in prompt
 • Zero‑division protection in fusion metrics when no properties are extracted
+• Fixed StreamlitDuplicateElementKey: selectbox keys are now unique per chat message
 
 Deploy to Streamlit Cloud with requirements.txt below.
 For local use with Ollama: install ollama Python library and run `ollama pull <model>`
@@ -1749,7 +1750,7 @@ class MultiDocumentFusionEngine:
         lines.append('<thead><tr style="background: #f0f9ff;">')
         for header in ["Property", "Value", "Unit", "Range", "Sources", "Confidence"]:
             lines.append(f'<th style="border: 1px solid #ccc; padding: 8px; text-align: left;">{header}</th>')
-        lines.append('</tr></thead><tbody>')
+        lines.append('<tr></thead><tbody>')
         for prop_name, entry in fused_props.items():
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
                 value_str = f"{entry.fused_value:.3f}"
@@ -2810,14 +2811,16 @@ def render_fusion_metrics_panel(fusion_metadata: Dict[str, Any]):
             st.warning(f"⚠️ {len(conflicts)} property(ies) have low-confidence fusion: {', '.join(conflicts[:3])}")
 
 
-def render_comparison_table_in_chat(comparison_table: Optional[str], fused_properties: Dict):
-    """Display interactive comparison table in chat."""
+def render_comparison_table_in_chat(comparison_table: Optional[str], fused_properties: Dict, unique_id: int):
+    """Display interactive comparison table in chat with a unique key per message."""
     if not comparison_table:
         return
     with st.expander("📋 Property Comparison Table", expanded=False):
         st.markdown(comparison_table, unsafe_allow_html=True)
         if fused_properties:
-            selected_prop = st.selectbox("🔍 Explore property details:", options=["Select a property..."] + list(fused_properties.keys()), key="fusion_prop_select")
+            # Use a unique key for the selectbox based on the message index
+            select_key = f"fusion_prop_select_{unique_id}"
+            selected_prop = st.selectbox("🔍 Explore property details:", options=["Select a property..."] + list(fused_properties.keys()), key=select_key)
             if selected_prop and selected_prop != "Select a property...":
                 prop_data = fused_properties[selected_prop]
                 st.json({"property": selected_prop, "fused_value": prop_data["value"], "unit": prop_data["unit"],
@@ -2854,7 +2857,8 @@ def render_chat_interface():
         st.warning("Please select and load a model in the sidebar first")
         return
 
-    for message in st.session_state.messages:
+    # Iterate over messages with index to provide unique keys for each property table
+    for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message.get("sources") and st.session_state.show_sources:
@@ -2887,11 +2891,15 @@ def render_chat_interface():
                     if meta.get('relevance'):
                         st.markdown(f"**Response relevance:** {meta['relevance']:.2f}/1.0")
             
-            # Display fusion metrics and tables
+            # Display fusion metrics and tables (pass idx as unique_id)
             if message.get("fusion_metadata") and st.session_state.enable_multi_doc_fusion:
                 render_fusion_metrics_panel(message["fusion_metadata"])
                 if message["fusion_metadata"].get("comparison_table"):
-                    render_comparison_table_in_chat(message["fusion_metadata"]["comparison_table"], message["fusion_metadata"].get("fused_properties", {}))
+                    render_comparison_table_in_chat(
+                        message["fusion_metadata"]["comparison_table"],
+                        message["fusion_metadata"].get("fused_properties", {}),
+                        unique_id=idx
+                    )
 
     if prompt := st.chat_input("Ask about laser parameters, ablation thresholds, LIPSS formation, SLM process, HEAs, etc."):
         st.session_state.messages.append({"role": "user", "content": prompt})

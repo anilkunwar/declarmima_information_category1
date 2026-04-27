@@ -17,3 +17,4 @@ h5py
 joblib
 scikit-image
 dgl
+ollama

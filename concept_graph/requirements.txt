@@ -16,3 +16,4 @@ pyvis
 h5py
 joblib
 scikit-image
+dgl

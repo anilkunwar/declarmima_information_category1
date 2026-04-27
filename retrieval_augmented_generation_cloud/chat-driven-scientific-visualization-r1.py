@@ -487,20 +487,31 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Initialize demo graph
+    # Initialize demo graph and session state
     if 'demo_graph' not in st.session_state:
         st.session_state.demo_graph = generate_demo_knowledge_graph()
         st.session_state.viz_engine = SimpleChatViz(st.session_state.demo_graph)
+
+    # Initialize the separated query state (do NOT use the same key as the text widget)
+    if 'viz_query' not in st.session_state:
+        st.session_state.viz_query = ""
 
     # Layout
     col_query, col_examples = st.columns([2, 1])
 
     with col_query:
         st.markdown("### 💬 Visualization Query")
+
+        # Callback to sync widget value -> session state
+        def update_query():
+            st.session_state.viz_query = st.session_state.viz_query_widget
+
         query = st.text_input(
             "Enter your visualization request:",
             placeholder="e.g., 'Plot multicomponent alloys among all materials as a pie chart'",
-            key="viz_query"
+            key="viz_query_widget",                       # widget key different from "viz_query"
+            value=st.session_state.viz_query,             # read from our main state
+            on_change=update_query
         )
 
         col_gen, col_clear = st.columns([1, 1])
@@ -508,6 +519,7 @@ def main():
             generate = st.button("📈 Generate Visualization", type="primary", use_container_width=True)
         with col_clear:
             if st.button("🗑️ Clear", use_container_width=True):
+                st.session_state.viz_query = ""
                 st.session_state.pop('last_fig', None)
                 st.session_state.pop('last_df', None)
                 st.rerun()
@@ -526,17 +538,18 @@ def main():
         ]
         for ex in examples:
             if st.button(f"▶ {ex}", key=f"ex_{ex[:20]}", use_container_width=True):
+                # Directly set the session state variable (no longer bound to widget key)
                 st.session_state.viz_query = ex
                 st.rerun()
 
     # Generate visualization
-    if generate and query:
+    if generate and st.session_state.viz_query:   # use the session state variable
         with st.spinner("🔍 Parsing query and generating chart..."):
             try:
-                fig, df = st.session_state.viz_engine.generate(query)
+                fig, df = st.session_state.viz_engine.generate(st.session_state.viz_query)
                 st.session_state.last_fig = fig
                 st.session_state.last_df = df
-                st.session_state.last_query = query
+                st.session_state.last_query = st.session_state.viz_query
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -550,7 +563,7 @@ def main():
             st.markdown(f"#### 📊 Result for: *{st.session_state.get('last_query', '')}*")
             st.plotly_chart(st.session_state.last_fig, use_container_width=True)
 
-            # Download
+            # Download – requires kaleido (`pip install kaleido`)
             buf = BytesIO()
             st.session_state.last_fig.write_image(buf, format="png", scale=2)
             buf.seek(0)

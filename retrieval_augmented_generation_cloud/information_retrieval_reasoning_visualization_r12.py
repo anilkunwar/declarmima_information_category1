@@ -2582,7 +2582,7 @@ class ChatDrivenVisualization:
         # Case 5: Property values
         if parsed['property_focus']:
             df = self.extractor.get_property_values(parsed['property_focus'])
-            return df, f"{parsed['property_focus'].replace('_', ' ').title()} values"
+            return df, f"{parsed['property_focus'].replace('_', ' ').Title()} values"
 
         # Default: Show material distribution
         df = self.extractor.get_material_distribution()
@@ -2667,6 +2667,15 @@ def render_chat_visualization_panel():
 
     viz_engine = st.session_state.viz_engine
 
+    # ------------------------------------------------------------------
+    # FIX: Handle pending query from suggestion buttons BEFORE creating
+    # the text_input widget. Streamlit does not allow modifying a widget's
+    # session_state key after the widget has been instantiated.
+    # ------------------------------------------------------------------
+    if 'viz_query_pending' in st.session_state:
+        st.session_state.viz_query_input = st.session_state.viz_query_pending
+        del st.session_state.viz_query_pending
+
     # Query input
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -2686,7 +2695,12 @@ def render_chat_visualization_panel():
         for i, query in enumerate(suggestions):
             with cols[i % 2]:
                 if st.button(f"▶ {query}", key=f"suggest_{i}", use_container_width=True):
-                    st.session_state.viz_query_input = query
+                    # ------------------------------------------------------------------
+                    # FIX: Store in a *pending* key rather than the widget key directly.
+                    # The value is promoted to the widget key on the next rerun
+                    # *before* the widget is recreated.
+                    # ------------------------------------------------------------------
+                    st.session_state.viz_query_pending = query
                     st.rerun()
 
     # Generate visualization

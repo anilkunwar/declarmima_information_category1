@@ -1350,23 +1350,36 @@ def get_category_color(concept: str) -> str:
         return "#9C27B0"  # purple – computational
     else:
         return "#009688"  # teal – other
-
+#
 def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
                                min_node_size=12, max_node_size=50):
-    """Render interactive PyVis graph with user‑adjustable physics and styling."""
+    """Render interactive PyVis graph with user‑adjustable physics and styling.
+    
+    FIXED: Convert numpy scalars to native Python types for JSON serialization.
+    """
+    # Sample large graphs for performance
     if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
         nx_graph = nx_graph.subgraph(top_nodes).copy()
     
+    # Initialize PyVis network with white theme
     net = Network(
         height="700px", width="100%", bgcolor="#ffffff", font_color="#000000",
         select_menu=True, notebook=False, cdn_resources='in_line'
     )
+    
+    # Configure physics simulation (Barnes-Hut approximation)
     if physics_enabled:
-        net.barnes_hut(gravity=-2000, spring_length=150, spring_strength=0.05,
-                       damping=0.09, overlap=0.5)
+        net.barnes_hut(
+            gravity=-2000,        # Repulsive force between nodes
+            spring_length=150,    # Ideal edge length
+            spring_strength=0.05, # Edge stiffness
+            damping=0.09,         # Oscillation damping
+            overlap=0.5           # Node overlap prevention
+        )
     else:
+        # Disable physics for static layout
         net.set_options("""
         var options = {
             physics: { enabled: false },
@@ -1374,29 +1387,65 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         }
         """)
     
-    # Add nodes with size = frequency scaling
+    # Add nodes with category-based colors and frequency-scaled sizes
     for node in nx_graph.nodes():
         freq = len(concept_abstract_map.get(node, []))
-        size = np.clip(min_node_size + freq * 2, min_node_size, max_node_size)
+        
+        # ✅ FIX: Convert numpy scalar to native int for JSON serialization
+        size = int(np.clip(min_node_size + freq * 2, min_node_size, max_node_size))
+        
         color = get_category_color(node)
+        degree = int(nx_graph.degree(node))  # ✅ Also convert degree to int
+        
         net.add_node(
-            node, label=node, size=size, color=color,
+            node, 
+            label=node, 
+            size=size, 
+            color=color,
             font={'color': '#000000', 'size': 14},
-            title=f"{node}\nDegree: {nx_graph.degree(node)}\nFrequency: {freq}"
+            title=f"{node}\nDegree: {degree}\nFrequency: {freq}"
         )
+    
+    # Add edges with weight-scaled styling
+    color_map = {
+        'cooccurrence': "#4CAF50",    # Green: empirical co-occurrence
+        'semantic': "#2196F3",         # Blue: embedding similarity
+        'bridge': "#FFC107",           # Amber: connects components
+        'declarmina_aligned': "#E91E63" # Pink: DECLARMIMA project alignment
+    }
+    
     for u, v in nx_graph.edges():
         w = nx_graph[u][v].get('weight', 1)
         edge_type = nx_graph[u][v].get('edge_type', 'unknown')
-        color_map = {'cooccurrence': "#4CAF50", 'semantic': "#2196F3",
-                     'bridge': "#FFC107", 'declarmina_aligned': "#E91E63"}
         color = color_map.get(edge_type, "#607D8B")
-        net.add_edge(u, v, value=np.clip(w, 0.5, 5), width=np.clip(w*0.8, 1, 4),
-                     color=color, smooth={'type': 'curvedCW', 'roundness': 0.2})
+        
+        # ✅ FIX: Convert all numpy scalars to native Python float/int
+        edge_value = float(np.clip(w, 0.5, 5))
+        edge_width = float(np.clip(w * 0.8, 1, 4))
+        
+        net.add_edge(
+            u, v, 
+            value=edge_value, 
+            width=edge_width,
+            color=color, 
+            smooth={'type': 'curvedCW', 'roundness': 0.2}
+        )
+    
+    # Generate HTML with inline resources for Streamlit compatibility
     html = net.generate_html()
+    
+    # Render in Streamlit
     st.components.v1.html(html, height=750, scrolling=True)
-    st.download_button("📥 Download Interactive Graph (HTML)", data=html,
-                       file_name="declarmima_graph.html", mime="text/html",
-                       key="pyvis_download_custom")
+    
+    # Download button for interactive graph
+    st.download_button(
+        "📥 Download Interactive Graph (HTML)", 
+        data=html,
+        file_name="declarmima_graph.html", 
+        mime="text/html",
+        key="pyvis_download_custom"
+    )
+
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map):
     """Render concept graph using Plotly with WHITE background and vibrant colors"""

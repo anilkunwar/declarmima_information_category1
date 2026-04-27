@@ -491,10 +491,7 @@ def main():
     if 'demo_graph' not in st.session_state:
         st.session_state.demo_graph = generate_demo_knowledge_graph()
         st.session_state.viz_engine = SimpleChatViz(st.session_state.demo_graph)
-
-    # Initialize the separated query state (do NOT use the same key as the text widget)
-    if 'viz_query' not in st.session_state:
-        st.session_state.viz_query = ""
+        st.session_state.viz_query = ""   # separate from widget key
 
     # Layout
     col_query, col_examples = st.columns([2, 1])
@@ -502,15 +499,14 @@ def main():
     with col_query:
         st.markdown("### 💬 Visualization Query")
 
-        # Callback to sync widget value -> session state
         def update_query():
             st.session_state.viz_query = st.session_state.viz_query_widget
 
         query = st.text_input(
             "Enter your visualization request:",
             placeholder="e.g., 'Plot multicomponent alloys among all materials as a pie chart'",
-            key="viz_query_widget",                       # widget key different from "viz_query"
-            value=st.session_state.viz_query,             # read from our main state
+            key="viz_query_widget",
+            value=st.session_state.viz_query,
             on_change=update_query
         )
 
@@ -538,12 +534,11 @@ def main():
         ]
         for ex in examples:
             if st.button(f"▶ {ex}", key=f"ex_{ex[:20]}", use_container_width=True):
-                # Directly set the session state variable (no longer bound to widget key)
                 st.session_state.viz_query = ex
                 st.rerun()
 
     # Generate visualization
-    if generate and st.session_state.viz_query:   # use the session state variable
+    if generate and st.session_state.viz_query:
         with st.spinner("🔍 Parsing query and generating chart..."):
             try:
                 fig, df = st.session_state.viz_engine.generate(st.session_state.viz_query)
@@ -563,16 +558,17 @@ def main():
             st.markdown(f"#### 📊 Result for: *{st.session_state.get('last_query', '')}*")
             st.plotly_chart(st.session_state.last_fig, use_container_width=True)
 
-            # Download – requires kaleido (`pip install kaleido`)
+            # Download as interactive HTML (no extra dependencies)
             buf = BytesIO()
-            st.session_state.last_fig.write_image(buf, format="png", scale=2)
+            st.session_state.last_fig.write_html(buf, include_plotlyjs='cdn')
             buf.seek(0)
             st.download_button(
-                "📥 Download PNG",
+                "📥 Download as HTML",
                 data=buf,
-                file_name="chat_viz.png",
-                mime="image/png",
-                use_container_width=True
+                file_name="chat_viz.html",
+                mime="text/html",
+                use_container_width=True,
+                help="Download an interactive Plotly HTML file that can be opened in any browser"
             )
 
         with info_col:

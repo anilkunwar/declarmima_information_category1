@@ -820,6 +820,8 @@ class AlloyPropertyExtractor:
         # Extract composition data
         composition_props = self._extract_composition_data(chunk_text)
         for prop in composition_props:
+            prop.source_chunk_id = record.chunk_id
+            prop.source_citation = record.bibliographic_citation
             record.add_property(prop)
         
         return record
@@ -1001,19 +1003,31 @@ class AlloyPropertyExtractor:
             value = float(match.group(1))
             element = match.group(2)
             context = text[max(0, match.start()-100):min(len(text), match.end()+100)]
-            properties.append(AlloyProperty(
-                text=match.group(0), label="COMPOSITION_ATOMIC", value=value, unit="at.%",
-                doc_source="", chunk_id=0, context=context, confidence=0.9
-            ))
+            prop = AlloyProperty(
+                name=f"composition_{element}",
+                value=value,
+                unit="at.%",
+                context_snippet=context,
+                extraction_confidence=0.9,
+                property_type="composition"
+            )
+            self._normalize_property_units(prop)
+            properties.append(prop)
         # Extract weight percentages
         for match in ALLOY_COMPOSITION_PATTERNS["weight_percent"].finditer(text):
             value = float(match.group(1))
             element = match.group(2)
             context = text[max(0, match.start()-100):min(len(text), match.end()+100)]
-            properties.append(AlloyProperty(
-                text=match.group(0), label="COMPOSITION_WEIGHT", value=value, unit="wt.%",
-                doc_source="", chunk_id=0, context=context, confidence=0.9
-            ))
+            prop = AlloyProperty(
+                name=f"composition_{element}",
+                value=value,
+                unit="wt.%",
+                context_snippet=context,
+                extraction_confidence=0.9,
+                property_type="composition"
+            )
+            self._normalize_property_units(prop)
+            properties.append(prop)
         return properties
     
     def _parse_property_value(self, raw_value: str, prop_name: str) -> Optional[Dict[str, Any]]:
@@ -1383,7 +1397,7 @@ class AlloyFusionEngine:
             
             bg_color = {"high": "#dcfce7", "moderate": "#fef3c7", "low": "#fee2e2"}.get(entry.fusion_confidence.value, "#f1f5f9")
             lines.append(f'<tr style="background: {bg_color};">')
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{prop_name.replace("_", " ").title()}</td>')
+            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{prop_name.replace("_", " ").title()}</table>')
             lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{value_str}</td>')
             lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{entry.unit or "–"}</td>')
             range_display = f"{entry.value_range[0]:.2f}–{entry.value_range[1]:.2f}" if entry.value_range else "–"
@@ -1421,9 +1435,9 @@ class AlloyVisualizationEngine:
     """Generate customized visualizations for alloy microstructure data"""
     
     @staticmethod
-    def create_composition_pie_chart(composition_ List[Dict], alloy_name: str, title: str = None) -> go.Figure:
+    def create_composition_pie_chart(composition_data: List[Dict], alloy_name: str, title: str = None) -> go.Figure:
         """Create interactive pie chart for alloy composition"""
-        if not composition_
+        if not composition_data:
             return None
         
         elements = [d['element'] for d in composition_data]
@@ -1494,11 +1508,11 @@ class AlloyVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_phase_fraction_bar_chart(phase_ List[Dict], 
+    def create_phase_fraction_bar_chart(phase_data: List[Dict], 
                                        title: str = "Phase Fraction Distribution",
                                        stacked: bool = True) -> go.Figure:
         """Create bar chart for phase fractions across samples"""
-        if not phase_
+        if not phase_data:
             return None
         
         df = pd.DataFrame(phase_data)
@@ -1537,11 +1551,11 @@ class AlloyVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_alloy_property_comparison_chart(alloy_ List[Dict], 
+    def create_alloy_property_comparison_chart(alloy_properties: List[Dict], 
                                                property_name: str,
                                                title: str = None) -> go.Figure:
         """Create comparison chart for alloy properties"""
-        if not alloy_
+        if not alloy_properties:
             return None
         
         df = pd.DataFrame(alloy_properties)
@@ -1569,10 +1583,10 @@ class AlloyVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_grain_size_distribution(grain_ List[Dict], 
+    def create_grain_size_distribution(grain_data: List[Dict], 
                                       title: str = "Grain Size Distribution") -> go.Figure:
         """Create histogram/box plot for grain size distribution"""
-        if not grain_
+        if not grain_data:
             return None
         
         df = pd.DataFrame(grain_data)
@@ -1607,11 +1621,11 @@ class AlloyVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_phase_evolution_chart(phase_ List[Dict], 
+    def create_phase_evolution_chart(phase_data: List[Dict], 
                                      temperature_col: str = 'temperature',
                                      title: str = "Phase Evolution with Temperature") -> go.Figure:
         """Create line chart showing phase fraction evolution with temperature"""
-        if not phase_
+        if not phase_data:
             return None
         
         df = pd.DataFrame(phase_data)
@@ -2388,7 +2402,7 @@ def render_viz_control_panel(fused_properties: Dict[str, FusedAlloyProperty], re
                     "percentage": prop.fused_value
                 })
         
-        if composition_
+        if composition_data:
             alloy_name = st.session_state.viz_alloy_focus if st.session_state.viz_alloy_focus != "All Alloys" else "Multicomponent Alloy"
             fig = viz_engine.create_composition_pie_chart(composition_data, alloy_name)
             if fig:
@@ -2430,7 +2444,7 @@ def render_viz_control_panel(fused_properties: Dict[str, FusedAlloyProperty], re
                         "fraction": prop.fused_value
                     })
         
-        if phase_
+        if phase_data:
             stacked = st.checkbox("Stacked bars", value=True, key="phase_stacked")
             fig = viz_engine.create_phase_fraction_bar_chart(phase_data, stacked=stacked)
             st.plotly_chart(fig, use_container_width=True)
@@ -2454,7 +2468,7 @@ def render_viz_control_panel(fused_properties: Dict[str, FusedAlloyProperty], re
                         "condition": "; ".join(prop.conditions_summary.get("context", [])) if prop.conditions_summary else None
                     })
         
-        if alloy_
+        if alloy_properties:
             property_name = st.session_state.viz_property_focus if st.session_state.viz_property_focus != "All Properties" else list(fused_properties.keys())[0]
             fig = viz_engine.create_alloy_property_comparison_chart(alloy_properties, property_name)
             st.plotly_chart(fig, use_container_width=True)
@@ -2474,7 +2488,7 @@ def render_viz_control_panel(fused_properties: Dict[str, FusedAlloyProperty], re
                         "source": prop.sources[0]["citation"][:30] if prop.sources else "Unknown"
                     })
         
-        if grain_
+        if grain_data:
             fig = viz_engine.create_grain_size_distribution(grain_data)
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -2853,7 +2867,23 @@ def render_chat_interface():
                 # Physics validation
                 fused_props = message["fusion_metadata"].get("fused_properties", {})
                 if fused_props:
-                    render_physics_validation_panel(fused_props)
+                    # Reconstruct FusedAlloyProperty objects for validation
+                    reconstructed = {}
+                    for name, data in fused_props.items():
+                        prop = FusedAlloyProperty(property_name=name)
+                        prop.fused_value = data.get("value")
+                        prop.unit = data.get("unit")
+                        prop.fusion_confidence = FusionConfidence(data.get("confidence", "unknown"))
+                        prop.source_count = data.get("sources", 0)
+                        prop.standard_deviation = float(data["std"]) if data.get("std") else None
+                        if data.get("range"):
+                            parts = data["range"].split("–")
+                            if len(parts) == 2:
+                                prop.value_range = (float(parts[0]), float(parts[1]))
+                        prop.alloy_system = data.get("alloy_system")
+                        prop.phase = data.get("phase")
+                        reconstructed[name] = prop
+                    render_physics_validation_panel(reconstructed)
     
     # Chat input
     if prompt := st.chat_input("Ask about alloy composition, phase structure, grain size, or compare microstructures..."):
@@ -2881,7 +2911,7 @@ def render_chat_interface():
                             property_filter=[st.session_state.viz_property_focus.lower().replace(' ', '_')] if st.session_state.viz_property_focus != "All Properties" else None
                         )
                     else:
-                        answer, retrieved_docs, relevance = retrieve_and_answer_with_alloy_fusion(
+                        answer, retrieved_docs, relevance, metadata = retrieve_and_answer_with_alloy_fusion(
                             vectorstore=st.session_state.vectorstore,
                             tokenizer=st.session_state.llm_tokenizer,
                             model=st.session_state.llm_model,
@@ -2892,7 +2922,6 @@ def render_chat_interface():
                             k=st.session_state.max_retrieved_chunks,
                             enable_fusion=False
                         )
-                        metadata = {"fusion_enabled": False}
                     
                     # Stream the response
                     display_text = ""

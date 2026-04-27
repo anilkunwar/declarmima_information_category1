@@ -3,6 +3,11 @@
 """
 DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ========================================================================================
+✅ CUDA COMPATIBILITY FIXES ADDED:
+   - GPU compute capability detection
+   - Automatic PyTorch/CUDA version validation
+   - Graceful CPU fallback with user notification
+   - Environment variable guidance for manual fixes
 ✅ Zero API keys - all models run locally (HuggingFace Transformers + Ollama)
 ✅ Dual backend: Choose between HF Transformers (direct loading) or Ollama (server-based)
 ✅ ALL models from LASER RAG codebase included (12 HF + 8 Ollama options)
@@ -19,6 +24,14 @@ pip install streamlit torch transformers sentence-transformers networkx scikit-l
 pip install pyvis plotly pandas numpy kaleido  # kaleido for SVG export
 pip install ollama  # optional for Ollama backend
 
+# 🔧 CUDA FIX: If you get "no kernel image" error, run ONE of these:
+# For NEW GPUs (RTX 40xx/50xx, Blackwell):
+pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# For OLD GPUs (compute capability < 3.7):
+# You must build PyTorch from source with TORCH_CUDA_ARCH_LIST=3.5
+# Or force CPU mode by setting: export CUDA_VISIBLE_DEVICES=""
+
 Run: streamlit run declarmima_concept_graph.py
 """
 import streamlit as st
@@ -33,11 +46,13 @@ import pandas as pd
 import re
 import json
 import os
+import sys
 import tempfile
 import warnings
 import traceback
 import gc
 import hashlib
+import subprocess
 from collections import defaultdict, Counter
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Union, Any
@@ -64,6 +79,202 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ==========================================
+# 🔧 CUDA COMPATIBILITY DIAGNOSTICS (NEW)
+# ==========================================
+def get_gpu_compute_capability(device_id: int = 0) -> Optional[Tuple[int, int]]:
+    """Get CUDA compute capability (major, minor) of the specified GPU."""
+    if not torch.cuda.is_available():
+        return None
+    try:
+        major, minor = torch.cuda.get_device_capability(device_id)
+        return (major, minor)
+    except Exception as e:
+        st.warning(f"⚠️ Could not detect GPU compute capability: {e}")
+        return None
+
+def get_pytorch_cuda_info() -> Dict[str, Any]:
+    """Gather PyTorch CUDA build information for diagnostics."""
+    info = {
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda if hasattr(torch.version, 'cuda') else None,
+        "cudnn_version": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "gpu_names": [],
+        "compute_capabilities": [],
+        "pytorch_cuda_build": None
+    }
+    
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            info["gpu_names"].append(torch.cuda.get_device_name(i))
+            try:
+                cc = torch.cuda.get_device_capability(i)
+                info["compute_capabilities"].append(f"{cc[0]}.{cc[1]}")
+            except:
+                info["compute_capabilities"].append("Unknown")
+    
+    # Check if PyTorch was built with CUDA support
+    info["pytorch_cuda_build"] = "cu" in torch.__version__
+    
+    return info
+
+def check_cuda_kernel_compatibility() -> Tuple[bool, str]:
+    """
+    Check if current PyTorch build supports the detected GPU(s).
+    Returns: (is_compatible, diagnostic_message)
+    
+    Based on: https://discuss.pytorch.org/t/runtimeerror-cuda-error-no-kernel-image-is-available-for-execution-on-the-device/111846
+    """
+    if not torch.cuda.is_available():
+        return True, "CUDA not available - using CPU mode"
+    
+    cuda_info = get_pytorch_cuda_info()
+    messages = []
+    is_compatible = True
+    
+    # Minimum compute capability supported by pre-built PyTorch binaries
+    MIN_SM = 3.7  # PyTorch binaries require sm >= 3.7
+    
+    for i, cc_str in enumerate(cuda_info["compute_capabilities"]):
+        if cc_str == "Unknown":
+            messages.append(f"⚠️ GPU {i}: Could not determine compute capability")
+            continue
+        
+        try:
+            major, minor = map(int, cc_str.split('.'))
+            sm = major + minor / 10
+            
+            if sm < MIN_SM:
+                is_compatible = False
+                messages.append(
+                    f"❌ GPU {i} ({cuda_info['gpu_names'][i]}): "
+                    f"Compute capability {cc_str} < {MIN_SM}. "
+                    f"PyTorch pre-built binaries require sm >= {MIN_SM}. "
+                    f"Solution: Build PyTorch from source with TORCH_CUDA_ARCH_LIST={cc_str}"
+                )
+            elif sm >= 9.0:
+                # New GPUs (Ada Lovelace, Blackwell) may need newer CUDA
+                pytorch_version = cuda_info["torch_version"]
+                cuda_build = cuda_info["cuda_version"]
+                
+                # RTX 40xx (sm_89) needs PyTorch ≥2.0 + CUDA 11.8+
+                # RTX 50xx/Blackwell (sm_90+) needs PyTorch ≥2.4 + CUDA 12.4+
+                if cuda_build and float(cuda_build.replace('.', '')) < 124 and sm >= 9.0:
+                    is_compatible = False
+                    messages.append(
+                        f"❌ GPU {i} ({cuda_info['gpu_names'][i]}): "
+                        f"New GPU (sm_{major}{minor}) requires CUDA 12.4+ but PyTorch built with CUDA {cuda_build}. "
+                        f"Solution: pip install -U torch --index-url https://download.pytorch.org/whl/cu128"
+                    )
+            else:
+                messages.append(f"✅ GPU {i} ({cuda_info['gpu_names'][i]}): Compatible (sm_{major}{minor})")
+        except ValueError:
+            messages.append(f"⚠️ GPU {i}: Invalid compute capability format: {cc_str}")
+    
+    return is_compatible, "\n".join(messages)
+
+def force_cpu_mode():
+    """Force PyTorch to use CPU only by setting environment variables."""
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # Override torch.cuda.is_available for this session
+    original_is_available = torch.cuda.is_available
+    torch.cuda.is_available = lambda: False
+    st.session_state["force_cpu"] = True
+    st.session_state["original_cuda_available"] = original_is_available
+    return torch.device('cpu')
+
+def restore_cuda_mode():
+    """Restore CUDA availability if it was previously forced to CPU."""
+    if "original_cuda_available" in st.session_state:
+        torch.cuda.is_available = st.session_state["original_cuda_available"]
+        del st.session_state["original_cuda_available"]
+    if "force_cpu" in st.session_state:
+        del st.session_state["force_cpu"]
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        del os.environ["CUDA_VISIBLE_DEVICES"]
+
+def show_cuda_fix_instructions(compatible: bool, diagnostic: str):
+    """Display actionable fix instructions in Streamlit UI."""
+    with st.expander("🔧 CUDA Diagnostics & Fix Instructions", expanded=not compatible):
+        st.markdown("### 📊 System CUDA Information")
+        cuda_info = get_pytorch_cuda_info()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"""
+            **PyTorch Version:** `{cuda_info['torch_version']}`  
+            **CUDA Available:** {'✅ Yes' if cuda_info['cuda_available'] else '❌ No'}  
+            **CUDA Build Version:** `{cuda_info['cuda_version'] or 'N/A'}`  
+            **cuDNN Version:** `{cuda_info['cudnn_version'] or 'N/A'}`  
+            **Pre-built with CUDA:** {'✅ Yes' if cuda_info['pytorch_cuda_build'] else '❌ No'}
+            """)
+        
+        with col2:
+            if cuda_info['gpu_count'] > 0:
+                gpu_list = "\n".join([f"- {name} (sm_{cc})" 
+                                     for name, cc in zip(cuda_info['gpu_names'], cuda_info['compute_capabilities'])])
+                st.markdown(f"""
+                **Detected GPUs:**  
+                {gpu_list}
+                """)
+            else:
+                st.markdown("**Detected GPUs:** None (CPU mode)")
+        
+        st.markdown("### 🔍 Compatibility Check")
+        status_icon = "✅" if compatible else "❌"
+        st.markdown(f"{status_icon} **Status:** {'Compatible' if compatible else 'INCOMPATIBLE'}")
+        
+        if diagnostic.strip():
+            st.code(diagnostic, language="text")
+        
+        if not compatible:
+            st.markdown("### 🛠️ Recommended Fixes")
+            
+            # Check for new GPU needing CUDA 12.8
+            if any("Blackwell" in msg or "RTX 50" in msg or "sm_9" in msg for msg in diagnostic.split('\n')):
+                st.markdown("""
+                **For NEW GPUs (RTX 50xx/Blackwell/Ada Lovelace):**
+                ```bash
+                # Upgrade to PyTorch with CUDA 12.8 support
+                pip uninstall torch torchvision torchaudio -y
+                pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+                ```
+                """)
+            
+            # Check for old GPU needing source build
+            elif any("sm_3.5" in msg or "sm_3.6" in msg or "GT 730" in msg for msg in diagnostic.split('\n')):
+                st.markdown("""
+                **For OLD GPUs (compute capability < 3.7):**
+                ```bash
+                # Option 1: Force CPU mode (slower but reliable)
+                export CUDA_VISIBLE_DEVICES=""
+                
+                # Option 2: Build PyTorch from source
+                git clone --recursive https://github.com/pytorch/pytorch
+                cd pytorch
+                export TORCH_CUDA_ARCH_LIST="3.5"  # Replace with your GPU's sm
+                python setup.py install
+                ```
+                """)
+            
+            # Generic fallback
+            st.markdown("""
+            **Universal Fallback (CPU Mode):**
+            ```python
+            # Add to your script before importing torch modules:
+            import os
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            
+            # Or in Streamlit sidebar: check "Force CPU mode"
+            ```
+            """)
+            
+            if st.button("🔄 Reload App in CPU Mode"):
+                force_cpu_mode()
+                st.rerun()
+
+# ==========================================
 # STREAMLIT CONFIGURATION (Must be first)
 # ==========================================
 st.set_page_config(
@@ -82,9 +293,42 @@ os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 os.environ["STREAMLIT_WATCHER_TYPE"] = "none"
 
 # ==========================================
-# DEVICE & SEED SETUP
+# 🔧 CUDA ERROR HANDLING SETUP (NEW)
 # ==========================================
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Set environment variable to catch CUDA errors synchronously for debugging
+# This helps identify the exact line causing cudaErrorNoKernelImageForDevice
+if "CUDA_LAUNCH_BLOCKING" not in os.environ:
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+# ==========================================
+# DEVICE & SEED SETUP (WITH CUDA FALLBACK)
+# ==========================================
+def initialize_device():
+    """Initialize device with CUDA compatibility checks and fallback."""
+    # Check if user forced CPU mode
+    if st.session_state.get("force_cpu", False):
+        return torch.device('cpu')
+    
+    # Run compatibility check
+    compatible, diagnostic = check_cuda_kernel_compatibility()
+    
+    if not compatible:
+        show_cuda_fix_instructions(compatible, diagnostic)
+        st.warning("⚠️ CUDA incompatible - falling back to CPU mode. Click 'Reload App in CPU Mode' above.")
+        return force_cpu_mode()
+    
+    # Standard device selection
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Display GPU info in sidebar
+    if device.type == 'cuda':
+        cc = get_gpu_compute_capability()
+        if cc:
+            st.sidebar.success(f"🎮 GPU: {torch.cuda.get_device_name(0)} (sm_{cc[0]}{cc[1]})")
+    
+    return device
+
+DEVICE = initialize_device()
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
@@ -338,13 +582,26 @@ def get_adaptive_config(num_abstracts: int) -> Dict[str, Any]:
         }
 
 # ==========================================
-# MODEL LOADING (CACHED FOR STREAMLIT)
+# 🔧 CUDA-SAFE MODEL LOADING (MODIFIED)
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
-    """Load Sentence-BERT embedding model with device handling"""
+    """Load Sentence-BERT embedding model with CUDA error handling"""
     try:
-        return SentenceTransformer(EMBED_NAME, device=DEVICE)
+        # Try CUDA first if available and compatible
+        if DEVICE.type == 'cuda':
+            return SentenceTransformer(EMBED_NAME, device=DEVICE)
+        else:
+            return SentenceTransformer(EMBED_NAME, device='cpu')
+    except RuntimeError as e:
+        if "no kernel image" in str(e).lower() or "cudaerror" in str(e).lower():
+            st.error(f"❌ CUDA kernel error with embedding model: {e}")
+            st.info("💡 Falling back to CPU mode for embeddings")
+            # Force CPU and retry
+            cpu_device = torch.device('cpu')
+            return SentenceTransformer(EMBED_NAME, device=cpu_device)
+        else:
+            raise e
     except Exception as e:
         st.error(f"❌ Failed to load embedding model: {e}")
         st.info("💡 Falling back to CPU-only mode")
@@ -352,12 +609,29 @@ def load_embedding_model():
 
 @st.cache_resource(show_spinner="Loading LLM (this may take 1-2 minutes on first load)...")
 def load_local_llm(model_key: str, use_4bit: bool = True):
-    """Unified LLM loader with backend routing (HF Transformers or Ollama)"""
+    """Unified LLM loader with CUDA error handling and backend routing"""
     try:
         if is_ollama_model(model_key):
             return _load_ollama_model(model_key)
         else:
             return _load_transformers_model(model_key, use_4bit)
+    except RuntimeError as e:
+        if "no kernel image" in str(e).lower() or "cudaerror" in str(e).lower():
+            st.error(f"❌ CUDA kernel error loading LLM '{model_key}': {e}")
+            st.warning("💡 Attempting fallback to CPU mode...")
+            try:
+                # Fallback: load smallest model on CPU
+                tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+                model = GPT2LMHeadModel.from_pretrained("gpt2").to('cpu')
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                model.eval()
+                return tokenizer, model, torch.device('cpu'), "transformers"
+            except Exception as e2:
+                st.error(f"Fallback also failed: {e2}")
+                return None, None, None, None
+        else:
+            raise e
     except Exception as e:
         st.error(f"Failed to load LLM '{model_key}': {e}")
         st.warning("Falling back to GPT-2...")
@@ -406,9 +680,20 @@ def _load_ollama_model(model_key: str) -> Tuple[Optional[Any], str, str, str]:
     return None, model_tag, ollama_host, "ollama"
 
 def _load_transformers_model(model_key: str, use_4bit: bool = True) -> Tuple[Any, Any, str, str]:
-    """Load Hugging Face Transformers model with memory optimization"""
+    """Load Hugging Face Transformers model with CUDA compatibility checks"""
     repo_id = get_hf_repo_id(model_key)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Check CUDA compatibility before attempting GPU load
+    if torch.cuda.is_available() and not st.session_state.get("force_cpu", False):
+        compatible, diagnostic = check_cuda_kernel_compatibility()
+        if not compatible:
+            st.warning(f"⚠️ CUDA incompatible: {diagnostic[:200]}... Using CPU instead")
+            device = "cpu"
+        else:
+            device = "cuda"
+    else:
+        device = "cpu"
+    
     available_vram = get_available_gpu_memory()
     mem_info = estimate_model_memory(model_key, use_4bit)
     
@@ -418,15 +703,17 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True) -> Tuple[Any
 - VRAM (FP16): {mem_info['vram_fp16']}
 - VRAM (4-bit): {mem_info['vram_4bit']}
 - CPU OK: {'✅ Yes' if mem_info['cpu_ok'] else '❌ No'}
-- Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}""")
+- Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}
+- Device: {device.upper()}""")
     
-    # Disable 4-bit for very small models
-    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id:
+    # Disable 4-bit for very small models or CPU mode
+    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id or device == "cpu":
         use_4bit = False
     
     quantization_config = None
     if use_4bit and device == "cuda" and available_vram:
         try:
+            from transformers import BitsAndBytesConfig
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
@@ -436,21 +723,38 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True) -> Tuple[Any
             st.sidebar.warning("⚠️ bitsandbytes not installed.")
             use_4bit = False
     
-    # Load tokenizer and model
+    # Load tokenizer and model with device handling
     tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True, padding_side="left", use_fast=True)
-    model_kwargs = {"trust_remote_code": True, "torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+    model_kwargs = {"trust_remote_code": True}
     
-    if quantization_config:
+    if device == "cuda" and quantization_config:
         model_kwargs["quantization_config"] = quantization_config
         model_kwargs["device_map"] = "auto"
+        model_kwargs["torch_dtype"] = torch.float16
     elif device == "cuda":
         model_kwargs["device_map"] = "auto"
+        model_kwargs["torch_dtype"] = torch.float16
+    else:
+        model_kwargs["torch_dtype"] = torch.float32
     
-    model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
-    
-    if "device_map" not in model_kwargs and device == "cpu":
-        model = model.to(device)
-    model.eval()
+    try:
+        model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
+        
+        # Explicitly move to CPU if needed
+        if device == "cpu" and hasattr(model, 'to'):
+            model = model.to(device)
+        model.eval()
+    except RuntimeError as e:
+        if "no kernel image" in str(e).lower():
+            st.error(f"❌ CUDA kernel error: {e}")
+            st.info("Retrying with CPU...")
+            # Retry on CPU
+            model_kwargs["device_map"] = None
+            model_kwargs["torch_dtype"] = torch.float32
+            model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs).to('cpu')
+            device = 'cpu'
+        else:
+            raise e
     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -973,14 +1277,19 @@ class SparseGraphSAGE(nn.Module):
         neg_scores = self.decoder(torch.cat([h2[neg_u], h2[neg_v]], dim=1)).squeeze(1)
         return pos_scores, neg_scores, h2
 
+# ==========================================
+# 🔧 CUDA-SAFE TRAINING LOOP (MODIFIED)
+# ==========================================
 def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, progress_callback=None):
-    """Train GraphSAGE with contrastive edge prediction loss"""
+    """Train GraphSAGE with contrastive edge prediction loss and CUDA error handling"""
     num_nodes = len(concept_to_id)
     in_dim = node_features.shape[1] if node_features.numel() > 0 else 384
+    
     if node_features.numel() > 0:
         expected_shape = (num_nodes, in_dim)
         if node_features.shape != expected_shape:
             raise ValueError(f"Node features shape mismatch: expected {expected_shape}, got {node_features.shape}")
+    
     if not pos_pairs:
         nodes = list(concept_to_id.values())
         if len(nodes) >= 2:
@@ -988,33 +1297,63 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
             neg_pairs = [(nodes[0], nodes[-1])] if len(nodes) > 2 else []
         else:
             raise ValueError("Cannot train GNN with fewer than 2 concepts")
+    
     unique_edges = {(min(u, v), max(u, v)) for u, v in pos_pairs}
     src_adj = torch.tensor([u for u, v in unique_edges], dtype=torch.long)
     dst_adj = torch.tensor([v for u, v in unique_edges], dtype=torch.long)
     adj_indices = torch.stack([src_adj, dst_adj], dim=0)
     adj_values = torch.ones(adj_indices.shape[1], dtype=torch.float32)
-    pos_u = torch.tensor([p[0] for p in pos_pairs], dtype=torch.long, device=DEVICE)
-    pos_v = torch.tensor([p[1] for p in pos_pairs], dtype=torch.long, device=DEVICE)
-    neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
-    neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
-    model = SparseGraphSAGE(in_dim=in_dim, hidden_dim=GNN_HIDDEN_DIM).to(DEVICE)
+    
+    # Ensure tensors are on correct device
+    target_device = node_features.device if node_features.numel() > 0 else torch.device('cpu')
+    
+    pos_u = torch.tensor([p[0] for p in pos_pairs], dtype=torch.long, device=target_device)
+    pos_v = torch.tensor([p[1] for p in pos_pairs], dtype=torch.long, device=target_device)
+    neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=target_device) if neg_pairs else torch.tensor([], dtype=torch.long, device=target_device)
+    neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=target_device) if neg_pairs else torch.tensor([], dtype=torch.long, device=target_device)
+    
+    model = SparseGraphSAGE(in_dim=in_dim, hidden_dim=GNN_HIDDEN_DIM).to(target_device)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.BCEWithLogitsLoss()
+    
     for epoch in range(TRAIN_EPOCHS):
         model.train()
         optimizer.zero_grad()
-        if len(neg_pairs) == 0:
-            pos_out, _, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
-            loss = criterion(pos_out, torch.ones_like(pos_out)) * 0.5
-        else:
-            pos_out, neg_out, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, neg_u, neg_v)
-            pos_loss = criterion(pos_out, torch.ones_like(pos_out))
-            neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
-            loss = 0.5 * (pos_loss + neg_loss)
-        loss.backward()
-        optimizer.step()
-        if progress_callback and epoch % 10 == 0:
-            progress_callback(epoch, loss.item())
+        
+        try:
+            if len(neg_pairs) == 0:
+                pos_out, _, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
+                loss = criterion(pos_out, torch.ones_like(pos_out)) * 0.5
+            else:
+                pos_out, neg_out, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, neg_u, neg_v)
+                pos_loss = criterion(pos_out, torch.ones_like(pos_out))
+                neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
+                loss = 0.5 * (pos_loss + neg_loss)
+            
+            loss.backward()
+            optimizer.step()
+            
+            if progress_callback and epoch % 10 == 0:
+                progress_callback(epoch, loss.item())
+                
+        except RuntimeError as e:
+            if "no kernel image" in str(e).lower() or "cuda error" in str(e).lower():
+                st.error(f"❌ CUDA error during training epoch {epoch}: {e}")
+                st.warning("💡 Falling back to CPU for remainder of training...")
+                # Move everything to CPU and continue
+                cpu_device = torch.device('cpu')
+                model = model.to(cpu_device)
+                node_features = node_features.to(cpu_device)
+                adj_indices = adj_indices.to(cpu_device)
+                adj_values = adj_values.to(cpu_device)
+                pos_u, pos_v = pos_u.to(cpu_device), pos_v.to(cpu_device)
+                if len(neg_pairs) > 0:
+                    neg_u, neg_v = neg_u.to(cpu_device), neg_v.to(cpu_device)
+                # Continue training on CPU
+                continue
+            else:
+                raise e
+    
     model.eval()
     with torch.no_grad():
         _, _, final_embeddings = model(
@@ -1023,7 +1362,9 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
             neg_u[:1] if len(neg_pairs) > 0 else pos_u[:1], 
             neg_v[:1] if len(neg_pairs) > 0 else pos_v[:1]
         )
-    return model, final_embeddings.cpu(), adj_indices, adj_values
+    
+    # Return embeddings on CPU for consistency
+    return model, final_embeddings.cpu(), adj_indices.cpu(), adj_values.cpu()
 
 # ==========================================
 # STEP 6: MICROSTRUCTURE QUANTIFICATION & SCORING
@@ -1350,7 +1691,7 @@ def get_category_color(concept: str) -> str:
         return "#9C27B0"  # purple – computational
     else:
         return "#009688"  # teal – other
-#
+
 def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
                                min_node_size=12, max_node_size=50):
     """Render interactive PyVis graph with user‑adjustable physics and styling.
@@ -1590,14 +1931,54 @@ def display_link_predictions(top_scores_df: pd.DataFrame, threshold=0.6):
                f"(Score = {top_pair['composite_score']:.3f})")
 
 # ==========================================
-# STREAMLIT UI & PIPELINE ORCHESTRATION
+# STREAMLIT UI: ADD CUDA FIX TO SIDEBAR
 # ==========================================
 def render_sidebar():
-    """Render sidebar with backend selection and configuration"""
+    """Render sidebar with backend selection, configuration, and CUDA controls"""
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # Backend selection
+        # 🔧 CUDA Control (NEW)
+        st.subheader("🎮 GPU/CUDA Settings")
+        cuda_info = get_pytorch_cuda_info()
+        
+        if cuda_info['cuda_available'] and not st.session_state.get("force_cpu", False):
+            cc = get_gpu_compute_capability()
+            if cc:
+                st.markdown(f"✅ GPU: `{torch.cuda.get_device_name(0)}` (sm_{cc[0]}{cc[1]})")
+            else:
+                st.markdown("✅ GPU detected (compute capability unknown)")
+            
+            if st.button("🔄 Test CUDA Compatibility"):
+                compatible, diagnostic = check_cuda_kernel_compatibility()
+                if compatible:
+                    st.success("✅ CUDA compatible!")
+                else:
+                    st.error("❌ CUDA incompatible")
+                    with st.expander("View Details"):
+                        st.code(diagnostic)
+        else:
+            st.markdown("🖥️ **CPU Mode** (CUDA unavailable or disabled)")
+            if st.button("🔁 Retry GPU Detection"):
+                if "force_cpu" in st.session_state:
+                    del st.session_state["force_cpu"]
+                st.rerun()
+        
+        # Force CPU toggle
+        force_cpu = st.checkbox("⚠️ Force CPU Mode (bypass CUDA)", 
+                               value=st.session_state.get("force_cpu", False),
+                               help="Use this if you encounter 'no kernel image' errors")
+        if force_cpu != st.session_state.get("force_cpu", False):
+            st.session_state["force_cpu"] = force_cpu
+            if force_cpu:
+                force_cpu_mode()
+                st.success("🔄 Reload to apply CPU mode")
+                if st.button("Reload Now"):
+                    st.rerun()
+        
+        st.markdown("---")
+        
+        # Backend selection (original)
         st.subheader("🔧 LLM Backend")
         backend_option = st.radio(
             "Choose inference backend:",
@@ -1711,6 +2092,9 @@ def render_sidebar():
         st.caption(f"📦 Embedding model: ~80MB")
         st.caption(f"🤖 LLM: {LOCAL_LLM_OPTIONS.get(model_choice, 'unknown')}")
 
+# ==========================================
+# STREAMLIT UI & PIPELINE ORCHESTRATION
+# ==========================================
 def main():
     st.title("🔬 DECLARMIMA: Laser-Microstructure Interaction Analyzer")
     st.caption("Physics-informed digital twins for multicomponent alloys • Dual LLM backend: HF Transformers or Ollama")
@@ -1995,6 +2379,27 @@ You have ~{available_vram:.1f}GB available. Consider:
             st.info("💡 Reduce 'Max hypotheses' or switch to CPU")
             with st.expander("🔍 Traceback"):
                 st.code(traceback.format_exc())
+        except RuntimeError as e:
+            if "no kernel image" in str(e).lower() or "cudaerror" in str(e).lower():
+                st.error(f"❌ CUDA kernel error: {e}")
+                st.info("💡 This is the 'cudaErrorNoKernelImageForDevice' error. Solutions:")
+                st.markdown("""
+                1. **New GPU?** Install PyTorch with CUDA 12.8:
+                   ```bash
+                   pip install -U torch --index-url https://download.pytorch.org/whl/cu128
+                   ```
+                2. **Old GPU?** Force CPU mode via sidebar toggle or:
+                   ```bash
+                   export CUDA_VISIBLE_DEVICES=""
+                   ```
+                3. **Any GPU?** Reinstall PyTorch matching your CUDA driver version
+                """)
+                with st.expander("🔍 Full Traceback"):
+                    st.code(traceback.format_exc())
+            else:
+                st.error(f"❌ Error: {str(e)}")
+                with st.expander("🔍 Traceback"):
+                    st.code(traceback.format_exc())
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")
             with st.expander("🔍 Traceback"):
@@ -2040,12 +2445,13 @@ You have ~{available_vram:.1f}GB available. Consider:
     
     **🔧 Technical:** Qwen2.5-0.5B + Sentence-BERT (384-dim) + PyTorch GraphSAGE | Local processing
     
-    **⚠️ Troubleshooting:**
-    1. Reduce "Max hypotheses" if experiencing crashes
-    2. Click "Clear Cache" between runs
-    3. Try Plotly if PyVis has rendering issues
-    4. Use "Text Summary" fallback for guaranteed visibility
-    5. For Ollama: ensure `ollama serve` is running and model is pulled (`ollama pull qwen2.5:7b`)
+    **⚠️ Troubleshooting CUDA Errors:**
+    1. Check sidebar "GPU/CUDA Settings" for compatibility status
+    2. Click "Test CUDA Compatibility" for detailed diagnostics
+    3. Use "Force CPU Mode" toggle for immediate fallback
+    4. For NEW GPUs (RTX 40xx/50xx): `pip install torch --index-url https://download.pytorch.org/whl/cu128`
+    5. For OLD GPUs (sm < 3.7): Build PyTorch from source with `TORCH_CUDA_ARCH_LIST=3.5`
+    6. Ensure CUDA driver matches PyTorch CUDA build version
     """)
 
 if __name__ == "__main__":

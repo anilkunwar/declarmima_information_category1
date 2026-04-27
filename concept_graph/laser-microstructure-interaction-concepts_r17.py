@@ -8,6 +8,7 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
    - Heterogeneous graph support for edge-type-aware message passing
    - DGL CUDA compatibility diagnostics alongside existing PyTorch checks
    - Memory-efficient mini-batching ready for large concept graphs
+   - FIXED: String literal type hints for optional DGL types to prevent AttributeError
 ✅ CUDA COMPATIBILITY FIXES:
    - GPU compute capability detection
    - Automatic PyTorch/CUDA/DGL version validation
@@ -65,7 +66,7 @@ import hashlib
 import subprocess
 from collections import defaultdict, Counter
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Union, Any
+from typing import List, Dict, Optional, Tuple, Union, Any, TYPE_CHECKING
 from sklearn.linear_model import Ridge
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
@@ -78,7 +79,13 @@ from pyvis.network import Network
 import plotly.graph_objects as go
 import plotly.express as px
 
-# Optional DGL import with graceful fallback
+# TYPE_CHECKING is True during static analysis (mypy, etc.) but False at runtime
+# This allows us to use DGL types in annotations without importing DGL at runtime
+if TYPE_CHECKING:
+    import dgl
+    import dgl.nn as dglnn
+
+# Optional DGL import with graceful fallback - DO NOT use dgl.DGLGraph in type hints at runtime
 try:
     import dgl
     import dgl.nn as dglnn
@@ -1310,7 +1317,8 @@ def get_embedding_dimension(embed_model) -> int:
 # ==========================================
 # 🔧 DGL GRAPH CONVERSION UTILITIES
 # ==========================================
-def nx_to_dgl(nx_graph: nx.Graph, node_features: torch.Tensor, concept_to_id: Dict[str, int]) -> dgl.DGLGraph:
+# FIX: Use string literal for return type to avoid AttributeError when dgl is None
+def nx_to_dgl(nx_graph: nx.Graph, node_features: torch.Tensor, concept_to_id: Dict[str, int]) -> 'dgl.DGLGraph':
     """Convert NetworkX graph to DGL format with node and edge features"""
     if not DGL_AVAILABLE:
         raise ImportError("DGL not available. Install with: pip install dgl")
@@ -1336,7 +1344,7 @@ def nx_to_dgl(nx_graph: nx.Graph, node_features: torch.Tensor, concept_to_id: Di
     
     return g
 
-def dgl_to_nx(g: dgl.DGLGraph, id_to_concept: Dict[int, str]) -> nx.Graph:
+def dgl_to_nx(g: 'dgl.DGLGraph', id_to_concept: Dict[int, str]) -> nx.Graph:
     """Convert DGL graph back to NetworkX for visualization"""
     nx_graph = nx.Graph()
     
@@ -1475,7 +1483,7 @@ def train_gnn_pytorch(node_features, nx_graph, concept_to_id, pos_pairs, neg_pai
     
     return model, final_embeddings.cpu(), adj_indices.cpu(), adj_values.cpu()
 
-def train_gnn_dgl(g: dgl.DGLGraph, pos_pairs, neg_pairs, progress_callback=None):
+def train_gnn_dgl(g: 'dgl.DGLGraph', pos_pairs, neg_pairs, progress_callback=None):
     """Train GraphSAGE using DGL with contrastive loss"""
     if not DGL_AVAILABLE:
         raise ImportError("DGL not available")
@@ -1623,10 +1631,14 @@ def compute_research_direction_scores(
     model.eval()
     with torch.no_grad():
         if hasattr(model, 'decoder') and hasattr(model, 'layers'):
-            _, _, h2 = model(
-                nx_to_dgl(nx_graph, node_features, {c: i for i, c in enumerate(valid_concepts)}) if DGL_AVAILABLE else None,
-                u_tensor, v_tensor, u_tensor, v_tensor
-            ) if DGL_AVAILABLE else (None, None, None)
+            if DGL_AVAILABLE:
+                try:
+                    g_dgl = nx_to_dgl(nx_graph, node_features, {c: i for i, c in enumerate(valid_concepts)})
+                    _, _, h2 = model(g_dgl, u_tensor, v_tensor, u_tensor, v_tensor)
+                except:
+                    h2 = None
+            else:
+                h2 = None
             if h2 is None:
                 pair_features = torch.cat([final_emb[u_tensor], final_emb[v_tensor]], dim=1)
                 gnn_logits = model.decoder(pair_features).squeeze(1) if hasattr(model, 'decoder') else torch.zeros(len(u_tensor))

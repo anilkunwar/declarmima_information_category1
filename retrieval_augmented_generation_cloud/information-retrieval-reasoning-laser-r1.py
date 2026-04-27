@@ -1756,7 +1756,8 @@ def load_local_embeddings():
     try:
         embeddings = HuggingFaceEmbeddings(
             model_name=LOCAL_EMBEDDING_MODEL,
-            model_kwargs={'device': 'cpu'},
+            #model_kwargs={'device': 'cpu'},
+            model_kwargs={'device': device},
             encode_kwargs={'normalize_embeddings': True}
         )
         return embeddings

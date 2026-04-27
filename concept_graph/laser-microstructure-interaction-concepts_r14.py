@@ -10,11 +10,13 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ✅ DECLARMIMA-focused: Laser-microstructure interaction, multicomponent alloys, digital twins
 ✅ Physics-informed: Concept graphs, GraphSAGE embeddings, research direction scoring
 ✅ Small-corpus optimized: Adaptive thresholds, semantic clustering, seed injection
-✅ White theme visualization: PyVis/Plotly with vibrant, high-contrast colors
+✅ ENHANCED: Publication-quality visualizations, metrics dashboard, user customization
+✅ ENHANCED: Interactive PyVis with physics toggle, category-based colors, size scaling
+✅ ENHANCED: Sunburst chart for research domain hierarchy, link prediction dashboard
 
 DEPLOYMENT:
 pip install streamlit torch transformers sentence-transformers networkx scikit-learn
-pip install pyvis plotly pandas numpy
+pip install pyvis plotly pandas numpy kaleido  # kaleido for SVG export
 pip install ollama  # optional for Ollama backend
 
 Run: streamlit run declarmima_concept_graph.py
@@ -49,6 +51,7 @@ from transformers import (
 )
 from pyvis.network import Network
 import plotly.graph_objects as go
+import plotly.express as px
 
 # Optional Ollama import with graceful fallback
 try:
@@ -1216,87 +1219,187 @@ Avoid generic statements. Focus on laser-matter interaction, solidification phys
     return pd.DataFrame(results) if results else pd.DataFrame()
 
 # ==========================================
-# VISUALIZATION: WHITE THEME WITH VIBRANT COLORS
+# ENHANCED QUANTITATIVE GRAPH METRICS
 # ==========================================
-def render_graph_pyvis_white(nx_graph, concept_abstract_map, embed_model=None):
-    """Render concept graph using PyVis with WHITE background and vibrant colors"""
+def compute_graph_metrics(G: nx.Graph) -> dict:
+    """Calculate topological metrics for research field analysis."""
+    if G.number_of_nodes() == 0:
+        return {}
+    metrics = {
+        "nodes": G.number_of_nodes(),
+        "edges": G.number_of_edges(),
+        "density": nx.density(G),
+        "avg_degree": np.mean([d for _, d in G.degree()]),
+        "clustering": nx.average_clustering(G) if G.number_of_nodes() > 2 else 0,
+        "connected_components": nx.number_connected_components(G),
+    }
+    # Betweenness centrality (expensive, sample if large graph)
+    if G.number_of_nodes() <= 200:
+        bc = nx.betweenness_centrality(G, normalized=True)
+        top_bridges = sorted(bc.items(), key=lambda x: x[1], reverse=True)[:5]
+        metrics["top_bridges"] = top_bridges
+    else:
+        metrics["top_bridges"] = []
+    return metrics
+
+def display_metric_dashboard(metrics: dict):
+    """Show key metrics in Streamlit columns and a bridge table."""
+    if not metrics:
+        st.warning("No graph metrics available.")
+        return
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Nodes", metrics["nodes"])
+    col2.metric("Edges", metrics["edges"])
+    col3.metric("Graph Density", f"{metrics['density']:.3f}")
+    col4.metric("Avg. Degree", f"{metrics['avg_degree']:.2f}")
+    col5, col6 = st.columns(2)
+    col5.metric("Clustering Coef.", f"{metrics['clustering']:.3f}")
+    col6.metric("Components", metrics["connected_components"])
     
-    if len(nx_graph.nodes()) > 80:
+    if metrics["top_bridges"]:
+        st.markdown("**🌉 Top 5 Bridge Concepts (High Betweenness)**")
+        bridge_df = pd.DataFrame(metrics["top_bridges"], columns=["Concept", "Bridge Score"])
+        st.dataframe(bridge_df, use_container_width=True)
+
+# ==========================================
+# CATEGORICAL SUNBURST CHART
+# ==========================================
+def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
+    """Assign each concept to a parent category based on regex mapping."""
+    hierarchy = defaultdict(lambda: {"children": [], "count": 0})
+    for concept in valid_concepts:
+        matched = False
+        for pattern, category in CATEGORY_MAPPING.items():
+            if re.search(pattern, concept, re.I):
+                parent = category
+                matched = True
+                break
+        if not matched:
+            # fallback – classify by first word or domain
+            if any(kw in concept.lower() for kw in DOMAIN_KEYWORDS):
+                parent = "other_domain"
+            else:
+                parent = "misc"
+        freq = len(concept_abstract_map.get(concept, []))
+        hierarchy[parent]["children"].append((concept, freq))
+        hierarchy[parent]["count"] += freq
+    # Build sunburst data
+    labels = []
+    parents = []
+    values = []
+    for parent, data in hierarchy.items():
+        labels.append(parent)
+        parents.append("")
+        values.append(data["count"])
+        for child, cnt in data["children"]:
+            labels.append(child)
+            parents.append(parent)
+            values.append(cnt)
+    return labels, parents, values
+
+def render_sunburst_chart(labels, parents, values):
+    """Interactive Plotly sunburst chart for research domain distribution."""
+    if not labels:
+        st.info("Not enough categories for sunburst chart.")
+        return
+    fig = go.Figure(go.Sunburst(
+        labels=labels,
+        parents=parents,
+        values=values,
+        branchvalues="total",
+        marker=dict(colorscale="Viridis", line=dict(width=0.5, color="white")),
+        textinfo="label+percent entry",
+        insidetextorientation="radial"
+    ))
+    fig.update_layout(
+        title="<b>DECLARMIMA Research Domain Hierarchy</b><br><i>Size = concept frequency</i>",
+        font=dict(size=12, family="Arial"),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        width=800, height=600
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    # Export as SVG/PNG via download button
+    try:
+        svg_bytes = fig.to_image(format="svg", scale=2)
+        st.download_button(
+            "📸 Download Sunburst as SVG",
+            data=svg_bytes,
+            file_name="sunburst.svg",
+            mime="image/svg+xml",
+            key="sunburst_svg"
+        )
+    except:
+        st.info("Install kaleido for SVG export: pip install kaleido")
+
+# ==========================================
+# ENHANCED PYVIS GRAPH WITH CATEGORY COLORS
+# ==========================================
+def get_category_color(concept: str) -> str:
+    """Assign vibrant hex colors based on concept category."""
+    concept_lower = concept.lower()
+    if any(a in concept_lower for a in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo', 'nb', 'cu', 'w', 'mn']):
+        return "#E91E63"  # pink – alloys
+    elif any(l in concept_lower for l in ['laser', 'scan', 'power', 'melt', 'energy']):
+        return "#3F51B5"  # indigo – laser parameters
+    elif any(m in concept_lower for m in ['grain', 'phase', 'hardness', 'strength', 'texture']):
+        return "#FF9800"  # orange – microstructure/properties
+    elif any(p in concept_lower for p in ['porosity', 'crack', 'defect', 'void']):
+        return "#F44336"  # red – defects
+    elif any(d in concept_lower for d in ['digital', 'twin', 'machine', 'learning', 'neural']):
+        return "#9C27B0"  # purple – computational
+    else:
+        return "#009688"  # teal – other
+
+def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
+                               min_node_size=12, max_node_size=50):
+    """Render interactive PyVis graph with user‑adjustable physics and styling."""
+    if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
-        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:80]
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
         nx_graph = nx_graph.subgraph(top_nodes).copy()
     
     net = Network(
-        height="650px", width="100%", bgcolor="#ffffff", font_color="#000000",
+        height="700px", width="100%", bgcolor="#ffffff", font_color="#000000",
         select_menu=True, notebook=False, cdn_resources='in_line'
     )
+    if physics_enabled:
+        net.barnes_hut(gravity=-2000, spring_length=150, spring_strength=0.05,
+                       damping=0.09, overlap=0.5)
+    else:
+        net.set_options("""
+        var options = {
+            physics: { enabled: false },
+            layout: { improvedLayout: false }
+        }
+        """)
     
-    net.barnes_hut(
-        gravity=-2000, spring_length=150, spring_strength=0.05,
-        damping=0.09, overlap=0.5
-    )
-    
+    # Add nodes with size = frequency scaling
     for node in nx_graph.nodes():
-        deg = nx_graph.degree(node)
-        size = max(12, min(50, deg * 4 + 10))
         freq = len(concept_abstract_map.get(node, []))
-        
-        node_lower = node.lower()
-        if any(a in node_lower for a in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo', 'nb', 'cu', 'w', 'mn']):
-            color = "#E91E63"
-        elif any(l in node_lower for l in ['laser', 'scan', 'power', 'melt', 'energy', 'speed', 'pulse']):
-            color = "#3F51B5"
-        elif any(m in node_lower for m in ['grain', 'phase', 'hardness', 'strength', 'texture', 'microstructure']):
-            color = "#FF9800"
-        elif any(p in node_lower for p in ['porosity', 'crack', 'defect', 'void', 'residual']):
-            color = "#F44336"
-        elif any(d in node_lower for d in ['digital', 'twin', 'machine', 'learning', 'neural', 'graph']):
-            color = "#9C27B0"
-        else:
-            color = "#009688"
-        
+        size = np.clip(min_node_size + freq * 2, min_node_size, max_node_size)
+        color = get_category_color(node)
         net.add_node(
             node, label=node, size=size, color=color,
             font={'color': '#000000', 'size': 14},
-            title=f"{node}\nDegree: {deg}\nFrequency: {freq}",
-            borderWidth=2, shadow=True, borderWeight=2
+            title=f"{node}\nDegree: {nx_graph.degree(node)}\nFrequency: {freq}"
         )
-    
     for u, v in nx_graph.edges():
         w = nx_graph[u][v].get('weight', 1)
         edge_type = nx_graph[u][v].get('edge_type', 'unknown')
-        
-        if edge_type == 'cooccurrence':
-            color = "#4CAF50"
-        elif edge_type == 'semantic':
-            color = "#2196F3"
-        elif edge_type == 'bridge':
-            color = "#FFC107"
-        elif edge_type == 'declarmina_aligned':
-            color = "#E91E63"
-        else:
-            color = "#607D8B"
-        
-        net.add_edge(
-            u, v, value=max(0.5, min(5, w * 0.8)),
-            width=max(1.0, min(4, w * 0.5)), color=color,
-            smooth={'type': 'curvedCW', 'roundness': 0.2}
-        )
-    
-    html_content = net.generate_html()
-    st.components.v1.html(html_content, height=700, scrolling=True, width="100%")
-    
-    st.download_button(
-        "📥 Download PyVis Graph (HTML)",
-        data=html_content,
-        file_name="concept_graph_pyvis.html",
-        mime="text/html",
-        key="pyvis_download"
-    )
+        color_map = {'cooccurrence': "#4CAF50", 'semantic': "#2196F3",
+                     'bridge': "#FFC107", 'declarmina_aligned': "#E91E63"}
+        color = color_map.get(edge_type, "#607D8B")
+        net.add_edge(u, v, value=np.clip(w, 0.5, 5), width=np.clip(w*0.8, 1, 4),
+                     color=color, smooth={'type': 'curvedCW', 'roundness': 0.2})
+    html = net.generate_html()
+    st.components.v1.html(html, height=750, scrolling=True)
+    st.download_button("📥 Download Interactive Graph (HTML)", data=html,
+                       file_name="declarmima_graph.html", mime="text/html",
+                       key="pyvis_download_custom")
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map):
     """Render concept graph using Plotly with WHITE background and vibrant colors"""
-    
     if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
@@ -1419,6 +1522,24 @@ def render_graph_fallback(nx_graph, concept_abstract_map):
             use_container_width=True
         )
 
+def display_link_predictions(top_scores_df: pd.DataFrame, threshold=0.6):
+    """Show top novel concept pairs with GNN scores and semantic novelty."""
+    if top_scores_df.empty:
+        st.info("No novel pairs scored above threshold. Try lowering edge sampling threshold.")
+        return
+    st.markdown("### 🔗 Predicted Missing Links (Research Gaps)")
+    display_cols = ['concept_u', 'concept_v', 'gnn_affinity', 'semantic_novelty', 'composite_score']
+    st.dataframe(
+        top_scores_df[display_cols].head(20).style.format({
+            'gnn_affinity': '{:.3f}', 'semantic_novelty': '{:.3f}', 'composite_score': '{:.3f}'
+        }),
+        use_container_width=True
+    )
+    # Show top ranked pair as "most promising innovation"
+    top_pair = top_scores_df.iloc[0]
+    st.success(f"🌟 **Top Innovation Frontier:** {top_pair['concept_u']} ↔ {top_pair['concept_v']} "
+               f"(Score = {top_pair['composite_score']:.3f})")
+
 # ==========================================
 # STREAMLIT UI & PIPELINE ORCHESTRATION
 # ==========================================
@@ -1505,6 +1626,12 @@ def render_sidebar():
             st.toggle("Enable semantic clustering", value=False, key="use_clustering")
             st.toggle("Inject domain seeds", value=False, key="inject_seeds")
             st.toggle("Use embedding edges", value=False, key="semantic_edges")
+        
+        # New customization controls
+        st.subheader("🎨 Visual Customization")
+        st.session_state.physics_enabled = st.checkbox("Enable graph physics", value=True, key="physics_toggle")
+        st.session_state.min_node_size = st.slider("Min node size", 8, 30, 12, key="min_size")
+        st.session_state.max_node_size = st.slider("Max node size", 30, 80, 50, key="max_size")
         
         st.markdown("---")
         st.markdown("**🎯 DECLARMIMA Focus Areas:**")
@@ -1732,8 +1859,22 @@ You have ~{available_vram:.1f}GB available. Consider:
             else:
                 st.info("💡 No novel pairs scored above threshold. Try adjusting parameters.")
             
-            # VISUALIZATION WITH WHITE THEME
-            st.subheader("🌐 Concept Graph (White Theme)")
+            # === NEW: QUANTITATIVE METRICS DASHBOARD ===
+            with st.expander("📊 Graph Structural Metrics (Research Field Analysis)", expanded=False):
+                metrics = compute_graph_metrics(nx_graph)
+                display_metric_dashboard(metrics)
+            
+            # === NEW: CATEGORICAL SUNBURST CHART ===
+            with st.expander("📈 Research Domain Hierarchy (Sunburst)", expanded=False):
+                labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map)
+                render_sunburst_chart(labels, parents, values)
+            
+            # === NEW: LINK PREDICTION DASHBOARD ===
+            with st.expander("🧠 Missing Link Predictions (GNN Research Gaps)", expanded=False):
+                display_link_predictions(top_scores)
+            
+            # === VISUALIZATION WITH ENHANCED CUSTOMIZATION ===
+            st.subheader("🌐 Interactive Concept Graph")
             
             selected_viz = st.session_state.get('viz_backend', 'PyVis (Interactive Network)')
             
@@ -1748,7 +1889,12 @@ You have ~{available_vram:.1f}GB available. Consider:
                 else:
                     st.success(f"✅ Fallback: {nx_graph.number_of_edges()} edges")
                     if selected_viz == "PyVis (Interactive Network)":
-                        render_graph_pyvis_white(nx_graph, concept_abstract_map, embed_model)
+                        render_graph_pyvis_custom(
+                            nx_graph, concept_abstract_map,
+                            physics_enabled=st.session_state.get('physics_enabled', True),
+                            min_node_size=st.session_state.get('min_node_size', 12),
+                            max_node_size=st.session_state.get('max_node_size', 50)
+                        )
                     elif selected_viz == "Plotly (Stable Plot)":
                         render_graph_plotly_white(nx_graph, concept_abstract_map)
                     else:
@@ -1756,8 +1902,13 @@ You have ~{available_vram:.1f}GB available. Consider:
             else:
                 try:
                     if selected_viz == "PyVis (Interactive Network)":
-                        st.info("🎨 Rendering with PyVis (white theme, vibrant colors)...")
-                        render_graph_pyvis_white(nx_graph, concept_abstract_map, embed_model)
+                        st.info("🎨 Rendering with PyVis (white theme, vibrant colors, user-adjustable physics)...")
+                        render_graph_pyvis_custom(
+                            nx_graph, concept_abstract_map,
+                            physics_enabled=st.session_state.get('physics_enabled', True),
+                            min_node_size=st.session_state.get('min_node_size', 12),
+                            max_node_size=st.session_state.get('max_node_size', 50)
+                        )
                     elif selected_viz == "Plotly (Stable Plot)":
                         st.info("🎨 Rendering with Plotly (white theme, vibrant colors)...")
                         render_graph_plotly_white(nx_graph, concept_abstract_map)
@@ -1824,6 +1975,13 @@ You have ~{available_vram:.1f}GB available. Consider:
     - ✅ Vibrant, high-contrast node colors: Pink=alloys, Indigo=laser, Orange=microstructure, Red=defects, Purple=computational
     - ✅ Thick, colorful edges for clear visibility
     - ✅ White borders on nodes for pop effect
+    - ✅ **NEW:** User-adjustable physics, node size sliders, interactive toggles
+    
+    **📊 Publication‑Quality Enhancements:**
+    - ✅ Graph metrics dashboard (density, clustering, betweenness)
+    - ✅ Sunburst chart for research domain hierarchy (downloadable SVG)
+    - ✅ Link prediction panel showing GNN-scored missing links
+    - ✅ Updated PyVis with category‑based coloring and export
     
     **💡 Small Corpus Tips (10-25 abstracts):**
     - Semantic clustering merges similar terms

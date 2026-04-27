@@ -1753,6 +1753,7 @@ def estimate_model_memory(model_key: str, use_4bit: bool = False) -> Dict[str, a
 # =============================================
 @st.cache_resource(show_spinner="Loading local embedding model (~80MB)...")
 def load_local_embeddings():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
         embeddings = HuggingFaceEmbeddings(
             model_name=LOCAL_EMBEDDING_MODEL,

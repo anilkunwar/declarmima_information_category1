@@ -113,4 +113,6 @@ the files need to be run in local computer with Ollama and  llama3.1:8b installe
 
 [![meaningtowords](https://img.shields.io/badge/conceptgraph-v15.0-violet)](https://laser-microstructure-interaction-concepts15.streamlit.app/)  (OLLAMA run also possible, improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, pyVis visualization, html download, concept graph screen visualization enabled, research summary and roadmap as seed knowledge,  CUDA incompatibility)
 
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v16.0-violet)](https://laser-microstructure-interaction-concepts16.streamlit.app/)  (OLLAMA run also possible, improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, pyVis visualization, html download, concept graph screen visualization enabled, research summary and roadmap as seed knowledge,  CUDA compatible with hybrid approach)
+
 

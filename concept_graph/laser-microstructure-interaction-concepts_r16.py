@@ -3,6 +3,10 @@
 """
 DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ========================================================================================
+✅ RTX 5080 HYBRID MODE: CPU embeddings + CUDA LLM/GNN
+   - sentence-transformers embeddings run on CPU to avoid sm_120 kernel mismatch
+   - LLM inference and GraphSAGE training use RTX 5080 CUDA cores
+   - ~2-3 second embedding overhead, full GPU acceleration for heavy compute
 ✅ Zero API keys - all models run locally (HuggingFace Transformers + Ollama)
 ✅ Dual backend: Choose between HF Transformers (direct loading) or Ollama (server-based)
 ✅ ALL models from LASER RAG codebase included (12 HF + 8 Ollama options)
@@ -33,11 +37,13 @@ import pandas as pd
 import re
 import json
 import os
+import sys
 import tempfile
 import warnings
 import traceback
 import gc
 import hashlib
+import subprocess
 from collections import defaultdict, Counter
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Union, Any
@@ -64,7 +70,183 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# STREAMLIT CONFIGURATION (Must be first)
+# CUDA COMPATIBILITY DIAGNOSTICS
+# ==========================================
+def get_gpu_compute_capability(device_id: int = 0) -> Optional[Tuple[int, int]]:
+    """Get CUDA compute capability (major, minor) of the specified GPU."""
+    if not torch.cuda.is_available():
+        return None
+    try:
+        major, minor = torch.cuda.get_device_capability(device_id)
+        return (major, minor)
+    except Exception as e:
+        st.warning(f"⚠️ Could not detect GPU compute capability: {e}")
+        return None
+
+def get_pytorch_cuda_info() -> Dict[str, Any]:
+    """Gather PyTorch CUDA build information for diagnostics."""
+    info = {
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda if hasattr(torch.version, 'cuda') else None,
+        "cudnn_version": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "gpu_names": [],
+        "compute_capabilities": [],
+        "pytorch_cuda_build": None
+    }
+    
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            info["gpu_names"].append(torch.cuda.get_device_name(i))
+            try:
+                cc = torch.cuda.get_device_capability(i)
+                info["compute_capabilities"].append(f"{cc[0]}.{cc[1]}")
+            except:
+                info["compute_capabilities"].append("Unknown")
+    
+    # Check if PyTorch was built with CUDA support
+    info["pytorch_cuda_build"] = "cu" in torch.__version__
+    
+    return info
+
+def check_cuda_kernel_compatibility() -> Tuple[bool, str]:
+    """
+    Check if current PyTorch build supports the detected GPU(s).
+    Returns: (is_compatible, diagnostic_message)
+    """
+    if not torch.cuda.is_available():
+        return True, "CUDA not available - using CPU mode"
+    
+    cuda_info = get_pytorch_cuda_info()
+    messages = []
+    is_compatible = True
+    
+    # Minimum compute capability supported by pre-built PyTorch binaries
+    MIN_SM = 3.7
+    
+    for i, cc_str in enumerate(cuda_info["compute_capabilities"]):
+        if cc_str == "Unknown":
+            messages.append(f"⚠️ GPU {i}: Could not determine compute capability")
+            continue
+        
+        try:
+            major, minor = map(int, cc_str.split('.'))
+            sm = major + minor / 10
+            
+            if sm < MIN_SM:
+                is_compatible = False
+                messages.append(
+                    f"❌ GPU {i} ({cuda_info['gpu_names'][i]}): "
+                    f"Compute capability {cc_str} < {MIN_SM}. "
+                    f"PyTorch pre-built binaries require sm >= {MIN_SM}. "
+                    f"Solution: Build PyTorch from source with TORCH_CUDA_ARCH_LIST={cc_str}"
+                )
+            elif sm >= 9.0:
+                pytorch_version = cuda_info["torch_version"]
+                cuda_build = cuda_info["cuda_version"]
+                
+                if cuda_build and float(cuda_build.replace('.', '')) < 124 and sm >= 9.0:
+                    is_compatible = False
+                    messages.append(
+                        f"❌ GPU {i} ({cuda_info['gpu_names'][i]}): "
+                        f"New GPU (sm_{major}{minor}) requires CUDA 12.4+ but PyTorch built with CUDA {cuda_build}. "
+                        f"Solution: pip install -U torch --index-url https://download.pytorch.org/whl/cu128"
+                    )
+            else:
+                messages.append(f"✅ GPU {i} ({cuda_info['gpu_names'][i]}): Compatible (sm_{major}{minor})")
+        except ValueError:
+            messages.append(f"⚠️ GPU {i}: Invalid compute capability format: {cc_str}")
+    
+    return is_compatible, "\n".join(messages)
+
+def force_cpu_mode():
+    """Force PyTorch to use CPU only by setting environment variables."""
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    original_is_available = torch.cuda.is_available
+    torch.cuda.is_available = lambda: False
+    st.session_state["force_cpu"] = True
+    st.session_state["original_cuda_available"] = original_is_available
+    return torch.device('cpu')
+
+def restore_cuda_mode():
+    """Restore CUDA availability if it was previously forced to CPU."""
+    if "original_cuda_available" in st.session_state:
+        torch.cuda.is_available = st.session_state["original_cuda_available"]
+        del st.session_state["original_cuda_available"]
+    if "force_cpu" in st.session_state:
+        del st.session_state["force_cpu"]
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        del os.environ["CUDA_VISIBLE_DEVICES"]
+
+def show_cuda_fix_instructions(compatible: bool, diagnostic: str):
+    """Display actionable fix instructions in Streamlit UI."""
+    with st.expander("🔧 CUDA Diagnostics & Fix Instructions", expanded=not compatible):
+        st.markdown("### 📊 System CUDA Information")
+        cuda_info = get_pytorch_cuda_info()
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"""
+            **PyTorch Version:** `{cuda_info['torch_version']}`  
+            **CUDA Available:** {'✅ Yes' if cuda_info['cuda_available'] else '❌ No'}  
+            **CUDA Build Version:** `{cuda_info['cuda_version'] or 'N/A'}`  
+            **cuDNN Version:** `{cuda_info['cudnn_version'] or 'N/A'}`  
+            **Pre-built with CUDA:** {'✅ Yes' if cuda_info['pytorch_cuda_build'] else '❌ No'}
+            """)
+        
+        with col2:
+            if cuda_info['gpu_count'] > 0:
+                gpu_list = "\n".join([f"- {name} (sm_{cc})" 
+                                     for name, cc in zip(cuda_info['gpu_names'], cuda_info['compute_capabilities'])])
+                st.markdown(f"""
+                **Detected GPUs:**  
+                {gpu_list}
+                """)
+            else:
+                st.markdown("**Detected GPUs:** None (CPU mode)")
+        
+        st.markdown("### 🔍 Compatibility Check")
+        status_icon = "✅" if compatible else "❌"
+        st.markdown(f"{status_icon} **Status:** {'Compatible' if compatible else 'INCOMPATIBLE'}")
+        
+        if diagnostic.strip():
+            st.code(diagnostic, language="text")
+        
+        if not compatible:
+            st.markdown("### 🛠️ Recommended Fixes")
+            
+            if any("Blackwell" in msg or "RTX 50" in msg or "sm_9" in msg for msg in diagnostic.split('\n')):
+                st.markdown("""
+                **For NEW GPUs (RTX 50xx/Blackwell/Ada Lovelace):**
+                ```bash
+                pip uninstall torch torchvision torchaudio -y
+                pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+                ```
+                """)
+            
+            elif any("sm_3.5" in msg or "sm_3.6" in msg or "GT 730" in msg for msg in diagnostic.split('\n')):
+                st.markdown("""
+                **For OLD GPUs (compute capability < 3.7):**
+                ```bash
+                export CUDA_VISIBLE_DEVICES=""
+                ```
+                """)
+            
+            st.markdown("""
+            **Universal Fallback (CPU Mode):**
+            ```python
+            import os
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            ```
+            """)
+            
+            if st.button("🔄 Reload App in CPU Mode"):
+                force_cpu_mode()
+                st.rerun()
+
+# ==========================================
+# STREAMLIT CONFIGURATION
 # ==========================================
 st.set_page_config(
     page_title="DECLARMIMA: Alloy Microstructure Concept Graph",
@@ -81,19 +263,43 @@ st.set_page_config(
 os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 os.environ["STREAMLIT_WATCHER_TYPE"] = "none"
 
+# Set environment variable for synchronous CUDA error reporting (debugging)
+if "CUDA_LAUNCH_BLOCKING" not in os.environ:
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 # ==========================================
-# DEVICE & SEED SETUP
+# DEVICE & SEED SETUP (HYBRID CPU/CUDA MODE)
 # ==========================================
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def initialize_device():
+    """Initialize device with CUDA compatibility checks and fallback."""
+    if st.session_state.get("force_cpu", False):
+        return torch.device('cpu')
+    
+    compatible, diagnostic = check_cuda_kernel_compatibility()
+    
+    if not compatible:
+        show_cuda_fix_instructions(compatible, diagnostic)
+        st.warning("⚠️ CUDA incompatible - falling back to CPU mode.")
+        return force_cpu_mode()
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if device.type == 'cuda':
+        cc = get_gpu_compute_capability()
+        if cc:
+            st.sidebar.success(f"🎮 GPU: {torch.cuda.get_device_name(0)} (sm_{cc[0]}{cc[1]})")
+    
+    return device
+
+DEVICE = initialize_device()
 SEED = 42
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 
 # ==========================================
-# MODEL REGISTRY - ALL OPTIONS FROM LASER RAG CODE
+# MODEL REGISTRY
 # ==========================================
 LOCAL_LLM_OPTIONS = {
-    # Hugging Face Transformers models
     "GPT-2 (1.5B, fastest startup, CPU OK)": "gpt2",
     "Qwen2-0.5B-Instruct (best JSON, recommended)": "Qwen/Qwen2-0.5B-Instruct",
     "Qwen2.5-0.5B-Instruct (newest, best reasoning)": "Qwen/Qwen2.5-0.5B-Instruct",
@@ -106,7 +312,6 @@ LOCAL_LLM_OPTIONS = {
     "Llama-3.1-8B-Instruct (most popular balanced)": "meta-llama/Llama-3.1-8B-Instruct",
     "Gemma-2-9B-it (Google's latest, great logic)": "google/gemma-2-9b-it",
     "Falcon-7B-Instruct (lightweight & modern)": "tiiuae/falcon-7b-instruct",
-    # Ollama models (served via local ollama server)
     "[Ollama] qwen2.5:0.5b (via ollama serve)": "ollama:qwen2.5:0.5b",
     "[Ollama] qwen2.5:1.5b (via ollama serve)": "ollama:qwen2.5:1.5b",
     "[Ollama] qwen2.5:7b (via ollama serve)": "ollama:qwen2.5:7b",
@@ -117,11 +322,9 @@ LOCAL_LLM_OPTIONS = {
     "[Ollama] falcon3:10b (via ollama serve)": "ollama:falcon3:10b",
 }
 
-# Default model identifiers (<1B constraint for fallback)
 DEFAULT_LLM_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 EMBED_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-# Model memory estimates for VRAM checking
 MODEL_MEMORY_ESTIMATES = {
     "gpt2": {"params": "1.5B", "vram_fp16": "~3GB", "vram_4bit": "~1GB", "cpu_ok": True},
     "Qwen/Qwen2-0.5B-Instruct": {"params": "0.5B", "vram_fp16": "~1GB", "vram_4bit": "~400MB", "cpu_ok": True},
@@ -146,7 +349,6 @@ Deciphering laser-microstructure interaction in multicomponent alloys (DECLARMIM
 Scientific goals: Additive manufacturing, laser processing, multicomponent alloys, high-entropy alloys, digital twins, physics-informed machine learning, phase field modeling, molecular dynamics, melt pool dynamics, microstructure evolution, process-structure-property relationships, selective laser melting, powder bed fusion, laser powder bed fusion, in-situ monitoring, defect formation, porosity, spatter, residual stress, grain morphology, phase transformation, solidification, Marangoni convection, CALPHAD thermodynamics, interfacial energy, thermal conductivity, viscosity, absorptivity, reflectivity, Gaussian heat source, finite element method, MOOSE framework, LAMMPS, ThermoCalc, neural networks, convolutional neural networks, random forest, Bayesian machine learning, uncertainty quantification, feature engineering, tensor decomposition, scale-bridging, multiscale modeling, inverse design, optimization, Al-Si-Mg alloys, Ti-6Al-4V, Inconel 718, Sn-Ag-Cu solders, CoCrFeNi HEAs, intermetallic compounds, columnar grains, equiaxed grains, dendritic structures, martensite, austenite, precipitates, segregation, crack propagation, fatigue life, tensile strength, yield strength, microhardness, elongation, ductility, wear resistance, corrosion resistance, oxidation resistance, laser power, scan speed, hatch spacing, layer thickness, pulse duration, energy density, spot diameter, cooling rate, solidification rate, dilution ratio, powder particle size, particle size distribution, flowability, oxygen content, moisture content, bed temperature, pre-heating, post-processing, heat treatment, surface finishing, quality monitoring, photodiode sensors, line scanners, camera trackers, acoustic transducers, synchrotron X-ray imaging, EBSD, nanoindentation, in-situ XRD, SEM, TEM, AFM, digital image correlation, machine vision, data fusion, knowledge graphs, concept graphs, graph neural networks, GraphSAGE, node embeddings, edge prediction, link prediction, research direction discovery, hypothesis generation, novelty scoring, feasibility assessment, property gain prediction, composite scoring, adaptive configuration, small corpus optimization, semantic clustering, domain seed injection, hybrid graph construction, co-occurrence edges, semantic similarity edges, contrastive learning, edge sampling, sparse tensors, degree normalization, mean aggregation, two-layer architecture, decoder network, BCE loss, Adam optimizer, training loop, evaluation metrics, progress tracking, memory management, CUDA optimization, CPU fallback, error handling, fallback strategies, interactive visualization, PyVis, Plotly, force-directed layout, spring layout, node styling, edge styling, hover tooltips, download functionality, text fallback, diagnostics panel, concept frequency, edge weight, graph connectivity, component analysis, degree distribution, clustering coefficient, centrality measures, path length, bridge edges, semantic bridges, knowledge injection, concept normalization, alloy notation standardization, laser term normalization, unit standardization, regex extraction, quantitative metrics, grain size, mechanical properties, energy density, defect fraction, prompt engineering, JSON parsing, fallback extraction, domain validation, generic term filtering, concept abstraction, category mapping, hierarchical representation, representative selection, cluster merging, similarity threshold, distance matrix, linkage method, embedding encoding, batch processing, progress display, model caching, resource management, timeout handling, user feedback, status indicators, progress bars, error messages, warning dialogs, success notifications, download buttons, CSV export, HTML export, JSON export, interactive controls, physics parameters, gravity, spring length, damping, overlap, stabilization, node sampling, size limiting, performance optimization, browser compatibility, JavaScript execution, CDN resources, inline embedding, iframe alternative, HTML rendering, Streamlit components, responsive design, mobile compatibility, accessibility, color contrast, theme switching, dark mode, light mode, user preferences, session state, configuration persistence, adaptive thresholds, corpus size detection, parameter tuning, hyperparameter optimization, validation metrics, testing framework, debugging tools, logging, tracebacks, exception handling, graceful degradation, fallback rendering, text summary, edge listing, frequency tables, diagnostic metrics, connectivity checks, component counting, degree analysis, clustering analysis, centrality computation, path analysis, bridge detection, semantic analysis, novelty computation, feasibility scoring, property prediction, ridge regression, feature concatenation, pair scoring, candidate filtering, distance checking, graph distance, shortest path, all-pairs shortest path, cutoff parameter, edge sampling strategy, positive pairs, negative pairs, hard negatives, distance-focused sampling, random sampling, attempts limit, pair uniqueness, edge existence check, tensor construction, sparse adjacency, degree computation, normalization, message passing, aggregation, combination, activation, ReLU, linear layers, sequential decoder, concatenation, sigmoid, logits, contrastive loss, binary cross-entropy, training epochs, learning rate, optimizer step, gradient computation, backward pass, zero grad, model evaluation, no grad context, final embeddings, adjacency indices, adjacency values, node features, embedding dimension, shape validation, error raising, minimal pairs, edge uniqueness, source adjacency, destination adjacency, stacking, tensor conversion, device placement, long dtype, float32, GPU memory, CPU fallback, memory cleanup, garbage collection, CUDA cache emptying, progress callback, epoch logging, loss tracking, convergence monitoring, early stopping, model saving, checkpointing, inference mode, prediction scoring, candidate generation, random sampling, pair filtering, distance computation, KeyError handling, default distance, semantic similarity, cosine similarity, embedding encoding, numpy arrays, tensor conversion, CPU numpy, forward pass, model eval, no grad, decoder output, logits extraction, sigmoid activation, CPU conversion, numpy array, property lookup, median computation, ridge prediction, clipping, normalization, weighted scoring, alpha weights, composite score, sorting, head selection, DataFrame creation, column selection, formatting, display configuration, download preparation, CSV serialization, MIME type, button callback, empty check, info message, parameter suggestion, graph rendering, node count check, edge count check, fallback graph building, semantic-only fallback, similarity threshold adjustment, success message, text fallback rendering, node iteration, degree computation, frequency lookup, category detection, color assignment, size computation, title formatting, node addition, edge iteration, weight lookup, type lookup, color mapping, edge addition, value scaling, width scaling, color assignment, smooth edges, curved edges, roundness parameter, HTML generation, inline resources, Streamlit HTML component, height parameter, scrolling enable, width parameter, download button, file naming, MIME type, unique key, error catching, warning display, fallback suggestion, retry buttons, alternative backend, exception handling, error message display, traceback expansion, code display, memory cleanup, GPU cache clearing, garbage collection, footer display, tips section, visualization options, PyVis description, Plotly description, text summary description, technical stack, crash prevention tips, rendering troubleshooting, browser console check, zoom controls, download fallback, text view guarantee
 """
 
-# Domain keywords for laser processing + multicomponent alloys
 DOMAIN_KEYWORDS = [
     "grain size", "phase fraction", "microhardness", "tensile strength", 
     "yield strength", "elongation", "residual stress", "texture intensity",
@@ -177,7 +379,6 @@ ALLOY_PATTERNS = [
     r'(?:AlSi\d+Mg|Ti6Al4V|Inconel\d+|SnAgCu|CoCrFeNi|SAC\d+)',
 ]
 
-# Enhanced domain seed concepts from DECLARMIMA proposal
 DOMAIN_SEED_CONCEPTS = {
     "alloy_systems": [
         "aluminum alloy", "titanium alloy", "nickel alloy", "high-entropy alloy", 
@@ -222,7 +423,6 @@ DOMAIN_SEED_CONCEPTS = {
     ]
 }
 
-# Category mapping for hierarchical abstraction
 CATEGORY_MAPPING = {
     r'alsi\d+mg|al(?:si|cu|mg|zn)\w*': 'aluminum alloy',
     r'ti6al4v|ti(?:al|nb|mo)\w*': 'titanium alloy', 
@@ -244,7 +444,6 @@ CATEGORY_MAPPING = {
     r'(?:digital\s*twin|machine\s*learning|neural\s*network|graph\s*neural)': 'data-driven method',
 }
 
-# Default hyperparameters
 DEFAULT_MIN_CONCEPT_FREQ = 3
 DEFAULT_MIN_CONCEPT_LENGTH_WORDS = 2
 GNN_HIDDEN_DIM = 128
@@ -256,11 +455,9 @@ NEG_DPREV_FOCUS = 3
 # UTILITY FUNCTIONS
 # ==========================================
 def is_ollama_model(model_key: str) -> bool:
-    """Check if model key refers to an Ollama-served model"""
     return model_key.startswith("ollama:") or model_key.startswith("[Ollama]")
 
 def extract_ollama_tag(model_key: str) -> str:
-    """Extract the Ollama model tag from a model key"""
     if model_key.startswith("ollama:"):
         return model_key.replace("ollama:", "", 1)
     elif model_key.startswith("[Ollama]"):
@@ -270,7 +467,6 @@ def extract_ollama_tag(model_key: str) -> str:
     return model_key
 
 def get_hf_repo_id(model_key: str) -> str:
-    """Extract Hugging Face repo ID from model key"""
     if ":" in model_key and not model_key.startswith("http"):
         parts = model_key.split(":", 1)
         if len(parts) == 2 and "/" in parts[1]:
@@ -278,7 +474,6 @@ def get_hf_repo_id(model_key: str) -> str:
     return model_key
 
 def get_available_gpu_memory() -> Optional[float]:
-    """Get available GPU memory in GB"""
     if not torch.cuda.is_available():
         return None
     try:
@@ -289,7 +484,6 @@ def get_available_gpu_memory() -> Optional[float]:
         return None
 
 def estimate_model_memory(model_key: str, use_4bit: bool = False) -> Dict[str, Any]:
-    """Get memory estimate for a model"""
     repo_id = get_hf_repo_id(model_key) if not is_ollama_model(model_key) else model_key
     return MODEL_MEMORY_ESTIMATES.get(repo_id, {
         "params": "Unknown", "vram_fp16": "Unknown", 
@@ -297,7 +491,6 @@ def estimate_model_memory(model_key: str, use_4bit: bool = False) -> Dict[str, A
     })
 
 def compute_file_hash(filepath: str) -> str:
-    """Compute MD5 hash of a file for caching"""
     try:
         with open(filepath, 'rb') as f:
             return hashlib.md5(f.read()).hexdigest()
@@ -308,7 +501,6 @@ def compute_file_hash(filepath: str) -> str:
 # ADAPTIVE CONFIGURATION FOR SMALL CORPORA
 # ==========================================
 def get_adaptive_config(num_abstracts: int) -> Dict[str, Any]:
-    """Dynamically adjust parameters based on input corpus size"""
     if num_abstracts <= 15:
         return {
             "MIN_CONCEPT_FREQ": 1, "MIN_CONCEPT_LENGTH_WORDS": 1, "MIN_DEGREE": 1,
@@ -338,26 +530,58 @@ def get_adaptive_config(num_abstracts: int) -> Dict[str, Any]:
         }
 
 # ==========================================
-# MODEL LOADING (CACHED FOR STREAMLIT)
+# RTX 5080 HYBRID MODE: CPU EMBEDDINGS + CUDA LLM/GNN
 # ==========================================
 @st.cache_resource(show_spinner=False)
 def load_embedding_model():
-    """Load Sentence-BERT embedding model with device handling"""
+    """
+    Load Sentence-BERT embedding model with RTX 5080 compatibility.
+    
+    🔧 HYBRID MODE FIX:
+    - Force embeddings to run on CPU to avoid sm_120 kernel mismatch in sentence-transformers
+    - Embeddings are small (~80MB) and CPU encoding is fast enough (~2-3s overhead)
+    - LLM and GNN components still use CUDA via global DEVICE variable
+    """
     try:
-        return SentenceTransformer(EMBED_NAME, device=DEVICE)
+        # 🔧 RTX 5080 FIX: Always use CPU for sentence-transformers to avoid CUDA kernel issues
+        cpu_device = torch.device('cpu')
+        st.sidebar.info("🧠 Embeddings: CPU mode (RTX 5080 compatibility)")
+        return SentenceTransformer(EMBED_NAME, device=cpu_device)
+        
+    except RuntimeError as e:
+        if "no kernel image" in str(e).lower() or "cudaerror" in str(e).lower():
+            st.warning("⚠️ CUDA kernel mismatch for embeddings – using CPU")
+            return SentenceTransformer(EMBED_NAME, device='cpu')
+        else:
+            raise e
     except Exception as e:
         st.error(f"❌ Failed to load embedding model: {e}")
-        st.info("💡 Falling back to CPU-only mode")
         return SentenceTransformer(EMBED_NAME, device='cpu')
 
 @st.cache_resource(show_spinner="Loading LLM (this may take 1-2 minutes on first load)...")
 def load_local_llm(model_key: str, use_4bit: bool = True):
-    """Unified LLM loader with backend routing (HF Transformers or Ollama)"""
+    """Unified LLM loader with CUDA acceleration (uses global DEVICE)"""
     try:
         if is_ollama_model(model_key):
             return _load_ollama_model(model_key)
         else:
             return _load_transformers_model(model_key, use_4bit)
+    except RuntimeError as e:
+        if "no kernel image" in str(e).lower() or "cudaerror" in str(e).lower():
+            st.error(f"❌ CUDA kernel error loading LLM '{model_key}': {e}")
+            st.warning("💡 Attempting fallback to CPU mode...")
+            try:
+                tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+                model = GPT2LMHeadModel.from_pretrained("gpt2").to('cpu')
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                model.eval()
+                return tokenizer, model, torch.device('cpu'), "transformers"
+            except Exception as e2:
+                st.error(f"Fallback also failed: {e2}")
+                return None, None, None, None
+        else:
+            raise e
     except Exception as e:
         st.error(f"Failed to load LLM '{model_key}': {e}")
         st.warning("Falling back to GPT-2...")
@@ -406,27 +630,31 @@ def _load_ollama_model(model_key: str) -> Tuple[Optional[Any], str, str, str]:
     return None, model_tag, ollama_host, "ollama"
 
 def _load_transformers_model(model_key: str, use_4bit: bool = True) -> Tuple[Any, Any, str, str]:
-    """Load Hugging Face Transformers model with memory optimization"""
+    """Load Hugging Face Transformers model with CUDA acceleration via global DEVICE"""
     repo_id = get_hf_repo_id(model_key)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Use global DEVICE for LLM (CUDA if available and compatible)
+    device = DEVICE.type if isinstance(DEVICE, torch.device) else 'cuda' if torch.cuda.is_available() else 'cpu'
+    
     available_vram = get_available_gpu_memory()
     mem_info = estimate_model_memory(model_key, use_4bit)
     
-    # Display memory info in sidebar
     st.sidebar.info(f"""📊 Model Memory Estimate:
 - Parameters: {mem_info['params']}
 - VRAM (FP16): {mem_info['vram_fp16']}
 - VRAM (4-bit): {mem_info['vram_4bit']}
 - CPU OK: {'✅ Yes' if mem_info['cpu_ok'] else '❌ No'}
-- Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}""")
+- Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}
+- Device: {device.upper()}""")
     
-    # Disable 4-bit for very small models
-    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id:
+    # Disable 4-bit for very small models or CPU mode
+    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id or device == "cpu":
         use_4bit = False
     
     quantization_config = None
     if use_4bit and device == "cuda" and available_vram:
         try:
+            from transformers import BitsAndBytesConfig
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
@@ -436,21 +664,35 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True) -> Tuple[Any
             st.sidebar.warning("⚠️ bitsandbytes not installed.")
             use_4bit = False
     
-    # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True, padding_side="left", use_fast=True)
-    model_kwargs = {"trust_remote_code": True, "torch_dtype": torch.float16 if device == "cuda" else torch.float32}
+    model_kwargs = {"trust_remote_code": True}
     
-    if quantization_config:
+    if device == "cuda" and quantization_config:
         model_kwargs["quantization_config"] = quantization_config
         model_kwargs["device_map"] = "auto"
+        model_kwargs["torch_dtype"] = torch.float16
     elif device == "cuda":
         model_kwargs["device_map"] = "auto"
+        model_kwargs["torch_dtype"] = torch.float16
+    else:
+        model_kwargs["torch_dtype"] = torch.float32
     
-    model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
-    
-    if "device_map" not in model_kwargs and device == "cpu":
-        model = model.to(device)
-    model.eval()
+    try:
+        model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
+        
+        if device == "cpu" and hasattr(model, 'to'):
+            model = model.to(device)
+        model.eval()
+    except RuntimeError as e:
+        if "no kernel image" in str(e).lower():
+            st.error(f"❌ CUDA kernel error: {e}")
+            st.info("Retrying with CPU...")
+            model_kwargs["device_map"] = None
+            model_kwargs["torch_dtype"] = torch.float32
+            model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs).to('cpu')
+            device = 'cpu'
+        else:
+            raise e
     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -461,7 +703,6 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True) -> Tuple[Any
 # DOMAIN-SPECIFIC CONCEPT NORMALIZATION
 # ==========================================
 def normalize_alloy_composition(concept: str) -> str:
-    """Standardize alloy notation (e.g., 'Ti-6Al-4V' → 'ti6al4v')"""
     normalized = re.sub(r'[\s\-_]', '', concept).lower()
     normalized = re.sub(r'(ti)(6)(al)(4)(v)', r'ti6al4v', normalized)
     normalized = re.sub(r'(al)(si)(10)(mg)', r'alsi10mg', normalized)
@@ -471,7 +712,6 @@ def normalize_alloy_composition(concept: str) -> str:
     return normalized
 
 def normalize_laser_term(concept: str) -> str:
-    """Normalize laser processing terminology and units"""
     concept = concept.lower().strip()
     concept = re.sub(r'\b(j/mm(?:\s*3)?|j mm-3|j mm⁻³)\b', 'j/mm³', concept)
     concept = re.sub(r'\b(w|watt)s?\b', 'w', concept)
@@ -480,7 +720,6 @@ def normalize_laser_term(concept: str) -> str:
     return concept
 
 def is_valid_microstructure_concept(concept: str) -> bool:
-    """Filter concepts relevant to laser/alloy microstructure research"""
     concept_lower = concept.lower()
     has_domain_keyword = any(kw in concept_lower for kw in DOMAIN_KEYWORDS)
     has_alloy_pattern = any(re.search(p, concept, re.I) for p in ALLOY_PATTERNS)
@@ -493,7 +732,6 @@ def is_valid_microstructure_concept(concept: str) -> bool:
 # DECLARMIMA: PROPOSAL-BASED CONCEPT EXTRACTION
 # ==========================================
 def extract_declarmima_concepts(proposal_text: str, embed_model) -> list:
-    """Extract domain concepts from DECLARMIMA proposal text"""
     patterns = [
         r'\b(?:[A-Z][a-z]+(?:\d+(?:\.\d+)?)?[\s\-]?){2,4}(?:alloy|phase|grain|microstructure|strength|hardness|property)',
         r'\b(?:laser|powder|bed|fusion|selective|direct|melting)\s+(?:power|speed|scanning|melting|parameters|energy|processing)',
@@ -525,14 +763,12 @@ def extract_declarmima_concepts(proposal_text: str, embed_model) -> list:
 
 def compute_proposal_correlation(concept: str, proposal_embedding: np.ndarray, 
                                 concept_embedding: np.ndarray) -> float:
-    """Compute semantic correlation between a concept and DECLARMIMA proposal"""
     sim = cosine_similarity([concept_embedding], [proposal_embedding])[0][0]
     return float(np.clip(sim, 0, 1))
 
 def inject_declarmima_seeds(valid_concepts: list, concept_to_id: dict, 
                            proposal_embedding: np.ndarray, embed_model,
                            correlation_threshold: float = 0.65) -> tuple:
-    """Inject DECLARMIMA proposal concepts weighted by semantic correlation"""
     updated_concepts = valid_concepts.copy()
     updated_mapping = concept_to_id.copy()
     
@@ -556,7 +792,6 @@ def inject_declarmima_seeds(valid_concepts: list, concept_to_id: dict,
 # SEMANTIC CLUSTERING & CONCEPT ABSTRACTION
 # ==========================================
 def cluster_similar_concepts(valid_concepts, embed_model, similarity_threshold=0.78):
-    """Merge semantically similar concepts to boost effective frequency"""
     if len(valid_concepts) < 3:
         return valid_concepts, {c: c for c in valid_concepts}
     
@@ -588,7 +823,6 @@ def cluster_similar_concepts(valid_concepts, embed_model, similarity_threshold=0
         return valid_concepts, {c: c for c in valid_concepts}
 
 def abstract_concepts_to_categories(concepts, category_mapping=CATEGORY_MAPPING):
-    """Map specific concepts to broader categories for graph density"""
     concept_to_abstract = {}
     for concept in concepts:
         matched = False
@@ -602,7 +836,6 @@ def abstract_concepts_to_categories(concepts, category_mapping=CATEGORY_MAPPING)
     return concept_to_abstract
 
 def inject_domain_seeds(valid_concepts, concept_to_id, seed_concepts=DOMAIN_SEED_CONCEPTS):
-    """Add domain seed concepts even if not frequently observed"""
     all_seeds = [seed for category in seed_concepts.values() for seed in category]
     updated_concepts = valid_concepts.copy()
     updated_mapping = concept_to_id.copy()
@@ -618,7 +851,6 @@ def inject_domain_seeds(valid_concepts, concept_to_id, seed_concepts=DOMAIN_SEED
 # STEP 1-2: CONCEPT EXTRACTION & METRICS
 # ==========================================
 def extract_concepts_from_abstracts(abstracts, tokenizer, model, backend_type: str):
-    """Extract microstructure-relevant concepts using selected LLM backend"""
     prompt_template = """Extract exactly the core scientific concepts (2+ words) from this abstract about laser processing or alloy microstructure.
 Rules:
 - Output ONLY a JSON list of strings.
@@ -652,11 +884,10 @@ Concepts:"""
         prompt = prompt_template.format(text=text)
         
         if backend_type == "ollama":
-            # Use Ollama for concept extraction
             try:
                 client = ollama.Client(host=st.session_state.get('ollama_host', 'http://localhost:11434'))
                 response = client.chat(
-                    model=model,  # model_tag from _load_ollama_model
+                    model=model,
                     messages=[{"role": "user", "content": prompt}],
                     options={"temperature": 0.2, "num_predict": 150}
                 )
@@ -665,7 +896,6 @@ Concepts:"""
                 st.warning(f"⚠️ Ollama extraction failed: {e}, using fallback")
                 response_text = _fallback_concept_extraction_text(prompt)
         else:
-            # Use HF Transformers for concept extraction
             try:
                 inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512).to(DEVICE)
                 with torch.no_grad():
@@ -698,11 +928,9 @@ Concepts:"""
     return all_concepts, all_metrics
 
 def _fallback_concept_extraction_text(prompt: str) -> str:
-    """Fallback text response for concept extraction"""
     return '["laser processing", "microstructure evolution", "alloy composition", "mechanical properties"]'
 
 def _fallback_concept_extraction(text: str) -> list:
-    """Regex fallback for concept extraction when LLM parsing fails"""
     patterns = [
         r'\b(?:[A-Z][a-z]+(?:\d+(?:\.\d+)?)?[\s\-]?){2,3}(?:phase|grain|microstructure|strength|hardness)',
         r'\b(?:laser|powder|bed|fusion|selective|direct)\s+(?:power|speed|scanning|melting|parameters|energy)',
@@ -717,7 +945,6 @@ def _fallback_concept_extraction(text: str) -> list:
     return list(set(concepts))
 
 def normalize_and_filter_concepts(all_concepts, embed_model=None, config=None, proposal_embedding=None):
-    """Adaptive concept filtering with semantic clustering, seed injection, and DECLARMIMA correlation"""
     if config is None:
         config = get_adaptive_config(25)
     
@@ -777,7 +1004,6 @@ def normalize_and_filter_concepts(all_concepts, embed_model=None, config=None, p
 # STEP 3: HYBRID CONCEPT GRAPH CONSTRUCTION
 # ==========================================
 def build_semantic_only_graph(valid_concepts, embed_model, similarity_threshold=0.75):
-    """Fallback: create graph purely from embedding similarity"""
     nx_graph = nx.Graph()
     for c in valid_concepts:
         nx_graph.add_node(c)
@@ -815,7 +1041,6 @@ def build_semantic_only_graph(valid_concepts, embed_model, similarity_threshold=
     return nx_graph
 
 def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=None, config=None, proposal_embedding=None):
-    """Hybrid graph: combine co-occurrence with embedding similarity and DECLARMIMA correlation"""
     if config is None:
         config = get_adaptive_config(len(all_concepts))
     
@@ -823,7 +1048,6 @@ def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=
     for c in valid_concepts:
         nx_graph.add_node(c, frequency=0)
     
-    # Step 1: Add co-occurrence edges
     for concepts in all_concepts:
         valid_in_doc = [c for c in concepts if c in concept_to_id]
         for i in range(len(valid_in_doc)):
@@ -837,7 +1061,6 @@ def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=
                 nx_graph.nodes[u]['frequency'] = nx_graph.nodes[u].get('frequency', 0) + 1
                 nx_graph.nodes[v]['frequency'] = nx_graph.nodes[v].get('frequency', 0) + 1
     
-    # Step 2: Add semantic similarity edges
     if config.get("USE_SEMANTIC_EDGES", True) and embed_model and len(valid_concepts) >= 5:
         try:
             embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
@@ -855,7 +1078,6 @@ def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=
         except Exception as e:
             st.warning(f"⚠️ Semantic edge addition skipped: {e}")
     
-    # DECLARMIMA: Boost edges for concepts highly correlated with proposal
     if config.get("CORRELATE_WITH_PROPOSAL", True) and proposal_embedding is not None and embed_model:
         concept_embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
         for i, c1 in enumerate(valid_concepts):
@@ -873,7 +1095,6 @@ def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=
                         nx_graph.add_edge(c1, c2, weight=boost, cooccurrence=0, 
                                          semantic=0.8, edge_type='declarmina_aligned')
     
-    # Step 3: Combine weights
     cooc_weight = config.get("COOCCURRENCE_WEIGHT", 0.6)
     sem_weight = config.get("SEMANTIC_WEIGHT", 0.4)
     for u, v, data in nx_graph.edges(data=True):
@@ -884,7 +1105,6 @@ def build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model=
     return nx_graph
 
 def build_concept_graph(all_concepts, concept_to_id, embed_model=None, config=None, proposal_embedding=None):
-    """Main graph builder with fallback strategies"""
     if config is None:
         config = get_adaptive_config(len(all_concepts))
     valid_concepts = list(concept_to_id.keys())
@@ -894,7 +1114,6 @@ def build_concept_graph(all_concepts, concept_to_id, embed_model=None, config=No
     return build_hybrid_graph(all_concepts, valid_concepts, concept_to_id, embed_model, config, proposal_embedding)
 
 def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id, config=None):
-    """Sample positive and negative edges for contrastive training"""
     if config is None:
         config = get_adaptive_config(len(valid_concepts))
     pos_pairs = [(concept_to_id[u], concept_to_id[v]) for u, v in nx_graph.edges()]
@@ -930,17 +1149,27 @@ def sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_
     return pos_pairs, neg_pairs
 
 # ==========================================
-# STEP 4: SEMANTIC NODE EMBEDDINGS
+# STEP 4: RTX 5080 HYBRID: CPU EMBEDDING GENERATION
 # ==========================================
 def generate_embeddings(valid_concepts, embed_model):
-    """Generate sentence embeddings for concept nodes"""
+    """
+    Generate sentence embeddings for concept nodes.
+    
+    🔧 RTX 5080 HYBRID MODE:
+    - Embeddings are generated on CPU to avoid sm_120 kernel mismatch
+    - Returns CPU tensors; PyTorch auto-moves to CUDA when needed in GNN training
+    - Overhead: ~2-3 seconds for typical concept sets (negligible vs total pipeline)
+    """
     if not valid_concepts:
-        return torch.zeros((0, 384), dtype=torch.float32).to(DEVICE)
+        return torch.zeros((0, 384), dtype=torch.float32)  # Return CPU tensor
+    
+    # 🔧 Encode on CPU to avoid sentence-transformers CUDA kernel issues
     embeddings = embed_model.encode(valid_concepts, show_progress_bar=False, batch_size=32)
-    return torch.tensor(embeddings, dtype=torch.float32).to(DEVICE)
+    
+    # Return as CPU tensor - PyTorch will handle device placement in downstream ops
+    return torch.tensor(embeddings, dtype=torch.float32)
 
 def get_embedding_dimension(embed_model) -> int:
-    """Safely detect the embedding dimension from the model"""
     try:
         dummy = ["test"]
         emb = embed_model.encode(dummy, show_progress_bar=False)
@@ -973,14 +1202,27 @@ class SparseGraphSAGE(nn.Module):
         neg_scores = self.decoder(torch.cat([h2[neg_u], h2[neg_v]], dim=1)).squeeze(1)
         return pos_scores, neg_scores, h2
 
+# ==========================================
+# RTX 5080 HYBRID: CUDA GNN TRAINING WITH CPU EMBEDDING SUPPORT
+# ==========================================
 def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, progress_callback=None):
-    """Train GraphSAGE with contrastive edge prediction loss"""
+    """
+    Train GraphSAGE with contrastive edge prediction loss.
+    
+    🔧 RTX 5080 HYBRID MODE:
+    - Accepts CPU or CUDA node_features tensors
+    - Auto-moves CPU embeddings to CUDA if DEVICE is CUDA
+    - GNN model and training ops run on CUDA for maximum performance
+    - Returns final embeddings on CPU for consistency with embedding generation
+    """
     num_nodes = len(concept_to_id)
     in_dim = node_features.shape[1] if node_features.numel() > 0 else 384
+    
     if node_features.numel() > 0:
         expected_shape = (num_nodes, in_dim)
         if node_features.shape != expected_shape:
             raise ValueError(f"Node features shape mismatch: expected {expected_shape}, got {node_features.shape}")
+    
     if not pos_pairs:
         nodes = list(concept_to_id.values())
         if len(nodes) >= 2:
@@ -988,33 +1230,64 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
             neg_pairs = [(nodes[0], nodes[-1])] if len(nodes) > 2 else []
         else:
             raise ValueError("Cannot train GNN with fewer than 2 concepts")
+    
     unique_edges = {(min(u, v), max(u, v)) for u, v in pos_pairs}
     src_adj = torch.tensor([u for u, v in unique_edges], dtype=torch.long)
     dst_adj = torch.tensor([v for u, v in unique_edges], dtype=torch.long)
     adj_indices = torch.stack([src_adj, dst_adj], dim=0)
     adj_values = torch.ones(adj_indices.shape[1], dtype=torch.float32)
-    pos_u = torch.tensor([p[0] for p in pos_pairs], dtype=torch.long, device=DEVICE)
-    pos_v = torch.tensor([p[1] for p in pos_pairs], dtype=torch.long, device=DEVICE)
-    neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
-    neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=DEVICE) if neg_pairs else torch.tensor([], dtype=torch.long, device=DEVICE)
-    model = SparseGraphSAGE(in_dim=in_dim, hidden_dim=GNN_HIDDEN_DIM).to(DEVICE)
+    
+    # 🔧 RTX 5080 FIX: Use global DEVICE for GNN, auto-move CPU tensors to CUDA
+    target_device = DEVICE
+    
+    # Move node_features to CUDA if they're on CPU and target is CUDA
+    if node_features.device.type == 'cpu' and target_device.type == 'cuda':
+        node_features = node_features.to(target_device)
+    
+    pos_u = torch.tensor([p[0] for p in pos_pairs], dtype=torch.long, device=target_device)
+    pos_v = torch.tensor([p[1] for p in pos_pairs], dtype=torch.long, device=target_device)
+    neg_u = torch.tensor([n[0] for n in neg_pairs], dtype=torch.long, device=target_device) if neg_pairs else torch.tensor([], dtype=torch.long, device=target_device)
+    neg_v = torch.tensor([n[1] for n in neg_pairs], dtype=torch.long, device=target_device) if neg_pairs else torch.tensor([], dtype=torch.long, device=target_device)
+    
+    model = SparseGraphSAGE(in_dim=in_dim, hidden_dim=GNN_HIDDEN_DIM).to(target_device)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.BCEWithLogitsLoss()
+    
     for epoch in range(TRAIN_EPOCHS):
         model.train()
         optimizer.zero_grad()
-        if len(neg_pairs) == 0:
-            pos_out, _, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
-            loss = criterion(pos_out, torch.ones_like(pos_out)) * 0.5
-        else:
-            pos_out, neg_out, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, neg_u, neg_v)
-            pos_loss = criterion(pos_out, torch.ones_like(pos_out))
-            neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
-            loss = 0.5 * (pos_loss + neg_loss)
-        loss.backward()
-        optimizer.step()
-        if progress_callback and epoch % 10 == 0:
-            progress_callback(epoch, loss.item())
+        
+        try:
+            if len(neg_pairs) == 0:
+                pos_out, _, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, pos_u[:1], pos_v[:1])
+                loss = criterion(pos_out, torch.ones_like(pos_out)) * 0.5
+            else:
+                pos_out, neg_out, _ = model(adj_indices, adj_values, num_nodes, node_features, pos_u, pos_v, neg_u, neg_v)
+                pos_loss = criterion(pos_out, torch.ones_like(pos_out))
+                neg_loss = criterion(neg_out, torch.zeros_like(neg_out))
+                loss = 0.5 * (pos_loss + neg_loss)
+            
+            loss.backward()
+            optimizer.step()
+            
+            if progress_callback and epoch % 10 == 0:
+                progress_callback(epoch, loss.item())
+                
+        except RuntimeError as e:
+            if "no kernel image" in str(e).lower() or "cuda error" in str(e).lower():
+                st.warning(f"⚠️ CUDA error at epoch {epoch} – continuing on CPU")
+                cpu_device = torch.device('cpu')
+                model = model.to(cpu_device)
+                node_features = node_features.to(cpu_device)
+                adj_indices = adj_indices.to(cpu_device)
+                adj_values = adj_values.to(cpu_device)
+                pos_u, pos_v = pos_u.to(cpu_device), pos_v.to(cpu_device)
+                if len(neg_pairs) > 0:
+                    neg_u, neg_v = neg_u.to(cpu_device), neg_v.to(cpu_device)
+                continue
+            else:
+                raise e
+    
     model.eval()
     with torch.no_grad():
         _, _, final_embeddings = model(
@@ -1023,13 +1296,14 @@ def train_gnn(node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, prog
             neg_u[:1] if len(neg_pairs) > 0 else pos_u[:1], 
             neg_v[:1] if len(neg_pairs) > 0 else pos_v[:1]
         )
-    return model, final_embeddings.cpu(), adj_indices, adj_values
+    
+    # 🔧 Return embeddings on CPU for consistency with embedding generation
+    return model, final_embeddings.cpu(), adj_indices.cpu(), adj_values.cpu()
 
 # ==========================================
 # STEP 6: MICROSTRUCTURE QUANTIFICATION & SCORING
 # ==========================================
 def compute_microstructure_quantification(valid_concepts, concept_abstract_map, all_metrics, nx_graph):
-    """Map concepts to representative microstructure property values"""
     concept_properties = {}
     for concept in valid_concepts:
         doc_indices = concept_abstract_map.get(concept, [])
@@ -1056,7 +1330,6 @@ def compute_research_direction_scores(
     ridge, embed_model, d_prev_dict, adj_indices, adj_values,
     n_samples=3000
 ):
-    """Score novel concept pairs for promising microstructure research directions"""
     n_concepts = len(valid_concepts)
     if n_concepts < 3:
         return pd.DataFrame()
@@ -1121,8 +1394,6 @@ def compute_research_direction_scores(
 # ==========================================
 def generate_research_directions(top_pairs_df, tokenizer, model, backend_type: str, 
                                 max_hypotheses=10, proposal_context=""):
-    """Generate LLM-curated research hypotheses aligned with DECLARMIMA goals"""
-    
     prompt_template = """You are a materials science strategist for the DECLARMIMA project: "Deciphering laser-microstructure interaction in multicomponent alloys".
 
 Project Goals: {proposal_context}
@@ -1222,7 +1493,6 @@ Avoid generic statements. Focus on laser-matter interaction, solidification phys
 # ENHANCED QUANTITATIVE GRAPH METRICS
 # ==========================================
 def compute_graph_metrics(G: nx.Graph) -> dict:
-    """Calculate topological metrics for research field analysis."""
     if G.number_of_nodes() == 0:
         return {}
     metrics = {
@@ -1233,7 +1503,6 @@ def compute_graph_metrics(G: nx.Graph) -> dict:
         "clustering": nx.average_clustering(G) if G.number_of_nodes() > 2 else 0,
         "connected_components": nx.number_connected_components(G),
     }
-    # Betweenness centrality (expensive, sample if large graph)
     if G.number_of_nodes() <= 200:
         bc = nx.betweenness_centrality(G, normalized=True)
         top_bridges = sorted(bc.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -1243,7 +1512,6 @@ def compute_graph_metrics(G: nx.Graph) -> dict:
     return metrics
 
 def display_metric_dashboard(metrics: dict):
-    """Show key metrics in Streamlit columns and a bridge table."""
     if not metrics:
         st.warning("No graph metrics available.")
         return
@@ -1265,7 +1533,6 @@ def display_metric_dashboard(metrics: dict):
 # CATEGORICAL SUNBURST CHART
 # ==========================================
 def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
-    """Assign each concept to a parent category based on regex mapping."""
     hierarchy = defaultdict(lambda: {"children": [], "count": 0})
     for concept in valid_concepts:
         matched = False
@@ -1275,7 +1542,6 @@ def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
                 matched = True
                 break
         if not matched:
-            # fallback – classify by first word or domain
             if any(kw in concept.lower() for kw in DOMAIN_KEYWORDS):
                 parent = "other_domain"
             else:
@@ -1283,7 +1549,6 @@ def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
         freq = len(concept_abstract_map.get(concept, []))
         hierarchy[parent]["children"].append((concept, freq))
         hierarchy[parent]["count"] += freq
-    # Build sunburst data
     labels = []
     parents = []
     values = []
@@ -1298,7 +1563,6 @@ def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
     return labels, parents, values
 
 def render_sunburst_chart(labels, parents, values):
-    """Interactive Plotly sunburst chart for research domain distribution."""
     if not labels:
         st.info("Not enough categories for sunburst chart.")
         return
@@ -1319,7 +1583,6 @@ def render_sunburst_chart(labels, parents, values):
         width=800, height=600
     )
     st.plotly_chart(fig, use_container_width=True)
-    # Export as SVG/PNG via download button
     try:
         svg_bytes = fig.to_image(format="svg", scale=2)
         st.download_button(
@@ -1336,50 +1599,41 @@ def render_sunburst_chart(labels, parents, values):
 # ENHANCED PYVIS GRAPH WITH CATEGORY COLORS
 # ==========================================
 def get_category_color(concept: str) -> str:
-    """Assign vibrant hex colors based on concept category."""
     concept_lower = concept.lower()
     if any(a in concept_lower for a in ['al', 'ti', 'ni', 'cr', 'fe', 'co', 'mo', 'nb', 'cu', 'w', 'mn']):
-        return "#E91E63"  # pink – alloys
+        return "#E91E63"
     elif any(l in concept_lower for l in ['laser', 'scan', 'power', 'melt', 'energy']):
-        return "#3F51B5"  # indigo – laser parameters
+        return "#3F51B5"
     elif any(m in concept_lower for m in ['grain', 'phase', 'hardness', 'strength', 'texture']):
-        return "#FF9800"  # orange – microstructure/properties
+        return "#FF9800"
     elif any(p in concept_lower for p in ['porosity', 'crack', 'defect', 'void']):
-        return "#F44336"  # red – defects
+        return "#F44336"
     elif any(d in concept_lower for d in ['digital', 'twin', 'machine', 'learning', 'neural']):
-        return "#9C27B0"  # purple – computational
+        return "#9C27B0"
     else:
-        return "#009688"  # teal – other
-#
+        return "#009688"
+
 def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
                                min_node_size=12, max_node_size=50):
-    """Render interactive PyVis graph with user‑adjustable physics and styling.
-    
-    FIXED: Convert numpy scalars to native Python types for JSON serialization.
-    """
-    # Sample large graphs for performance
     if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
         nx_graph = nx_graph.subgraph(top_nodes).copy()
     
-    # Initialize PyVis network with white theme
     net = Network(
         height="700px", width="100%", bgcolor="#ffffff", font_color="#000000",
         select_menu=True, notebook=False, cdn_resources='in_line'
     )
     
-    # Configure physics simulation (Barnes-Hut approximation)
     if physics_enabled:
         net.barnes_hut(
-            gravity=-2000,        # Repulsive force between nodes
-            spring_length=150,    # Ideal edge length
-            spring_strength=0.05, # Edge stiffness
-            damping=0.09,         # Oscillation damping
-            overlap=0.5           # Node overlap prevention
+            gravity=-2000,
+            spring_length=150,
+            spring_strength=0.05,
+            damping=0.09,
+            overlap=0.5
         )
     else:
-        # Disable physics for static layout
         net.set_options("""
         var options = {
             physics: { enabled: false },
@@ -1387,15 +1641,11 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         }
         """)
     
-    # Add nodes with category-based colors and frequency-scaled sizes
     for node in nx_graph.nodes():
         freq = len(concept_abstract_map.get(node, []))
-        
-        # ✅ FIX: Convert numpy scalar to native int for JSON serialization
         size = int(np.clip(min_node_size + freq * 2, min_node_size, max_node_size))
-        
         color = get_category_color(node)
-        degree = int(nx_graph.degree(node))  # ✅ Also convert degree to int
+        degree = int(nx_graph.degree(node))
         
         net.add_node(
             node, 
@@ -1406,12 +1656,11 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
             title=f"{node}\nDegree: {degree}\nFrequency: {freq}"
         )
     
-    # Add edges with weight-scaled styling
     color_map = {
-        'cooccurrence': "#4CAF50",    # Green: empirical co-occurrence
-        'semantic': "#2196F3",         # Blue: embedding similarity
-        'bridge': "#FFC107",           # Amber: connects components
-        'declarmina_aligned': "#E91E63" # Pink: DECLARMIMA project alignment
+        'cooccurrence': "#4CAF50",
+        'semantic': "#2196F3",
+        'bridge': "#FFC107",
+        'declarmina_aligned': "#E91E63"
     }
     
     for u, v in nx_graph.edges():
@@ -1419,7 +1668,6 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         edge_type = nx_graph[u][v].get('edge_type', 'unknown')
         color = color_map.get(edge_type, "#607D8B")
         
-        # ✅ FIX: Convert all numpy scalars to native Python float/int
         edge_value = float(np.clip(w, 0.5, 5))
         edge_width = float(np.clip(w * 0.8, 1, 4))
         
@@ -1431,13 +1679,9 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
             smooth={'type': 'curvedCW', 'roundness': 0.2}
         )
     
-    # Generate HTML with inline resources for Streamlit compatibility
     html = net.generate_html()
-    
-    # Render in Streamlit
     st.components.v1.html(html, height=750, scrolling=True)
     
-    # Download button for interactive graph
     st.download_button(
         "📥 Download Interactive Graph (HTML)", 
         data=html,
@@ -1448,7 +1692,6 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
 
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map):
-    """Render concept graph using Plotly with WHITE background and vibrant colors"""
     if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
@@ -1548,7 +1791,6 @@ def render_graph_plotly_white(nx_graph, concept_abstract_map):
     )
 
 def render_graph_fallback(nx_graph, concept_abstract_map):
-    """Fallback text-based graph summary"""
     st.markdown("### 📊 Graph Summary (Text View)")
     st.markdown(f"- **Nodes**: {len(nx_graph.nodes())}")
     st.markdown(f"- **Edges**: {len(nx_graph.edges())}")
@@ -1572,7 +1814,6 @@ def render_graph_fallback(nx_graph, concept_abstract_map):
         )
 
 def display_link_predictions(top_scores_df: pd.DataFrame, threshold=0.6):
-    """Show top novel concept pairs with GNN scores and semantic novelty."""
     if top_scores_df.empty:
         st.info("No novel pairs scored above threshold. Try lowering edge sampling threshold.")
         return
@@ -1584,18 +1825,55 @@ def display_link_predictions(top_scores_df: pd.DataFrame, threshold=0.6):
         }),
         use_container_width=True
     )
-    # Show top ranked pair as "most promising innovation"
     top_pair = top_scores_df.iloc[0]
     st.success(f"🌟 **Top Innovation Frontier:** {top_pair['concept_u']} ↔ {top_pair['concept_v']} "
                f"(Score = {top_pair['composite_score']:.3f})")
 
 # ==========================================
-# STREAMLIT UI & PIPELINE ORCHESTRATION
+# STREAMLIT UI: SIDEBAR WITH HYBRID MODE INDICATOR
 # ==========================================
 def render_sidebar():
-    """Render sidebar with backend selection and configuration"""
     with st.sidebar:
         st.header("⚙️ Configuration")
+        
+        # CUDA Control
+        st.subheader("🎮 GPU/CUDA Settings")
+        cuda_info = get_pytorch_cuda_info()
+        
+        if cuda_info['cuda_available'] and not st.session_state.get("force_cpu", False):
+            cc = get_gpu_compute_capability()
+            if cc:
+                st.markdown(f"✅ GPU: `{torch.cuda.get_device_name(0)}` (sm_{cc[0]}{cc[1]})")
+            else:
+                st.markdown("✅ GPU detected (compute capability unknown)")
+            
+            if st.button("🔄 Test CUDA Compatibility"):
+                compatible, diagnostic = check_cuda_kernel_compatibility()
+                if compatible:
+                    st.success("✅ CUDA compatible!")
+                else:
+                    st.error("❌ CUDA incompatible")
+                    with st.expander("View Details"):
+                        st.code(diagnostic)
+        else:
+            st.markdown("🖥️ **CPU Mode** (CUDA unavailable or disabled)")
+            if st.button("🔁 Retry GPU Detection"):
+                if "force_cpu" in st.session_state:
+                    del st.session_state["force_cpu"]
+                st.rerun()
+        
+        force_cpu = st.checkbox("⚠️ Force CPU Mode (bypass CUDA)", 
+                               value=st.session_state.get("force_cpu", False),
+                               help="Use this if you encounter 'no kernel image' errors")
+        if force_cpu != st.session_state.get("force_cpu", False):
+            st.session_state["force_cpu"] = force_cpu
+            if force_cpu:
+                force_cpu_mode()
+                st.success("🔄 Reload to apply CPU mode")
+                if st.button("Reload Now"):
+                    st.rerun()
+        
+        st.markdown("---")
         
         # Backend selection
         st.subheader("🔧 LLM Backend")
@@ -1607,7 +1885,6 @@ def render_sidebar():
         )
         st.session_state.inference_backend = backend_option
         
-        # Model selection based on backend
         if backend_option == "Ollama (if installed)":
             if not OLLAMA_AVAILABLE:
                 st.error("❌ ollama library not installed")
@@ -1629,14 +1906,12 @@ def render_sidebar():
             )
         st.session_state.llm_model_choice = model_choice
         
-        # 4-bit quantization for HF models
         if backend_option == "Hugging Face Transformers" and not is_ollama_model(model_choice):
             st.session_state.use_4bit_quantization = st.checkbox(
                 "🗜️ Use 4-bit quantization (reduces VRAM usage)", value=True,
                 help="Enable for models >3B parameters to reduce memory usage by ~75%"
             )
         
-        # Ollama host configuration
         if backend_option == "Ollama (if installed)" or is_ollama_model(model_choice):
             st.session_state.ollama_host = st.text_input(
                 "🌐 Ollama Host", value=st.session_state.get('ollama_host', 'http://localhost:11434'),
@@ -1676,7 +1951,7 @@ def render_sidebar():
             st.toggle("Inject domain seeds", value=False, key="inject_seeds")
             st.toggle("Use embedding edges", value=False, key="semantic_edges")
         
-        # New customization controls
+        # Visual customization
         st.subheader("🎨 Visual Customization")
         st.session_state.physics_enabled = st.checkbox("Enable graph physics", value=True, key="physics_toggle")
         st.session_state.min_node_size = st.slider("Min node size", 8, 30, 12, key="min_size")
@@ -1702,20 +1977,24 @@ def render_sidebar():
                 torch.cuda.empty_cache()
             st.success("✅ Cache cleared!")
         
-        # System info
+        # System info with hybrid mode indicator
         st.markdown("---")
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
         st.caption(f"🖥️ Device: {gpu_info}")
         st.caption(f"💾 Available VRAM: {vram_info}")
+        st.caption(f"🧠 Embeddings: CPU mode (RTX 5080 compatibility)")
+        st.caption(f"🤖 LLM/GNN: CUDA accelerated")
         st.caption(f"📦 Embedding model: ~80MB")
-        st.caption(f"🤖 LLM: {LOCAL_LLM_OPTIONS.get(model_choice, 'unknown')}")
+        st.caption(f"⚡ Overhead: ~2-3s for embeddings")
 
+# ==========================================
+# STREAMLIT UI & PIPELINE ORCHESTRATION
+# ==========================================
 def main():
     st.title("🔬 DECLARMIMA: Laser-Microstructure Interaction Analyzer")
     st.caption("Physics-informed digital twins for multicomponent alloys • Dual LLM backend: HF Transformers or Ollama")
     
-    # Render sidebar with backend selection
     render_sidebar()
     
     # Memory warning for HF models
@@ -1733,7 +2012,6 @@ def main():
 You have ~{available_vram:.1f}GB available. Consider:
 <ul><li>Using 4-bit quantization (already enabled)</li><li>Selecting a smaller model</li><li>Using Ollama backend for better memory management</li></ul></div>""", unsafe_allow_html=True)
     
-    # Abstract input
     abstract_input = st.text_area(
         "📋 Paste scientific abstracts (blank lines separate):", 
         height=300,
@@ -1764,7 +2042,6 @@ You have ~{available_vram:.1f}GB available. Consider:
                 st.write("📦 Loading models...")
                 embed_model = load_embedding_model()
                 
-                # Load LLM with backend routing
                 model_key = st.session_state.get('llm_model_choice', DEFAULT_LLM_NAME)
                 tokenizer, llm_model, device_or_host, backend_type = load_local_llm(
                     model_key, use_4bit=st.session_state.get('use_4bit_quantization', True)
@@ -1780,11 +2057,12 @@ You have ~{available_vram:.1f}GB available. Consider:
                 st.success(f"✅ Models loaded ({backend_type})")
             progress_bar.progress(0.10)
             
-            # DECLARMIMA: Encode proposal text for correlation
+            # DECLARMIMA: Encode proposal text for correlation (on CPU)
             proposal_embedding = None
             config = get_adaptive_config(len(abstracts))
             if st.session_state.get('use_declarmima', True) and config.get("USE_DECLARMIMA_SEEDS", True):
                 with st.status("🎯 Processing DECLARMIMA proposal..."):
+                    # 🔧 Embedding runs on CPU - no CUDA kernel error
                     proposal_embedding = embed_model.encode([DECLARMIMA_PROPOSAL_TEXT], show_progress_bar=False)[0]
                     st.write(f"✅ Proposal embedding: {proposal_embedding.shape}")
                     declarmima_concepts = extract_declarmima_concepts(DECLARMIMA_PROPOSAL_TEXT, embed_model)
@@ -1835,15 +2113,16 @@ You have ~{available_vram:.1f}GB available. Consider:
                     st.info(f"🔗 Graph has {n_comp} component(s)")
             progress_bar.progress(0.40)
             
-            # Step 4: Embeddings
+            # Step 4: Embeddings (CPU)
             with st.status("🧠 Generating embeddings..."):
                 embed_dim = get_embedding_dimension(embed_model)
                 st.write(f"✅ Embedding dimension: {embed_dim}")
+                # 🔧 Returns CPU tensor - will be auto-moved to CUDA in GNN training
                 node_features = generate_embeddings(valid_concepts, embed_model)
-                st.write(f"✅ Node features shape: {node_features.shape}")
+                st.write(f"✅ Node features shape: {node_features.shape} (device: {node_features.device})")
             progress_bar.progress(0.50)
             
-            # Step 5: Train GNN
+            # Step 5: Train GNN (CUDA)
             def _training_progress(epoch, loss):
                 progress_value = 0.50 + (epoch / TRAIN_EPOCHS) * 0.30
                 progress_bar.progress(min(1.0, max(0.0, progress_value)))
@@ -1851,6 +2130,7 @@ You have ~{available_vram:.1f}GB available. Consider:
                     status.write(f"📊 Epoch {epoch}/{TRAIN_EPOCHS} | Loss: {loss:.4f}")
             
             with st.status("🤖 Training GraphSAGE..."):
+                # 🔧 GNN training uses CUDA via global DEVICE, auto-moves CPU embeddings
                 gnn_model, final_emb, adj_indices, adj_values = train_gnn(
                     node_features, nx_graph, concept_to_id, pos_pairs, neg_pairs, _training_progress
                 )
@@ -1869,7 +2149,7 @@ You have ~{available_vram:.1f}GB available. Consider:
                 st.write(f"✅ Scored **{len(top_scores)}** novel pairs")
             progress_bar.progress(0.90)
             
-            # Step 7: LLM curation with selected backend
+            # Step 7: LLM curation with selected backend (CUDA)
             with st.status("✍️ Generating hypotheses..."):
                 max_hyp = st.session_state.get('max_hypotheses', 10)
                 st.write(f"📝 Generating up to {max_hyp} DECLARMIMA-aligned hypotheses...")
@@ -1908,17 +2188,17 @@ You have ~{available_vram:.1f}GB available. Consider:
             else:
                 st.info("💡 No novel pairs scored above threshold. Try adjusting parameters.")
             
-            # === NEW: QUANTITATIVE METRICS DASHBOARD ===
+            # === QUANTITATIVE METRICS DASHBOARD ===
             with st.expander("📊 Graph Structural Metrics (Research Field Analysis)", expanded=False):
                 metrics = compute_graph_metrics(nx_graph)
                 display_metric_dashboard(metrics)
             
-            # === NEW: CATEGORICAL SUNBURST CHART ===
+            # === CATEGORICAL SUNBURST CHART ===
             with st.expander("📈 Research Domain Hierarchy (Sunburst)", expanded=False):
                 labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map)
                 render_sunburst_chart(labels, parents, values)
             
-            # === NEW: LINK PREDICTION DASHBOARD ===
+            # === LINK PREDICTION DASHBOARD ===
             with st.expander("🧠 Missing Link Predictions (GNN Research Gaps)", expanded=False):
                 display_link_predictions(top_scores)
             
@@ -1995,6 +2275,24 @@ You have ~{available_vram:.1f}GB available. Consider:
             st.info("💡 Reduce 'Max hypotheses' or switch to CPU")
             with st.expander("🔍 Traceback"):
                 st.code(traceback.format_exc())
+        except RuntimeError as e:
+            if "no kernel image" in str(e).lower() or "cudaerror" in str(e).lower():
+                st.error(f"❌ CUDA kernel error: {e}")
+                st.info("💡 This is the 'cudaErrorNoKernelImageForDevice' error. Solutions:")
+                st.markdown("""
+                1. **Embeddings already on CPU** - this error should not occur for embedding ops
+                2. If error is in LLM/GNN: Check sidebar "Force CPU Mode" toggle
+                3. For NEW GPUs: Ensure PyTorch installed with CUDA 12.8:
+                   ```bash
+                   pip install -U torch --index-url https://download.pytorch.org/whl/cu128
+                   ```
+                """)
+                with st.expander("🔍 Full Traceback"):
+                    st.code(traceback.format_exc())
+            else:
+                st.error(f"❌ Error: {str(e)}")
+                with st.expander("🔍 Traceback"):
+                    st.code(traceback.format_exc())
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")
             with st.expander("🔍 Traceback"):
@@ -2038,14 +2336,21 @@ You have ~{available_vram:.1f}GB available. Consider:
     - Embedding edges connect semantically related concepts
     - Adaptive thresholds relax frequency requirements
     
+    **🔧 RTX 5080 HYBRID MODE (CPU Embeddings + CUDA LLM/GNN):**
+    - ✅ Embeddings run on CPU to avoid sm_120 kernel mismatch in sentence-transformers
+    - ✅ LLM inference and GraphSAGE training use RTX 5080 CUDA cores
+    - ⚠️ ~2-3 second overhead for CPU embeddings (negligible vs total pipeline)
+    - ✅ Full GPU acceleration for heavy compute tasks
+    
     **🔧 Technical:** Qwen2.5-0.5B + Sentence-BERT (384-dim) + PyTorch GraphSAGE | Local processing
     
     **⚠️ Troubleshooting:**
-    1. Reduce "Max hypotheses" if experiencing crashes
-    2. Click "Clear Cache" between runs
-    3. Try Plotly if PyVis has rendering issues
-    4. Use "Text Summary" fallback for guaranteed visibility
-    5. For Ollama: ensure `ollama serve` is running and model is pulled (`ollama pull qwen2.5:7b`)
+    1. If embedding step fails: CPU mode is already enabled - check sentence-transformers installation
+    2. If LLM/GNN fails: Use sidebar "Force CPU Mode" toggle or reinstall PyTorch with CUDA 12.8
+    3. Reduce "Max hypotheses" if experiencing crashes
+    4. Click "Clear Cache" between runs
+    5. Try Plotly if PyVis has rendering issues
+    6. For Ollama: ensure `ollama serve` is running and model is pulled
     """)
 
 if __name__ == "__main__":

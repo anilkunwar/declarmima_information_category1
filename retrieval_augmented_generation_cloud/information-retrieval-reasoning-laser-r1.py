@@ -1915,6 +1915,7 @@ def initialize_session_state():
         "viz_chart_type": "scatter",
         "viz_param_focus": None,
         "viz_laser_type_focus": None,
+        "viz_mode": "All Modes", 
         "evaluation_mode": False,
     }
     for key, value in defaults.items():

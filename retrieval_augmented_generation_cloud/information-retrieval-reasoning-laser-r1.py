@@ -1456,7 +1456,7 @@ class LaserFusionEngine:
         lines = [r"\begin{tabular}{|l|c|c|c|c|c|l|}", r"\hline",
                 r"\textbf{Parameter} & \textbf{Value} & \textbf{Unit} & \textbf{Range} & \textbf{Sources} & \textbf{Confidence} & \textbf{Laser Type} \\", r"\hline"]
         
-        for param_name, entry in sorted(fused_params.items()):
+        for param_name, entry in fused_params.items():
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
                 value_str = f"{entry.fused_value:.3f}"
                 if entry.standard_deviation is not None:
@@ -1478,7 +1478,7 @@ class LaserFusionEngine:
         lines.append('<thead><tr style="background: #f0f9ff;">')
         for header in ["Parameter", "Value", "Unit", "Range", "Sources", "Confidence", "Laser Type"]:
             lines.append(f'<th style="border: 1px solid #ccc; padding: 8px; text-align: left;">{header}</th>')
-        lines.append('</tr></thead><tbody>')
+        lines.append('</td></thead><tbody>')
         
         for param_name, entry in fused_params.items():
             if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
@@ -1669,12 +1669,12 @@ class LaserVisualizationEngine:
     """Generate visualizations focused on laser heat source parameters"""
     
     @staticmethod
-    def create_power_parameter_chart(parameter_ List[Dict], 
+    def create_power_parameter_chart(parameter_data: List[Dict], 
                                      x_param: str = "pulse_duration", 
                                      y_param: str = "fluence",
                                      title: str = None) -> go.Figure:
         """Create scatter/line chart for laser parameter relationships"""
-        if not parameter_
+        if not parameter_data:
             return None
         
         df = pd.DataFrame(parameter_data)
@@ -1704,11 +1704,11 @@ class LaserVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_parameter_distribution_chart(parameter_ List[Dict], 
+    def create_parameter_distribution_chart(parameter_data: List[Dict], 
                                            param_name: str,
                                            title: str = None) -> go.Figure:
         """Create histogram/box plot for parameter distribution"""
-        if not parameter_
+        if not parameter_data:
             return None
         
         values = [d['value'] for d in parameter_data if d.get('value') is not None and isinstance(d['value'], (int, float))]
@@ -1746,11 +1746,11 @@ class LaserVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_laser_type_comparison_chart(parameter_ List[Dict], 
+    def create_laser_type_comparison_chart(parameter_data: List[Dict], 
                                           param_name: str,
                                           title: str = None) -> go.Figure:
         """Create bar chart comparing parameter values across laser types"""
-        if not parameter_
+        if not parameter_data:
             return None
         
         df = pd.DataFrame(parameter_data)
@@ -1787,10 +1787,10 @@ class LaserVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_processing_mode_radar_chart(mode_ List[Dict], 
+    def create_processing_mode_radar_chart(mode_data: List[Dict], 
                                           title: str = "Processing Mode Parameter Profile") -> go.Figure:
         """Create radar chart showing parameter profiles for different processing modes"""
-        if not mode_
+        if not mode_data:
             return None
         
         # Aggregate parameters by processing mode
@@ -1847,13 +1847,13 @@ class LaserVisualizationEngine:
         return fig
     
     @staticmethod
-    def create_parameter_space_heatmap(parameter_ List[Dict], 
+    def create_parameter_space_heatmap(parameter_data: List[Dict], 
                                       x_param: str, 
                                       y_param: str, 
                                       z_param: str,
                                       title: str = None) -> go.Figure:
         """Create heatmap showing parameter space coverage"""
-        if not parameter_
+        if not parameter_data:
             return None
         
         df = pd.DataFrame(parameter_data)
@@ -2545,7 +2545,7 @@ def render_viz_control_panel(fused_parameters: Dict[str, FusedLaserParameter], r
                         "normalized_value": param.fused_value  # For log scaling
                     })
         
-        if parameter_
+        if parameter_data:
             x_param = st.selectbox("X-axis Parameter", options=["pulse_duration", "wavelength", "power", "fluence"], key="viz_x")
             y_param = st.selectbox("Y-axis Parameter", options=["fluence", "power_density", "spot_size", "pulse_energy"], key="viz_y")
             
@@ -2573,7 +2573,7 @@ def render_viz_control_panel(fused_parameters: Dict[str, FusedLaserParameter], r
                         "unit": param.unit
                     })
             
-            if param_
+            if param_data:
                 title = f"{param_name.replace('_', ' ').title()} Distribution"
                 fig = viz_engine.create_parameter_distribution_chart(param_data, param_name, title=title)
                 st.plotly_chart(fig, use_container_width=True)
@@ -2596,7 +2596,7 @@ def render_viz_control_panel(fused_parameters: Dict[str, FusedLaserParameter], r
                         "unit": param.unit
                     })
             
-            if param_
+            if param_data:
                 title = f"{param_name.replace('_', ' ').title()} by Laser Source Type"
                 fig = viz_engine.create_laser_type_comparison_chart(param_data, param_name, title=title)
                 if fig:
@@ -2620,7 +2620,7 @@ def render_viz_control_panel(fused_parameters: Dict[str, FusedLaserParameter], r
                     "laser_type": param.laser_source_type
                 })
         
-        if mode_
+        if mode_data:
             title = "Processing Mode Parameter Profile"
             if st.session_state.viz_laser_type_focus != "All Laser Types":
                 title += f" - {st.session_state.viz_laser_type_focus}"
@@ -2652,7 +2652,7 @@ def render_viz_control_panel(fused_parameters: Dict[str, FusedLaserParameter], r
         else:
             st.info("Need at least 3 parameters with numeric values for heatmap visualization")
 
-def render_fusion_metrics_panel(fusion_meta Dict[str, Any]):
+def render_fusion_metrics_panel(fusion_metadata: Dict[str, Any]):
     """Display fusion efficiency metrics for laser parameters"""
     if not fusion_metadata.get("fusion_enabled"):
         return
@@ -3039,34 +3039,21 @@ def render_chat_interface():
             message_placeholder = st.empty()
             with st.spinner("🔍 Retrieving, fusing laser parameter data, and generating..."):
                 try:
-                    if st.session_state.enable_laser_fusion:
-                        answer, retrieved_docs, relevance, metadata = retrieve_and_answer_with_laser_fusion(
-                            vectorstore=st.session_state.vectorstore,
-                            tokenizer=st.session_state.llm_tokenizer,
-                            model=st.session_state.llm_model,
-                            device_or_host=st.session_state.llm_device_or_host,
-                            backend=st.session_state.llm_model_choice,
-                            backend_type=st.session_state.llm_backend_type,
-                            query=prompt,
-                            k=st.session_state.max_retrieved_chunks,
-                            enable_fusion=True,
-                            source_type_filter=st.session_state.viz_laser_type_focus if st.session_state.viz_laser_type_focus != "All Laser Types" else None,
-                            processing_mode_filter=st.session_state.viz_mode if st.session_state.viz_mode != "All Modes" else None,
-                            parameter_filter=[st.session_state.viz_param_focus.lower().replace(' ', '_')] if st.session_state.viz_param_focus != "All Parameters" else None
-                        )
-                    else:
-                        answer, retrieved_docs, relevance = retrieve_and_answer_with_laser_fusion(
-                            vectorstore=st.session_state.vectorstore,
-                            tokenizer=st.session_state.llm_tokenizer,
-                            model=st.session_state.llm_model,
-                            device_or_host=st.session_state.llm_device_or_host,
-                            backend=st.session_state.llm_model_choice,
-                            backend_type=st.session_state.llm_backend_type,
-                            query=prompt,
-                            k=st.session_state.max_retrieved_chunks,
-                            enable_fusion=False
-                        )
-                        metadata = {"fusion_enabled": False}
+                    # Always capture 4 return values
+                    answer, retrieved_docs, relevance, metadata = retrieve_and_answer_with_laser_fusion(
+                        vectorstore=st.session_state.vectorstore,
+                        tokenizer=st.session_state.llm_tokenizer,
+                        model=st.session_state.llm_model,
+                        device_or_host=st.session_state.llm_device_or_host,
+                        backend=st.session_state.llm_model_choice,
+                        backend_type=st.session_state.llm_backend_type,
+                        query=prompt,
+                        k=st.session_state.max_retrieved_chunks,
+                        enable_fusion=st.session_state.enable_laser_fusion,
+                        source_type_filter=st.session_state.viz_laser_type_focus if st.session_state.viz_laser_type_focus != "All Laser Types" else None,
+                        processing_mode_filter=st.session_state.viz_mode if st.session_state.viz_mode != "All Modes" else None,
+                        parameter_filter=[st.session_state.viz_param_focus.lower().replace(' ', '_')] if st.session_state.viz_param_focus != "All Parameters" else None
+                    )
                     
                     # Stream the response
                     display_text = ""
@@ -3083,7 +3070,7 @@ def render_chat_interface():
                         "sources": retrieved_docs if st.session_state.show_sources else None,
                         "relevance": relevance
                     }
-                    if st.session_state.enable_laser_fusion:
+                    if st.session_state.enable_laser_fusion and metadata.get("fusion_enabled"):
                         message_dict["fusion_metadata"] = metadata
                     st.session_state.messages.append(message_dict)
                     

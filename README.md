@@ -55,6 +55,10 @@ Multicomponent Alloy Microstructure Focus :
 
 [![meaningtowords](https://img.shields.io/badge/microstructurecloud-v1.0-brown)](https://information-retrieval-reasoning-alloy1.streamlit.app/) (chat-driven visualization, v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
 
+Laser Heat Source Focus :
+
+[![meaningtowords](https://img.shields.io/badge/mlasercloud-v1.0-indigo)](https://information-retrieval-reasoning-laser1.streamlit.app/) (chat-driven visualization, v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
+
 Chat driven scientific visualization
 
 [![meaningtowords](https://img.shields.io/badge/demochat1-v12.0-cyan)](https://chat-driven-scientific-visualization1.streamlit.app/) (chat-driven visualization,synthetic dataset)

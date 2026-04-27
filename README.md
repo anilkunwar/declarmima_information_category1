@@ -51,7 +51,8 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/reasoningragviscloud-v12.0-turquoise)](https://information-retrieval-reasoning-visualization12.streamlit.app/) (chat-driven visualization, v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
 
-
+Chat driven scientific visualization
+[![meaningtowords](https://img.shields.io/badge/demochat1-v12.0-cyan)](https://chat-driven-scientific-visualization1.streamlit.app/) (chat-driven visualization,synthetic dataset)
 
 # local computer (working)
 

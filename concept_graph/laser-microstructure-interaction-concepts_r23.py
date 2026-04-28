@@ -2449,77 +2449,77 @@ def compute_projection(valid_concepts, embed_model, method: str = 'pca',
     if len(valid_concepts) < 3:
         return None, {"error": "At least 3 concepts required"}
     
+    # Normalize method name
+    method_lower = method.lower().replace(' ', '_').replace('-', '_')
+    if method_lower == 't_sne':
+        method_lower = 'tsne'
+    elif method_lower == 'kernel_pca':
+        method_lower = 'kpca'
+    elif method_lower == 'truncated_svd':
+        method_lower = 'truncated_svd'
+    
     embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
-    
-    # Standardize embeddings
     scaler = StandardScaler()
-    embeddings_scaled = scaler.fit_transform(embeddings)
+    embeddings_scaled = scaler.fit_transform(embeddings)   # dense array
     
-    method_info = {
-        "method": method,
-        "n_components": n_components,
-        "perplexity": perplexity,
-        "n_neighbors": n_neighbors,
-        "min_dist": min_dist,
-        "metric": metric,
-        "explained_variance": None,
-        "fit_time": None
-    }
+    n_samples = len(valid_concepts)
+    if n_components >= n_samples:
+        n_components = n_samples - 1
+        if n_components < 1:
+            return None, {"error": "Too few samples for projection"}
     
+    method_info = {"method": method_lower, "n_components": n_components}
     start_time = time.time()
     
     try:
-        if method.lower() == 'pca':
+        if method_lower == 'pca':
             reducer = PCA(n_components=n_components, random_state=SEED)
             coords = reducer.fit_transform(embeddings_scaled)
             method_info["explained_variance"] = reducer.explained_variance_ratio_.tolist()
             method_info["total_variance"] = float(np.sum(reducer.explained_variance_ratio_))
         
-        elif method.lower() == 'kpca':
-            reducer = KernelPCA(n_components=n_components, kernel='rbf', 
-                               gamma=1.0, random_state=SEED)
+        elif method_lower == 'kpca':
+            # KernelPCA works with dense arrays; ensure n_components < n_samples
+            reducer = KernelPCA(n_components=n_components, kernel='rbf', gamma=1.0, random_state=SEED)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method.lower() == 'tsne':
-            perplexity = min(perplexity, len(valid_concepts) - 1)
+        elif method_lower == 'tsne':
+            perplexity = min(perplexity, n_samples - 1)
             reducer = TSNE(n_components=n_components, random_state=SEED, 
                           perplexity=perplexity, metric=metric)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method.lower() == 'umap':
+        elif method_lower == 'umap':
             if not UMAP_AVAILABLE:
-                st.error("UMAP not installed. Run: pip install umap-learn")
                 return None, {"error": "UMAP not installed"}
-            n_neighbors = min(n_neighbors, len(valid_concepts) - 1)
+            n_neighbors = min(n_neighbors, n_samples - 1)
             reducer = umap.UMAP(n_components=n_components, random_state=SEED,
                                n_neighbors=n_neighbors, min_dist=min_dist, metric=metric)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method.lower() == 'mds':
+        elif method_lower == 'mds':
             reducer = MDS(n_components=n_components, random_state=SEED, 
                          dissimilarity='euclidean', normalized_stress='auto')
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method.lower() == 'isomap':
-            n_neighbors = min(n_neighbors, len(valid_concepts) - 1)
+        elif method_lower == 'isomap':
+            n_neighbors = min(n_neighbors, n_samples - 1)
             reducer = Isomap(n_neighbors=n_neighbors, n_components=n_components)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method.lower() == 'truncated_svd':
+        elif method_lower == 'truncated_svd':
             reducer = TruncatedSVD(n_components=n_components, random_state=SEED)
             coords = reducer.fit_transform(embeddings_scaled)
             method_info["explained_variance"] = reducer.explained_variance_ratio_.tolist()
             method_info["total_variance"] = float(np.sum(reducer.explained_variance_ratio_))
         
         else:
-            st.error(f"Unknown projection method: {method}")
             return None, {"error": f"Unknown method: {method}"}
         
         method_info["fit_time"] = time.time() - start_time
         return coords, method_info
     
     except Exception as e:
-        st.error(f"Projection failed: {e}")
         return None, {"error": str(e)}
 
 def render_projection_dashboard(valid_concepts, concept_abstract_map, embed_model,

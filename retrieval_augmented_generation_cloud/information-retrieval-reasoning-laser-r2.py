@@ -1,27 +1,27 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-LASER HEAT SOURCE RAG CHATBOT - FOCUSED RETRIEVAL & FUSION EDITION
+LASER & HEAT SOURCE RAG CHATBOT - CROSS-DOCUMENT SCIENTIFIC REASONING & VISUALIZATION
 ========================================================================================
-✅ Zero API keys - all models run locally (HuggingFace Transformers + Ollama)
-✅ LASER-ONLY FOCUS: Heat source types, power instruments, processing parameters
-✅ Narrowed scope: Maximum retrieval efficiency for laser parameter queries
-✅ Information fusion: Cross-document laser parameter extraction & consensus
-✅ Physics-aware validation: Energy density, power density, thermal constraints
-✅ Chat-driven visualizations: Power charts, parameter space maps, pulse diagrams
-✅ FAISS vector storage with laser-boosted semantic chunking
-✅ Memory-efficient: 4-bit quantization, CPU/GPU auto-detection
-✅ Human-readable citations: DOI, Author-Year-Journal format
-
-DEPLOYMENT:
-pip install streamlit langchain langchain-community faiss-cpu sentence-transformers
-pip install transformers torch plotly pandas numpy scikit-learn
-pip install pypdf2 pdf2doi crossrefapi  # optional for enhanced metadata
-pip install ollama  # optional for Ollama backend
-
-Run: streamlit run laser_source_rag.py
+Single standalone Streamlit application integrating:
+- Cross-document consensus, contradiction, and gap detection
+- Hierarchical taxonomy (Laser Sources, Heat Transfer, Energy Deposition, Materials, Methods, Phenomena, Parameters)
+- DGL heterogeneous graph construction (optional) + NetworkX fallback
+- Graph diffusion retrieval (personalized PageRank re-ranking)
+- Explicit reasoning chain / "thinking" trace with visual graph
+- Publication-ready static visualizations:
+* Static bipartite knowledge network (NetworkX + Matplotlib)
+* Chord-style co-occurrence (Plotly)
+* Hierarchical sunbursts (Methods, Materials, Laser/Thermal Topics)
+* Document radar profiles
+* Contradiction severity matrix
+* Consensus waterfall
+* Entity t-SNE embedding map
+* Temporal timeline
+* Reasoning chain graph
+* Energy deposition & heat source model distributions
+- All original PyVis interactive graph, retrieval debugger, feedback loop
 """
-
 import streamlit as st
 import os
 import tempfile
@@ -35,22 +35,20 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from io import BytesIO
-from typing import List, Dict, Optional, Tuple, Union, Any, Set
+from typing import List, Dict, Optional, Tuple, Union, Any, Set, Callable
 from datetime import datetime
 import sys
 import subprocess
 import platform
 from pathlib import Path
 from collections import defaultdict, Counter
-from dataclasses import dataclass, field, asdict
-from enum import Enum, auto
-import logging
 import hashlib
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
+from dataclasses import dataclass, field
+# Matplotlib / NetworkX for static publication graphs
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.colors import LinearSegmentedColormap
+import networkx as nx
 # LangChain / RAG imports
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -58,209 +56,57 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
-
-# Transformers for local LLM inference
+# Transformers
 from transformers import (
     GPT2Tokenizer, GPT2LMHeadModel,
     AutoTokenizer, AutoModelForCausalLM,
     pipeline, set_seed, BitsAndBytesConfig
 )
-
-# Optional libraries with graceful fallbacks
+# Optional: Ollama
 try:
     import ollama
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
-
+# Bibliographic metadata
 try:
     import pdf2doi
     PDF2DOI_AVAILABLE = True
 except (ImportError, PermissionError, Exception):
     PDF2DOI_AVAILABLE = False
-
 try:
     from crossrefapi import CrossrefAPI
     CROSSREF_AVAILABLE = True
 except ImportError:
     CROSSREF_AVAILABLE = False
-
 try:
     from PyPDF2 import PdfReader
     PYPDF2_AVAILABLE = True
 except ImportError:
     PYPDF2_AVAILABLE = False
-
+# Pyvis for network graph
 try:
-    from sklearn.metrics.pairwise import cosine_similarity
+    from pyvis.network import Network
+    PYVIS_AVAILABLE = True
+except ImportError:
+    PYVIS_AVAILABLE = False
+# Optional DGL
+try:
+    import dgl
+    import dgl.function as fn
+    from dgl.nn import HeteroGraphConv, SAGEConv
+    import torch.nn as nn
+    import torch.nn.functional as F
+    DGL_AVAILABLE = True
+except ImportError:
+    DGL_AVAILABLE = False
+    dgl = None
+# Optional scikit-learn
+try:
+    from sklearn.manifold import TSNE
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
-
-# =============================================
-# LASER HEAT SOURCE CONFIGURATION - NARROWED SCOPE
-# =============================================
-LASER_SOURCE_TYPES = {
-    "CW": ["continuous wave", "cw laser", "continuous-wave", "steady-state laser"],
-    "PULSED": ["pulsed laser", "pulse laser", "q-switched", "mode-locked"],
-    "FEMTOSECOND": ["femtosecond", "fs laser", "ultrafast", "10^-15 s", "ti:sapphire"],
-    "PICOSECOND": ["picosecond", "ps laser", "10^-12 s"],
-    "NANOSECOND": ["nanosecond", "ns laser", "10^-9 s", "nd:yag"],
-    "MICROSECOND": ["microsecond", "μs laser", "10^-6 s"],
-    "FIBER": ["fiber laser", "ytterbium fiber", "erbium fiber"],
-    "CO2": ["co2 laser", "carbon dioxide laser", "10.6 μm"],
-    "DIODE": ["diode laser", "semiconductor laser", "laser diode"],
-    "EXCIMER": ["excimer laser", "arf", "krf", "xecl"],
-    "DISK": ["disk laser", "thin-disk"],
-    "SLAB": ["slab laser"],
-}
-
-POWER_INSTRUMENTS = {
-    "power_meter": ["power meter", "optical power meter", "laser power meter", "wattmeter"],
-    "energy_meter": ["energy meter", "joulemeter", "pulse energy meter"],
-    "beam_profiler": ["beam profiler", "beam analyzer", "m² measurement"],
-    "pyrometer": ["pyrometer", "infrared thermometer", "temperature sensor"],
-    "thermocouple": ["thermocouple", "type-k", "type-s", "temperature probe"],
-    "photodiode": ["photodiode", "fast photodiode", "detector"],
-    "oscilloscope": ["oscilloscope", "digital scope", "waveform capture"],
-    "spectrometer": ["spectrometer", "optical spectrum analyzer", "osa"],
-    "calorimeter": ["calorimeter", "thermal power sensor"],
-}
-
-LASER_PARAMETERS = {
-    "power": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:W|mW|kW|MW)\s*(?:laser\s*power|output\s*power|average\s*power|nominal\s*power)?',
-            r'(?:power|P)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:W|mW|kW)',
-        ],
-        "unit_conversions": {"mW": 1e-3, "W": 1, "kW": 1e3, "MW": 1e6},
-        "base_unit": "W",
-        "physical_bounds": {"min": 1e-6, "max": 1e6},
-    },
-    "pulse_energy": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:J|mJ|μJ|uJ|nJ)\s*(?:pulse\s*energy|energy\s*per\s*pulse)?',
-            r'(?:energy|E)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:J|mJ|μJ)',
-        ],
-        "unit_conversions": {"nJ": 1e-9, "μJ": 1e-6, "uJ": 1e-6, "mJ": 1e-3, "J": 1},
-        "base_unit": "J",
-        "physical_bounds": {"min": 1e-12, "max": 1e3},
-    },
-    "pulse_duration": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:fs|ps|ns|μs|us|ms)\s*(?:pulse\s*duration|pulse\s*width|pulse\s*length)?',
-            r'(?:duration|τ|pulse)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:fs|ps|ns)',
-        ],
-        "unit_conversions": {"fs": 1e-15, "ps": 1e-12, "ns": 1e-9, "μs": 1e-6, "us": 1e-6, "ms": 1e-3},
-        "base_unit": "s",
-        "physical_bounds": {"min": 1e-18, "max": 1},
-    },
-    "repetition_rate": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:Hz|kHz|MHz|GHz)\s*(?:repetition\s*rate|pulse\s*frequency|rep\s*rate)?',
-            r'(?:frequency|frep|rep)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:kHz|MHz)',
-        ],
-        "unit_conversions": {"Hz": 1, "kHz": 1e3, "MHz": 1e6, "GHz": 1e9},
-        "base_unit": "Hz",
-        "physical_bounds": {"min": 0.1, "max": 1e11},
-    },
-    "wavelength": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:nm|μm|um|mm)\s*(?:wavelength|λ|lambda)?',
-            r'(?:wavelength|λ)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:nm|μm)',
-        ],
-        "unit_conversions": {"nm": 1e-9, "μm": 1e-6, "um": 1e-6, "mm": 1e-3},
-        "base_unit": "m",
-        "physical_bounds": {"min": 1e-10, "max": 1e-2},
-    },
-    "spot_size": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:μm|um|nm|mm)\s*(?:spot\s*size|beam\s*diameter|waist|1/e²\s*diameter)?',
-            r'(?:spot|diameter|waist)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:μm|mm)',
-        ],
-        "unit_conversions": {"nm": 1e-9, "μm": 1e-6, "um": 1e-6, "mm": 1e-3},
-        "base_unit": "m",
-        "physical_bounds": {"min": 1e-9, "max": 1e-1},
-    },
-    "fluence": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2|mJ/cm²|mJ/cm2|J/m²)\s*(?:fluence|fluence\s*threshold|energy\s*density)?',
-            r'(?:fluence|F)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:J/cm²|mJ/cm²)',
-        ],
-        "unit_conversions": {"J/cm²": 1e4, "J/cm2": 1e4, "mJ/cm²": 10, "mJ/cm2": 10, "J/m²": 1},
-        "base_unit": "J/m²",
-        "physical_bounds": {"min": 1e-3, "max": 1e6},
-    },
-    "power_density": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:W/cm²|W/cm2|kW/cm²|MW/cm²|W/m²)\s*(?:power\s*density|intensity|irradiance)?',
-            r'(?:intensity|I)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:W/cm²|MW/cm²)',
-        ],
-        "unit_conversions": {"W/cm²": 1e4, "W/cm2": 1e4, "kW/cm²": 1e7, "MW/cm²": 1e10, "W/m²": 1},
-        "base_unit": "W/m²",
-        "physical_bounds": {"min": 1, "max": 1e15},
-    },
-    "scan_speed": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:mm/s|mm/min|m/s|cm/s)\s*(?:scan\s*speed|travel\s*speed|writing\s*speed)?',
-            r'(?:speed|v)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:mm/s|m/s)',
-        ],
-        "unit_conversions": {"mm/s": 1e-3, "mm/min": 1.667e-5, "m/s": 1, "cm/s": 1e-2},
-        "base_unit": "m/s",
-        "physical_bounds": {"min": 1e-6, "max": 1e3},
-    },
-    "hatch_distance": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:μm|um|mm)\s*(?:hatch\s*distance|hatch\s*spacing|line\s*spacing)?',
-            r'(?:hatch|spacing)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:μm|mm)',
-        ],
-        "unit_conversions": {"μm": 1e-6, "um": 1e-6, "mm": 1e-3},
-        "base_unit": "m",
-        "physical_bounds": {"min": 1e-9, "max": 1e-2},
-    },
-    "overlap": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:%|percent)\s*(?:overlap|pulse\s*overlap|spatial\s*overlap)?',
-            r'(?:overlap)\s*[=:]\s*(\d+(?:\.\d+)?)\s*%',
-        ],
-        "unit_conversions": {"%": 1, "percent": 1},
-        "base_unit": "%",
-        "physical_bounds": {"min": 0, "max": 100},
-    },
-    "dwell_time": {
-        "patterns": [
-            r'(\d+(?:\.\d+)?)\s*(?:μs|us|ms|ns|s)\s*(?:dwell\s*time|exposure\s*time|interaction\s*time)?',
-            r'(?:dwell|exposure)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:μs|ms)',
-        ],
-        "unit_conversions": {"ns": 1e-9, "μs": 1e-6, "us": 1e-6, "ms": 1e-3, "s": 1},
-        "base_unit": "s",
-        "physical_bounds": {"min": 1e-15, "max": 1e3},
-    },
-}
-
-LASER_PROCESSING_MODES = {
-    "ablation": ["ablation", "material removal", "laser ablation", "vaporization"],
-    "melting": ["melting", "fusion", "melt pool", "liquid phase"],
-    "sintering": ["sintering", "partial melting", "powder consolidation"],
-    "annealing": ["annealing", "heat treatment", "thermal treatment"],
-    "hardening": ["hardening", "surface hardening", "laser hardening"],
-    "cladding": ["cladding", "laser cladding", "additive deposition"],
-    "marking": ["marking", "engraving", "surface texturing"],
-    "cutting": ["cutting", "laser cutting", "kerf"],
-    "welding": ["welding", "laser welding", "fusion welding"],
-    "surface_modification": ["surface modification", "lipss", "ripples", "periodic structures"],
-}
-
-# Laser-specific keywords for retrieval boosting (SCOPE: LASER ONLY)
-LASER_KEYWORDS = {
-    "source_type": list(LASER_SOURCE_TYPES.keys()) + [kw for v in LASER_SOURCE_TYPES.values() for kw in v],
-    "power_instrument": list(POWER_INSTRUMENTS.keys()) + [kw for v in POWER_INSTRUMENTS.values() for kw in v],
-    "parameter": list(LASER_PARAMETERS.keys()),
-    "processing_mode": list(LASER_PROCESSING_MODES.keys()) + [kw for v in LASER_PROCESSING_MODES.values() for kw in v],
-    "beam_quality": ["m²", "m2", "beam quality", "m-squared", "beam parameter product"],
-    "thermal_effects": ["heat affected zone", "haz", "thermal diffusion", "heat conduction", "thermal lensing"],
-    "measurement": ["calibration", "measurement uncertainty", "traceability", "standard"],
-}
 
 # =============================================
 # GLOBAL CONFIGURATION
@@ -281,23 +127,159 @@ LOCAL_LLM_OPTIONS = {
     "[Ollama] qwen2.5:0.5b (via ollama serve)": "ollama:qwen2.5:0.5b",
     "[Ollama] qwen2.5:1.5b (via ollama serve)": "ollama:qwen2.5:1.5b",
     "[Ollama] qwen2.5:7b (via ollama serve)": "ollama:qwen2.5:7b",
-    "[Ollama] qwen2.5:14b (via ollama serve) 🔥": "ollama:qwen2.5:14b",
+    "[Ollama] qwen2.5:14b (via ollama serve)": "ollama:qwen2.5:14b",
     "[Ollama] llama3.1:8b (via ollama serve)": "ollama:llama3.1:8b",
     "[Ollama] mistral:7b (via ollama serve)": "ollama:mistral:7b",
     "[Ollama] gemma2:9b (via ollama serve)": "ollama:gemma2:9b",
     "[Ollama] falcon3:10b (via ollama serve)": "ollama:falcon3:10b",
 }
-
 LOCAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
 LASER_DOMAIN_CONFIG = {
-    "chunk_size": 600,
-    "chunk_overlap": 100,
+    "chunk_size": 800,
+    "chunk_overlap": 150,
     "retrieval_k": 4,
-    "score_threshold": 0.30,
-    "max_context_tokens": 1024,
-    "max_new_tokens": 256,
-    "temperature": 0.1,
+    "score_threshold": 0.25,
+    "max_context_tokens": 2048,
+    "max_new_tokens": 512,
+    "temperature": 0.05,
+}
+
+# -------------------------------------------
+# UPGRADED LASER/HEAT SOURCE KEYWORDS
+# -------------------------------------------
+LASER_KEYWORDS = {
+    # === LASER/HEAT SOURCE CHARACTERISTICS (NEW FOCUS) ===
+    "laser_source": [
+        "laser source", "beam delivery", "fiber laser", "disk laser", "diode laser",
+        "CO2 laser", "Nd:YAG", "Yb-fiber", "beam quality", "M²", "BPP", "brightness"
+    ],
+    "energy_deposition": [
+        "energy density", "volumetric heating", "heat input", "linear energy",
+        "specific energy", "energy coupling", "absorption coefficient", "penetration depth"
+    ],
+    "thermal_modeling": [
+        "heat conduction", "Fourier law", "thermal diffusion", "heat source model",
+        "Goldak model", "double ellipsoid", "moving heat source", "Rosenthal solution",
+        "transient thermal", "steady-state thermal", "thermal boundary condition"
+    ],
+    "beam_interaction": [
+        "beam absorption", "reflectivity", "absorptivity", "keyhole formation",
+        "multiple reflection", "Fresnel absorption", "inverse bremsstrahlung",
+        "plasma plume", "laser shielding", "beam attenuation"
+    ],
+    
+    # === Thermal Response (Reframed from Morphology) ===
+    "thermal_response": [
+        "thermal gradient", "cooling rate", "solidification rate", "G/R ratio",
+        "melt pool dynamics", "Marangoni flow", "buoyancy convection", "recoil pressure"
+    ],
+    
+    # === Process parameters (Enhanced) ===
+    "parameters": [
+        "laser power", "beam power", "pulse energy", "fluence", "irradiance",
+        "intensity", "power density", "wavelength", "spot size", "beam diameter",
+        "focal position", "defocus distance", "Rayleigh length", "pulse duration",
+        "repetition rate", "duty cycle", "scan speed", "hatch spacing", "overlap"
+    ],
+    
+    # === Materials (Unchanged but contextualized) ===
+    "materials": [
+        "multicomponent alloy", "high entropy alloy", "Sn-Ag-Cu", "Al-Cr-Fe-Ni",
+        "Inconel", "titanium", "steel", "aluminum", "copper", "tungsten"
+    ],
+    
+    # === Characterization (Thermal-focused) ===
+    "thermal_characterization": [
+        "pyrometry", "thermocouple", "IR thermography", "high-speed imaging",
+        "melt pool monitoring", "coaxial monitoring", "photodiode", "spectroscopy"
+    ],
+    
+    # === Simulation methods (Thermal emphasis) ===
+    "thermal_simulation": [
+        "finite element thermal", "transient heat transfer", "enthalpy method",
+        "latent heat", "phase change modeling", "moving mesh", "ALE formulation",
+        "CFD thermal", "conjugate heat transfer"
+    ],
+    
+    # Legacy support for backward compatibility
+    "ablation": ["ablation", "material removal", "threshold fluence", "laser ablation", "ablation threshold"],
+    "plasma": ["plasma formation", "ionization", "electron density", "plume", "plasma shielding"],
+    "morphology": ["ripples", "LIPSS", "surface structuring", "periodic structures", "nanostructures", "microstructures"],
+    "additive_manufacturing": ["additive manufacturing", "3D printing", "selective laser melting", "SLM", "laser powder bed fusion", "LPBF"],
+    "multicomponent": ["multicomponent alloy", "multi-principal element alloy", "MPEA", "high entropy alloy", "HEA"],
+    "digital_twin": ["digital twin", "physics-informed digital twin", "PIDT", "in-silico", "virtual qualification"],
+    "data_driven": ["machine learning", "neural network", "random forest", "CNN", "data-driven", "physics-informed ML"],
+    "properties": ["interfacial energy", "thermal conductivity", "diffusion coefficient", "viscosity", "gibbs free energy", "enthalpy", "absorptivity", "reflectivity", "spatter", "porosity"],
+}
+
+MATERIAL_ALIASES = {
+    "silicon": ["silicon", "si", "crystalline silicon", "c-si", "si(100)", "si(111)"],
+    "titanium": ["titanium", "ti", "cp-ti", "ti-6al-4v", "ti6al4v"],
+    "steel": ["steel", "stainless steel", "ss304", "ss316", "mild steel", "carbon steel"],
+    "aluminum": ["aluminum", "aluminium", "al", "al6061", "al-6061"],
+    "copper": ["copper", "cu"],
+    "tungsten": ["tungsten", "w"],
+    "glass": ["glass", "fused silica", "sio2", "borosilicate"],
+    "polymer": ["polymer", "pmma", "polyimide", "pei", "pc", "polycarbonate", "ptfe"],
+    "ceramic": ["ceramic", "alumina", "al2o3", "zirconia", "zro2"],
+    "Sn-Ag-Cu": ["snagcu", "sac", "sn-ag-cu", "sn-3.5ag-0.5cu", "solder", "lead-free solder"],
+    "Al-Cr-Fe-Ni": ["alcrfeni", "al-cr-fe-ni", "inconel 718", "in718", "nickel superalloy"],
+    "high entropy alloy": ["hea", "multi-principal element alloy", "mpea", "cocrfeni", "cocrfenimn", "alcocrfeni", "crmnfeconi", "refractory hea"],
+}
+
+METHOD_ALIASES = {
+    "sem": ["sem", "scanning electron microscopy", "scanning electron microscope"],
+    "afm": ["afm", "atomic force microscopy", "atomic force microscope"],
+    "profilometry": ["profilometry", "optical profilometry", "white light interferometry", "wli"],
+    "raman": ["raman", "raman spectroscopy", "micro-raman"],
+    "xrd": ["xrd", "x-ray diffraction"],
+    "edx": ["edx", "eds", "energy dispersive x-ray", "energy-dispersive"],
+    "ebsd": ["ebsd", "electron backscatter diffraction"],
+    "x-ray_imaging": ["synchrotron x-ray", "x-ray radiography", "x-ray tomography"],
+    "phase_field": ["phase-field", "phase field", "pf simulation"],
+    "finite_element": ["finite element", "fem", "moose", "abaqus"],
+    "calphad": ["calphad", "thermo-calc", "thermocalc", "pandat"],
+}
+
+# =============================================
+# UPGRADED QUANTITY PATTERNS (Laser/Heat Source Focus)
+# =============================================
+QUANTITY_PATTERNS = {
+    # === LASER/HEAT SOURCE SPECIFIC ===
+    "laser_power": re.compile(r'(\d+(?:\.\d+)?)\s*(?:W|kW|MW)\s*(?:laser\s*power|beam\s*power|nominal\s*power|input\s*power)', re.I),
+    "peak_power": re.compile(r'(\d+(?:\.\d+)?)\s*(?:kW|MW|GW)\s*(?:peak\s*power|maximum\s*power)', re.I),
+    "fluence": re.compile(r'(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2|J\s*cm[-²2]|fluence|energy\s*density)', re.I),
+    "irradiance": re.compile(r'(\d+(?:\.\d+)?)\s*(?:W/cm²|W/cm2|kW/cm2|MW/cm2)\s*(?:irradiance|intensity|power\s*density)', re.I),
+    "linear_energy": re.compile(r'(\d+(?:\.\d+)?)\s*(?:J/mm|J/m)\s*(?:linear\s*energy|line\s*energy|energy\s*per\s*length)', re.I),
+    "volumetric_energy": re.compile(r'(\d+(?:\.\d+)?)\s*(?:J/mm³|J/mm3)\s*(?:volumetric\s*energy|energy\s*density)', re.I),
+    
+    # === THERMAL RESPONSE ===
+    "peak_temperature": re.compile(r'(\d+(?:\.\d+)?)\s*(?:°C|°F|K|kelvin|Celsius)\s*(?:peak\s*temperature|max\s*temperature|melt\s*pool\s*temperature)', re.I),
+    "cooling_rate": re.compile(r'(\d+(?:\.\d+)?)\s*(?:K/s|°C/s|K/ms)\s*(?:cooling\s*rate|solidification\s*rate)', re.I),
+    "thermal_gradient": re.compile(r'(\d+(?:\.\d+)?)\s*(?:K/mm|°C/mm|K/m)\s*(?:thermal\s*gradient|temperature\s*gradient)', re.I),
+    "melt_pool_width": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:melt\s*pool\s*width|pool\s*width|melt\s*width)', re.I),
+    "melt_pool_depth": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:melt\s*pool\s*depth|pool\s*depth|penetration\s*depth)', re.I),
+    
+    # === BEAM PROPERTIES ===
+    "beam_diameter": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:beam\s*diameter|spot\s*size|focal\s*spot)', re.I),
+    "m2_factor": re.compile(r'M\s*²\s*[=:]\s*(\d+(?:\.\d+)?)|beam\s*quality\s*[=:]\s*(\d+(?:\.\d+)?)', re.I),
+    "absorption_coeff": re.compile(r'(\d+(?:\.\d+)?)\s*(?:%|percent|fraction)\s*(?:absorption|absorptivity|absorption\s*coefficient)', re.I),
+    
+    # === Retained original patterns for compatibility ===
+    "wavelength": re.compile(r'(\d+(?:\.\d+)?)\s*(?:nm|nanometers?)\s*(?:wavelength|λ|lambda)', re.I),
+    "pulse_duration": re.compile(r'(\d+(?:\.\d+)?)\s*(?:fs|femtoseconds?|ps|picoseconds?|ns|nanoseconds?)\s*(?:pulse|duration)', re.I),
+    "repetition_rate": re.compile(r'(\d+(?:\.\d+)?)\s*(?:kHz|MHz|Hz)\s*(?:repetition|rate|freq)', re.I),
+    "spot_size": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|microns?)\s*(?:spot|diameter|beam\s*radius|waist)', re.I),
+    "periodicity": re.compile(r'(\d+(?:\.\d+)?)\s*(?:nm|µm|um|microns?)\s*(?:period|periodicity|spacing|LSFL|HSFL)', re.I),
+    "roughness": re.compile(r'(\d+(?:\.\d+)?)\s*(?:nm|µm|um)\s*(?:roughness|Ra|RMS|Rq)', re.I),
+    "threshold": re.compile(r'(?:threshold|ablation\s*threshold)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2|mJ/cm²|GW/cm²|TW/cm²)', re.I),
+    "power": re.compile(r'(\d+(?:\.\d+)?)\s*(?:W|mW|kW|MW)\s*(?:power|average\s*power)', re.I),
+    "pulse_energy": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µJ|uJ|mJ|nJ)\s*(?:pulse\s*energy|energy\s*per\s*pulse)', re.I),
+    "scan_speed": re.compile(r'(\d+(?:\.\d+)?)\s*(?:mm/s|mm/min|m/s)\s*(?:scan\s*speed|travel\s*speed)', re.I),
+    "hatch_distance": re.compile(r'(\d+(?:\.\d+)?)\s*(?:µm|um|mm)\s*(?:hatch\s*distance|hatch\s*spacing)', re.I),
+    "component_fraction": re.compile(r'(\d+(?:\.\d+)?)\s*(?:at\.%|wt\.%|at%|wt%)\s*(?:of\s*)?([A-Za-z]+)', re.I),
+    "interfacial_energy": re.compile(r'(\d+(?:\.\d+)?)\s*(?:J/m²|J/m2|mJ/m²|mJ/m2)\s*(?:interfacial\s*energy|surface\s*tension)', re.I),
+    "thermal_conductivity": re.compile(r'(\d+(?:\.\d+)?)\s*(?:W/(?:m·?K|mK))\s*(?:thermal\s*conductivity)', re.I),
 }
 
 MODEL_MEMORY_ESTIMATES = {
@@ -317,202 +299,146 @@ MODEL_MEMORY_ESTIMATES = {
 }
 
 # =============================================
-# DATA STRUCTURES & ENUMS
+# UPGRADED HIERARCHICAL TAXONOMY (Laser/Heat Source Focus)
 # =============================================
-class FusionConfidence(Enum):
-    HIGH = "high"
-    MODERATE = "moderate"
-    LOW = "low"
-    UNKNOWN = "unknown"
-
-@dataclass
-class LaserParameter:
-    """Laser-specific parameter with source context"""
-    name: str
-    value: Union[float, str, List]
-    unit: Optional[str] = None
-    uncertainty: Optional[str] = None
-    condition: Optional[str] = None
-    source_chunk_id: str = ""
-    source_citation: str = ""
-    extraction_confidence: float = 0.5
-    context_snippet: str = ""
-    parameter_type: str = "operational"
-    laser_source_type: Optional[str] = None
-    processing_mode: Optional[str] = None
-    normalized_name: str = ""
-    normalized_value: Optional[float] = None
-    normalized_unit: Optional[str] = None
-
-    def __post_init__(self):
-        if not self.normalized_name:
-            self.normalized_name = self._normalize_parameter_name(self.name)
-        if self.normalized_value is None and isinstance(self.value, (int, float)):
-            self.normalized_value = self.value
-
-    def _normalize_parameter_name(self, name: str) -> str:
-        synonym_map = {
-            "laser power": "power", "output power": "power", "average power": "power",
-            "peak power": "peak_power", "pulse energy": "pulse_energy",
-            "energy per pulse": "pulse_energy", "pulse duration": "pulse_duration",
-            "pulse width": "pulse_duration", "pulse length": "pulse_duration",
-            "repetition rate": "repetition_rate", "pulse frequency": "repetition_rate",
-            "rep rate": "repetition_rate", "wavelength": "wavelength",
-            "laser wavelength": "wavelength", "spot size": "spot_size",
-            "beam diameter": "spot_size", "beam waist": "spot_size",
-            "1/e2 diameter": "spot_size", "fluence": "fluence",
-            "energy density": "fluence", "fluence threshold": "fluence_threshold",
-            "power density": "power_density", "intensity": "power_density",
-            "irradiance": "power_density", "scan speed": "scan_speed",
-            "travel speed": "scan_speed", "writing speed": "scan_speed",
-            "hatch distance": "hatch_distance", "hatch spacing": "hatch_distance",
-            "line spacing": "hatch_distance", "overlap": "overlap",
-            "pulse overlap": "overlap", "dwell time": "dwell_time",
-            "exposure time": "dwell_time", "interaction time": "dwell_time",
-        }
-        name_lower = name.lower().strip()
-        return synonym_map.get(name_lower, name_lower.replace(" ", "_"))
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    def format_for_display(self) -> str:
-        value_str = f"{self.value}"
-        if isinstance(self.value, (list, tuple)) and len(self.value) == 2:
-            value_str = f"{self.value[0]}–{self.value[1]}"
-        if self.uncertainty and self.uncertainty not in value_str:
-            value_str = f"{value_str} {self.uncertainty}"
-        if self.unit:
-            value_str = f"{value_str} {self.unit}"
-        if self.condition:
-            return f"{self.normalized_name}: {value_str} ({self.condition})"
-        return f"{self.normalized_name}: {value_str}"
-
-@dataclass
-class LaserDocumentRecord:
-    """Record of extracted laser parameters from a document chunk"""
-    source_filename: str
-    chunk_index: int
-    chunk_id: str
-    bibliographic_citation: str
-    extracted_parameters: List[LaserParameter] = field(default_factory=list)
-    laser_topics: List[str] = field(default_factory=list)
-    experimental_setup: Dict[str, Any] = field(default_factory=dict)
-    laser_source_type: Optional[str] = None
-    processing_mode: Optional[str] = None
-    power_instruments_used: List[str] = field(default_factory=list)
-
-    def add_parameter(self, param: LaserParameter):
-        self.extracted_parameters.append(param)
-
-    def get_parameters_by_name(self, param_name: str) -> List[LaserParameter]:
-        normalized = LaserParameter("", "")._normalize_parameter_name(param_name)
-        return [p for p in self.extracted_parameters if p.normalized_name == normalized]
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "chunk_id": self.chunk_id,
-            "citation": self.bibliographic_citation,
-            "laser_source_type": self.laser_source_type,
-            "processing_mode": self.processing_mode,
-            "parameters": [p.to_dict() for p in self.extracted_parameters],
-            "topics": self.laser_topics,
-            "instruments": self.power_instruments_used,
-            "setup": self.experimental_setup
-        }
-
-@dataclass
-class FusedLaserParameter:
-    """Fused laser parameter entry with statistical aggregation"""
-    parameter_name: str
-    fused_value: Optional[Union[float, str, Dict]] = None
-    unit: Optional[str] = None
-    fusion_confidence: FusionConfidence = FusionConfidence.UNKNOWN
-    source_count: int = 0
-    sources: List[Dict[str, str]] = field(default_factory=list)
-    value_range: Optional[Tuple[float, float]] = None
-    standard_deviation: Optional[float] = None
-    conditions_summary: Dict[str, List[str]] = field(default_factory=dict)
-    conflicts_detected: bool = False
-    conflict_notes: List[str] = field(default_factory=list)
-    laser_source_type: Optional[str] = None
-    processing_mode: Optional[str] = None
-    fusion_timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    def to_comparison_row(self) -> Dict[str, Any]:
-        return {
-            "parameter": self.parameter_name,
-            "value": self.fused_value,
-            "unit": self.unit,
-            "range": f"{self.value_range[0]:.2f}–{self.value_range[1]:.2f}" if self.value_range else None,
-            "std": f"{self.standard_deviation:.3f}" if self.standard_deviation else None,
-            "sources": len(self.sources),
-            "confidence": self.fusion_confidence.value,
-            "laser_type": self.laser_source_type,
-            "processing_mode": self.processing_mode,
-            "conditions": self.conditions_summary
-        }
-
-@dataclass
-class FusionEfficiencyMetrics:
-    """Metrics for evaluating laser parameter fusion quality"""
-    unique_sources_used: int = 0
-    source_diversity_score: float = 0.0
-    total_parameters_extracted: int = 0
-    parameters_fused_successfully: int = 0
-    parameter_coverage_ratio: float = 0.0
-    consistent_parameters: int = 0
-    conflicting_parameters: int = 0
-    consistency_ratio: float = 0.0
-    numeric_parameters_with_uncertainty: int = 0
-    average_uncertainty_magnitude: float = 0.0
-    high_confidence_fusions: int = 0
-    low_confidence_fusions: int = 0
-    weighted_confidence_score: float = 0.0
-    answer_specificity_score: float = 0.0
-    citation_density: float = 0.0
-    overall_fusion_efficiency: float = 0.0
-
-    def compute_overall(self) -> float:
-        weights = {
-            "source_diversity": 0.15,
-            "parameter_coverage": 0.20,
-            "consistency": 0.25,
-            "precision": 0.15,
-            "confidence": 0.15,
-            "specificity": 0.10
-        }
-        if self.total_parameters_extracted == 0:
-            self.overall_fusion_efficiency = self.source_diversity_score * 0.3
-            return self.overall_fusion_efficiency
-        components = [
-            self.source_diversity_score * weights["source_diversity"],
-            self.parameter_coverage_ratio * weights["parameter_coverage"],
-            self.consistency_ratio * weights["consistency"],
-            (1 - min(self.average_uncertainty_magnitude, 1.0)) * weights["precision"],
-            self.weighted_confidence_score * weights["confidence"],
-            self.answer_specificity_score * weights["specificity"]
+ENTITY_TAXONOMY = {
+    "LASER_SOURCE": {
+        "Laser Type": {
+            "Solid-State": ["Nd:YAG", "Yb:YAG", "fiber laser", "disk laser"],
+            "Gas": ["CO2 laser", "excimer laser"],
+            "Diode": ["diode laser", "direct diode", "beam-combined diode"]
+        },
+        "Beam Properties": {
+            "Spatial": ["M²", "BPP", "beam parameter product", "Rayleigh length", "focal spot"],
+            "Temporal": ["CW", "pulsed", "Q-switched", "mode-locked", "pulse shaping"],
+            "Spectral": ["wavelength", "linewidth", "frequency stability"]
+        },
+        "Delivery System": [
+            "galvanometer", "f-theta lens", "beam expander", "fiber delivery",
+            "beam homogenizer", "top-hat beam", "beam shaping"
         ]
-        total_weight = sum(weights.values())
-        if total_weight > 0:
-            self.overall_fusion_efficiency = sum(components) / total_weight
-        else:
-            self.overall_fusion_efficiency = 0.0
-        return self.overall_fusion_efficiency
-
-    def to_display_dict(self) -> Dict[str, str]:
-        return {
-            "📚 Sources": f"{self.unique_sources_used} (div: {self.source_diversity_score:.2f})",
-            "🔍 Parameters": f"{self.parameters_fused_successfully}/{max(self.total_parameters_extracted, 1)}",
-            "✅ Consistency": f"{self.consistency_ratio*100:.0f}%" if self.consistency_ratio > 0 else "N/A",
-            "🎯 Precision": f"±{self.average_uncertainty_magnitude*100:.0f}%" if self.average_uncertainty_magnitude > 0 else "N/A",
-            "💡 Confidence": f"{self.weighted_confidence_score:.2f}",
-            "📝 Specificity": f"{self.answer_specificity_score:.2f}",
-            "🏆 Overall": f"{self.overall_fusion_efficiency:.2f}/1.0"
+    },
+    "HEAT_TRANSFER": {
+        "Conduction": ["Fourier conduction", "thermal conductivity", "diffusivity"],
+        "Convection": ["Marangoni convection", "buoyancy", "natural convection", "forced convection"],
+        "Radiation": ["Stefan-Boltzmann", "emissivity", "radiative loss", "view factor"],
+        "Phase Change": ["latent heat", "melting", "vaporization", "solidification", "recalescence"]
+    },
+    "ENERGY_DEPOSITION": {
+        "Absorption Mechanisms": [
+            "Fresnel absorption", "inverse bremsstrahlung", "multiple reflection",
+            "keyhole absorption", "surface roughness enhancement"
+        ],
+        "Heat Source Models": [
+            "Goldak double ellipsoid", "conical heat source", "cylindrical heat source",
+            "surface heat flux", "volumetric heat source", "Gaussian distribution"
+        ]
+    },
+    "MATERIAL": {
+        "Pure Element": {
+            "Metal": ["titanium", "ti", "cp-ti", "copper", "cu", "aluminum", "al", "al6061", "al-6061", "tungsten", "w", "nickel", "ni", "iron", "fe", "chromium", "cr", "cobalt", "co", "manganese", "mn", "zinc", "zn", "tin", "sn", "silver", "ag", "gold", "au", "lead", "pb"],
+            "Metalloid": ["silicon", "si", "germanium", "ge", "crystalline silicon", "c-si", "si(100)", "si(111)"],
+            "Refractory": ["tungsten", "w", "molybdenum", "mo", "tantalum", "ta", "niobium", "nb", "rhenium", "re"]
+        },
+        "Alloy System": {
+            "Binary": ["sn-cu", "cu-ni", "ni-al", "ti-al", "fe-cr", "al-cr", "cu-zn", "brass"],
+            "Ternary": ["sn-ag-cu", "sac", "sn-3.5ag-0.5cu", "al-cr-fe", "ni-cr-fe", "ti-al-v", "ti6al4v", "ti-6al-4v"],
+            "Quaternary+ / HEA": ["alcrfeni", "al-cr-fe-ni", "cocrfeni", "cocrfenimn", "alcocrfeni", "hea", "high entropy alloy", "mpea", "multi-principal element alloy", "complex concentrated alloy", "refractory hea", "crmnfeconi"],
+            "Superalloy": ["inconel", "in718", "in-718", "nimonic", "rene", "haynes", "nickel superalloy"]
+        },
+        "Compound / Ceramic": {
+            "Oxide": ["sio2", "al2o3", "zro2", "tio2", "zirconia", "alumina", "fused silica", "silica", "borosilicate"],
+            "Carbide": ["sic", "wc", "tungsten carbide", "tic", "b4c", "boron carbide"],
+            "Nitride": ["si3n4", "tin", "aln", "crn", "gan"]
+        },
+        "Polymer": {
+            "Thermoplastic": ["pmma", "pc", "pei", "peek", "ptfe", "polycarbonate", "polyimide", "abs", "pla", "polyethylene", "pe", "pp"],
+            "Thermoset": ["epoxy", "polyurethane", "phenolic", "polyester", "polyimide"]
+        },
+        "Composite": ["cfrp", "carbon fiber", "metal matrix composite", "mmc", "ceramic matrix composite", "cmc", "glass fiber"]
+    },
+    "METHOD": {
+        "Experimental": {
+            "Microscopy": ["sem", "scanning electron microscopy", "scanning electron microscope", "afm", "atomic force microscopy", "atomic force microscope", "tem", "transmission electron microscopy", "ebsd", "electron backscatter diffraction", "optical microscopy", "confocal microscopy"],
+            "Spectroscopy": ["raman", "raman spectroscopy", "micro-raman", "xrd", "x-ray diffraction", "edx", "eds", "energy dispersive x-ray", "energy-dispersive", "xps", "ftir", "libs", "spectroscopy"],
+            "Tomography & Imaging": ["synchrotron x-ray", "x-ray radiography", "x-ray tomography", "ct scan", "computed tomography", "ultrasound", "radiography", "tomography"],
+            "Profilometry": ["profilometry", "optical profilometry", "white light interferometry", "wli"],
+            "Thermal Analysis": ["dsc", "differential scanning calorimetry", "dta", "tga", "thermogravimetric"]
+        },
+        "Computational": {
+            "Atomistic": ["md", "molecular dynamics", "molecular dynamics simulation", "dft", "density functional theory", "ab initio", "lammps", "vasp", "quantum espresso", "atomistic"],
+            "Continuum Mechanics": ["fem", "finite element", "finite element method", "fea", "abaqus", "ansys", "comsol"],
+            "Phase-Field": ["phase field", "phase-field", "pf simulation", "moose", "micress", "phasefield"],
+            "Thermodynamic": ["calphad", "thermo-calc", "thermocalc", "pandat", "fact sage", "thermodynamic modeling"],
+            "Fluid Dynamics": ["cfd", "computational fluid dynamics", "flow3d", "openfoam", "fluent", "flow-3d"],
+            "Data-Driven": ["machine learning", "ml", "deep learning", "cnn", "gnn", "graph neural network", "random forest", "surrogate model", "digital twin", "physics-informed", "pinns", "physics-informed ml", "feature engineering", "tensor decomposition"]
         }
+    },
+    "PHENOMENON": {
+        "Laser-Matter Interaction": {
+            "Thermal Regime": ["melting", "vaporization", "heat affected zone", "haz", "heat-affected zone", "thermal diffusion", "resolidification", "recrystallization", "solidification", "cooling rate", "thermal gradient"],
+            "Optical / Plasma": ["ablation", "plasma", "plume", "ionization", "plasma shielding", "reflection", "absorptivity", "multiphoton", "avalanche ionization"],
+            "Structural Evolution": ["ripples", "lipss", "nanostructures", "microstructures", "periodic structures", "surface structuring", "self-organization", "hsfl", "lsfl"]
+        },
+        "Material Response": {
+            "Mechanical": ["residual stress", "distortion", "cracking", "delamination", "spatter", "warping", "deformation", "stress"],
+            "Microstructural": ["grain growth", "dendrite", "cellular structure", "epitaxial growth", "texture", "porosity", "void", "inclusion", "segregation", "grain boundary"],
+            "Interfacial": ["imc", "intermetallic", "intermetallic compound", "intermetallics", "wetting", "spreading", "contact angle", "interfacial energy", "surface tension", "marangoni", "buoyancy"]
+        }
+    },
+    "PARAMETER": {
+        "Laser Input": {
+            "Power Metrics": ["laser power", "average power", "peak power", "pulse energy"],
+            "Energy Metrics": ["fluence", "irradiance", "intensity", "linear energy", "volumetric energy"],
+            "Beam Metrics": ["spot size", "beam diameter", "focal position", "defocus"]
+        },
+        "Process Kinematics": {
+            "Scanning": ["scan speed", "travel speed", "scan strategy", "raster", "contour", "meander", "island"],
+            "Powder Bed": ["hatch distance", "point distance", "exposure time", "layer thickness", "overlap", "stripe width"],
+            "Environment": ["atmosphere", "shielding gas", "oxygen level", "substrate temperature", "preheat", "build plate temperature", "chamber pressure"]
+        },
+        "Thermal Outcome": {
+            "Temperature Metrics": ["peak temperature", "melt pool temperature", "cooling rate", "thermal gradient"],
+            "Melt Pool Metrics": ["melt pool width", "melt pool depth", "aspect ratio", "residence time"],
+            "Solidification Metrics": ["G/R ratio", "solidification velocity", "undercooling"]
+        },
+        "Outcome Metric": {
+            "Geometric": ["roughness", "ra", "rms", "rq", "periodicity", "period", "spacing", "waviness", "flatness"],
+            "Performance": ["hardness", "tensile strength", "yield strength", "elongation", "fatigue life", "wear rate", "corrosion resistance", "conductivity"],
+            "Defect Metric": ["porosity fraction", "crack density", "spatter rate", "balling", "keyhole depth", "lack of fusion"]
+        }
+    }
+}
+
+def classify_entity(normalized: str) -> Tuple[str, str, str]:
+    """Return (domain, category, subcategory) for an entity string.
+    Handles mixed taxonomy structure where some nodes are dicts (nested)
+    and some are lists (terminal aliases).
+    """
+    norm = normalized.lower().strip()
+    def _search_level(node, path):
+        if isinstance(node, list):
+            if any(alias in norm for alias in node):
+                while len(path) < 3:
+                    path.append("General")
+                return tuple(path[:3])
+            return None
+        elif isinstance(node, dict):
+            for key, child in node.items():
+                result = _search_level(child, path + [key])
+                if result is not None:
+                    return result
+            return None
+        else:
+            return None
+    for domain, categories in ENTITY_TAXONOMY.items():
+        result = _search_level(categories, [domain])
+        if result is not None:
+            return result
+    return "UNKNOWN", "UNKNOWN", "UNKNOWN"
 
 # =============================================
-# BIBLIOGRAPHIC METADATA EXTRACTION
+# BIBLIOGRAPHIC METADATA
 # =============================================
 class BibliographicMetadata:
     DOI_PATTERN = re.compile(r'\b(10\.\d{4,9}/[-._;()/:A-Z0-9]+)\b', re.IGNORECASE)
@@ -528,7 +454,6 @@ class BibliographicMetadata:
         r'(?:^|by|authors?:\s*)([A-Z][a-z]+(?:\s+[A-Z]\.?\s*)?[A-Z][a-z]+(?:,\s*[A-Z][a-z]+)*)',
         re.MULTILINE
     )
-
     def __init__(self, source_filename: str):
         self.source_filename = source_filename
         self.doi: Optional[str] = None
@@ -544,43 +469,32 @@ class BibliographicMetadata:
         self.raw_metadata: Dict[str, Any] = {}
         self.extraction_method: str = "none"
         self.confidence: float = 0.0
-
     def format_citation(self, style: str = "apa") -> str:
         if self.doi and self.confidence > 0.8:
-            if style == "doi":
-                return f"DOI:{self.doi}"
-            elif style == "short":
-                return f"[DOI:{self.doi}]"
+            if style == "doi": return f"DOI:{self.doi}"
+            elif style == "short": return f"[DOI:{self.doi}]"
         if self.arxiv_id:
-            if style in ["doi", "short"]:
-                return f"[arXiv:{self.arxiv_id}]"
+            if style in ["doi", "short"]: return f"[arXiv:{self.arxiv_id}]"
         if self.authors and self.year:
             first_author = self._format_author_name(self.authors[0])
             et_al = " et al." if len(self.authors) > 1 else ""
             if style == "apa":
                 journal_part = f", {self.journal}" if self.journal else ""
                 return f"{first_author}{et_al}{journal_part}, {self.year}"
-            elif style == "short":
-                return f"[{first_author.split()[0]} {self.year}]"
+            elif style == "short": return f"[{first_author.split()[0]} {self.year}]"
             elif style == "full":
                 parts = [f"{first_author}{et_al} ({self.year})"]
-                if self.title:
-                    parts.append(f'"{self.title}"')
+                if self.title: parts.append(f'"{self.title}"')
                 if self.journal:
                     journal_str = self.journal
-                    if self.volume:
-                        journal_str += f", {self.volume}"
-                    if self.issue:
-                        journal_str += f"({self.issue})"
+                    if self.volume: journal_str += f", {self.volume}"
+                    if self.issue: journal_str += f"({self.issue})"
                     parts.append(journal_str)
-                if self.pages:
-                    parts.append(f"pp. {self.pages}")
+                if self.pages: parts.append(f"pp. {self.pages}")
                 return ". ".join(parts) + "."
         base_name = Path(self.source_filename).stem
-        if self.year:
-            return f"[{base_name}, {self.year}]"
+        if self.year: return f"[{base_name}, {self.year}]"
         return f"[{base_name}]"
-
     def _format_author_name(self, author_str: str) -> str:
         if "," in author_str:
             parts = [p.strip() for p in author_str.split(",", 1)]
@@ -589,41 +503,22 @@ class BibliographicMetadata:
                 first_initial = first[0] + "." if first else ""
                 return f"{last}, {first_initial}"
         return author_str
-
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "source": self.source_filename,
-            "doi": self.doi,
-            "arxiv_id": self.arxiv_id,
-            "title": self.title,
-            "authors": self.authors,
-            "journal": self.journal,
-            "year": self.year,
-            "volume": self.volume,
-            "issue": self.issue,
-            "pages": self.pages,
-            "publisher": self.publisher,
-            "extraction_method": self.extraction_method,
-            "confidence": self.confidence,
-            "citation_apa": self.format_citation("apa"),
-            "citation_doi": self.format_citation("doi"),
-            "citation_full": self.format_citation("full"),
+            "source": self.source_filename, "doi": self.doi, "arxiv_id": self.arxiv_id,
+            "title": self.title, "authors": self.authors, "journal": self.journal,
+            "year": self.year, "volume": self.volume, "issue": self.issue, "pages": self.pages,
+            "publisher": self.publisher, "extraction_method": self.extraction_method,
+            "confidence": self.confidence, "citation_apa": self.format_citation("apa"),
+            "citation_doi": self.format_citation("doi"), "citation_full": self.format_citation("full"),
         }
-
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'BibliographicMetadata':
         meta = cls(data.get("source", "unknown"))
-        meta.doi = data.get("doi")
-        meta.arxiv_id = data.get("arxiv_id")
-        meta.title = data.get("title")
-        meta.authors = data.get("authors", [])
-        meta.journal = data.get("journal")
-        meta.year = data.get("year")
-        meta.volume = data.get("volume")
-        meta.issue = data.get("issue")
-        meta.pages = data.get("pages")
-        meta.publisher = data.get("publisher")
-        meta.extraction_method = data.get("extraction_method", "cached")
+        meta.doi = data.get("doi"); meta.arxiv_id = data.get("arxiv_id"); meta.title = data.get("title")
+        meta.authors = data.get("authors", []); meta.journal = data.get("journal"); meta.year = data.get("year")
+        meta.volume = data.get("volume"); meta.issue = data.get("issue"); meta.pages = data.get("pages")
+        meta.publisher = data.get("publisher"); meta.extraction_method = data.get("extraction_method", "cached")
         meta.confidence = data.get("confidence", 0.5)
         return meta
 
@@ -631,38 +526,27 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
     meta = BibliographicMetadata(filename)
     text_sample = text[:10000]
     doi_match = BibliographicMetadata.DOI_PATTERN.search(text_sample)
-    if doi_match:
-        meta.doi = doi_match.group(1).lower()
-        meta.confidence = max(meta.confidence, 0.9)
-        meta.extraction_method = "regex_doi"
+    if doi_match: meta.doi = doi_match.group(1).lower(); meta.confidence = max(meta.confidence, 0.9); meta.extraction_method = "regex_doi"
     arxiv_match = BibliographicMetadata.ARXIV_PATTERN.search(text_sample)
-    if arxiv_match:
-        meta.arxiv_id = arxiv_match.group(1)
-        meta.confidence = max(meta.confidence, 0.85)
+    if arxiv_match: meta.arxiv_id = arxiv_match.group(1); meta.confidence = max(meta.confidence, 0.85)
     year_matches = BibliographicMetadata.YEAR_PATTERN.findall(text_sample)
     for year_str in year_matches:
         year = int(year_str)
         if 1900 <= year <= 2030:
             year_pos = text_sample.find(year_str)
-            context = text_sample[max(0, year_pos-50):year_pos+50].lower()
+            context = text_sample[max(0, year_pos - 50):year_pos + 50].lower()
             if any(kw in context for kw in ['published', 'received', 'accepted', 'copyright', '©']):
-                meta.year = year
-                meta.confidence = max(meta.confidence, 0.7)
-                break
+                meta.year = year; meta.confidence = max(meta.confidence, 0.7); break
     for pattern in BibliographicMetadata.JOURNAL_PATTERNS:
         journal_match = pattern.search(text_sample)
         if journal_match:
             journal = journal_match.group(1).strip()
             if len(journal) > 10 and not any(bad in journal.lower() for bad in ['introduction', 'abstract', 'references']):
-                meta.journal = journal
-                meta.confidence = max(meta.confidence, 0.6)
-                break
+                meta.journal = journal; meta.confidence = max(meta.confidence, 0.6); break
     vol_match = BibliographicMetadata.VOLUME_PATTERN.search(text_sample)
-    if vol_match:
-        meta.volume = vol_match.group(1)
+    if vol_match: meta.volume = vol_match.group(1)
     iss_match = BibliographicMetadata.ISSUE_PATTERN.search(text_sample)
-    if iss_match:
-        meta.issue = iss_match.group(1)
+    if iss_match: meta.issue = iss_match.group(1)
     author_section = text_sample[:2000]
     author_matches = BibliographicMetadata.AUTHOR_PATTERN.findall(author_section)
     if author_matches:
@@ -671,24 +555,23 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
             separators = [',', ' and ', ';']
             for sep in separators:
                 if sep.lower() in raw_authors.lower():
-                    meta.authors = [a.strip() for a in re.split(sep, raw_authors, flags=re.I) if a.strip()]
-                    break
-        else:
-            meta.authors = [raw_authors.strip()]
-        if meta.authors:
-            meta.confidence = max(meta.confidence, 0.5)
+                    meta.authors = [a.strip() for a in re.split(sep, raw_authors, flags=re.I) if a.strip()]; break
+        else: meta.authors = [raw_authors.strip()]
+        if meta.authors: meta.confidence = max(meta.confidence, 0.5)
     title_patterns = [
-        re.compile(r'(?:^|\n)([A-Z][^.\n]{20,150}(?:\.[^A-Z]|$))'),
-        re.compile(r'(?:title:?\s*)([A-Z][^.\n]{20,200}?)\.?(?:\n|$)', re.I),
+        re.compile(r'(?:^|
+)([A-Z][^.
+]{20,150}(?:\.[^A-Z]|$))'),
+        re.compile(r'(?:title:?\s*)([A-Z][^.
+]{20,200}?)\.?(?:
+|$)', re.I),
     ]
     for pattern in title_patterns:
         title_match = pattern.search(text_sample)
         if title_match:
             title = title_match.group(1).strip()
             if 30 < len(title) < 200 and not title.isupper():
-                meta.title = title
-                meta.confidence = max(meta.confidence, 0.55)
-                break
+                meta.title = title; meta.confidence = max(meta.confidence, 0.55); break
     return meta
 
 def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> BibliographicMetadata:
@@ -701,19 +584,13 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
             for pdf_field, meta_field in field_mapping.items():
                 if pdf_field in pdf_info and pdf_info[pdf_field]:
                     value = str(pdf_info[pdf_field]).strip()
-                    if meta_field == 'authors' and value:
-                        meta.authors = [a.strip() for a in re.split(r'[;,]', value) if a.strip()]
+                    if meta_field == 'authors' and value: meta.authors = [a.strip() for a in re.split(r'[;,]', value) if a.strip()]
                     elif meta_field == 'year' and value:
                         year_match = re.search(r'(?:D:)?(\d{4})', value)
-                        if year_match:
-                            meta.year = int(year_match.group(1))
-                    else:
-                        setattr(meta, meta_field, value)
-            if meta.title or meta.authors:
-                meta.confidence = 0.7
-                meta.extraction_method = "pdf_metadata"
-        except Exception as e:
-            st.warning(f"Could not read PDF metadata: {e}")
+                        if year_match: meta.year = int(year_match.group(1))
+                    else: setattr(meta, meta_field, value)
+            if meta.title or meta.authors: meta.confidence = 0.7; meta.extraction_method = "pdf_metadata"
+        except Exception as e: st.warning(f"Could not read PDF metadata: {e}")
     try:
         loader = PyPDFLoader(pdf_path)
         pages = loader.load()
@@ -722,2246 +599,1204 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
         for field in ['doi', 'arxiv_id', 'title', 'journal', 'year', 'volume', 'issue']:
             text_val = getattr(text_meta, field)
             current_val = getattr(meta, field)
-            if text_val and (not current_val or text_meta.confidence > meta.confidence):
-                setattr(meta, field, text_val)
-        if text_meta.authors and (not meta.authors or text_meta.confidence > meta.confidence):
-            meta.authors = text_meta.authors
-        if text_meta.confidence > meta.confidence:
-            meta.confidence = text_meta.confidence
-            meta.extraction_method = text_meta.extraction_method
-    except Exception as e:
-        st.warning(f"Text extraction for metadata failed: {e}")
+            if text_val and (not current_val or text_meta.confidence > meta.confidence): setattr(meta, field, text_val)
+        if text_meta.authors and (not meta.authors or text_meta.confidence > meta.confidence): meta.authors = text_meta.authors
+        if text_meta.confidence > meta.confidence: meta.confidence = text_meta.confidence; meta.extraction_method = text_meta.extraction_method
+    except Exception as e: st.warning(f"Text extraction for metadata failed: {e}")
     if PDF2DOI_AVAILABLE and not meta.doi:
         try:
             result = pdf2doi.pdf2doi(pdf_path)
-            if isinstance(result, list) and result:
-                result = result[0]
+            if isinstance(result, list) and result: result = result[0]
             if result and result.get('identifier') and result.get('identifier_type') == 'doi':
-                meta.doi = result['identifier']
-                meta.confidence = 0.95
-                meta.extraction_method = "pdf2doi"
-        except Exception as e:
-            st.warning(f"pdf2doi lookup failed: {e}")
+                meta.doi = result['identifier']; meta.confidence = 0.95; meta.extraction_method = "pdf2doi"
+                if result.get('validation_info'):
+                    bibtex = result['validation_info']
+                    if 'title' in bibtex and not meta.title: meta.title = bibtex.get('title')
+                    if 'author' in bibtex and not meta.authors: meta.authors = [a.strip() for a in bibtex['author'].split(' and ')]
+                    if 'year' in bibtex and not meta.year:
+                        try: meta.year = int(bibtex['year'])
+                        except: pass
+        except Exception as e: st.warning(f"pdf2doi lookup failed: {e}")
     if CROSSREF_AVAILABLE and meta.doi and not meta.journal:
         try:
             cr = CrossrefAPI()
             work = cr.works(ids=meta.doi)
             if work and work.get('message'):
                 msg = work['message']
-                if not meta.title and msg.get('title'):
-                    meta.title = msg['title'][0] if isinstance(msg['title'], list) else msg['title']
-                if not meta.authors and msg.get('author'):
-                    meta.authors = [f"{a.get('family', '')} {a.get('given', '')}".strip() for a in msg['author']]
-                if not meta.journal and msg.get('container-title'):
-                    meta.journal = msg['container-title'][0] if isinstance(msg['container-title'], list) else msg['container-title']
-                if not meta.year and msg.get('published-print') and msg['published-print'].get('date-parts'):
-                    meta.year = msg['published-print']['date-parts'][0][0]
-                meta.confidence = 0.98
-                meta.extraction_method = "crossref_api"
-        except Exception as e:
-            st.warning(f"Crossref API lookup failed: {e}")
+                if not meta.title and msg.get('title'): meta.title = msg['title'][0] if isinstance(msg['title'], list) else msg['title']
+                if not meta.authors and msg.get('author'): meta.authors = [f"{a.get('family', '')} {a.get('given', '')}".strip() for a in msg['author']]
+                if not meta.journal and msg.get('container-title'): meta.journal = msg['container-title'][0] if isinstance(msg['container-title'], list) else msg['container-title']
+                if not meta.year and msg.get('published-print') and msg['published-print'].get('date-parts'): meta.year = msg['published-print']['date-parts'][0][0]
+                meta.confidence = 0.98; meta.extraction_method = "crossref_api"
+        except Exception as e: st.warning(f"Crossref API lookup failed: {e}")
     return meta
 
 def extract_metadata_from_text_file(text: str, filename: str) -> BibliographicMetadata:
     return extract_metadata_from_pdf_text(text, filename)
 
 class MetadataCache:
-    def __init__(self):
-        self._cache: Dict[str, BibliographicMetadata] = {}
-        self._file_hashes: Dict[str, str] = {}
-
+    def __init__(self): self._cache: Dict[str, BibliographicMetadata] = {}; self._file_hashes: Dict[str, str] = {}
     def get(self, filename: str, file_hash: str = None) -> Optional[BibliographicMetadata]:
         if filename in self._cache:
-            if file_hash is None or self._file_hashes.get(filename) == file_hash:
-                return self._cache[filename]
+            if file_hash is None or self._file_hashes.get(filename) == file_hash: return self._cache[filename]
         return None
-
     def set(self, filename: str, metadata: BibliographicMetadata, file_hash: str = None):
         self._cache[filename] = metadata
-        if file_hash:
-            self._file_hashes[filename] = file_hash
-
-    def clear(self):
-        self._cache.clear()
-        self._file_hashes.clear()
-
+        if file_hash: self._file_hashes[filename] = file_hash
+    def clear(self): self._cache.clear(); self._file_hashes.clear()
 metadata_cache = MetadataCache()
 
 def compute_file_hash(filepath: str) -> str:
     try:
-        with open(filepath, 'rb') as f:
-            return hashlib.md5(f.read()).hexdigest()
-    except:
-        return ""
+        with open(filepath, 'rb') as f: return hashlib.md5(f.read()).hexdigest()
+    except: return ""
 
 # =============================================
-# LASER PARAMETER EXTRACTION ENGINE
+# ENHANCED SCIENTIFIC ENTITY & CLAIM
 # =============================================
-class LaserParameterExtractor:
-    """Extract laser heat source parameters focused on power, instruments, processing"""
+@dataclass
+class EnhancedScientificEntity:
+    text: str; label: str; value: Optional[float]; unit: Optional[str]; doc_source: str; chunk_id: int; context: str; confidence: float = 1.0
+    normalized: str = field(init=False); domain: str = field(init=False); category: str = field(init=False); subcategory: str = field(init=False)
+    def __post_init__(self): self.normalized = self._normalize(); self.domain, self.category, self.subcategory = classify_entity(self.normalized)
+    def _normalize(self) -> str:
+        text = self.text.lower().strip()
+        for canonical, aliases in MATERIAL_ALIASES.items():
+            if any(alias in text for alias in aliases): return canonical
+        for canonical, aliases in METHOD_ALIASES.items():
+            if any(alias in text for alias in aliases): return canonical
+        text = re.sub(r'\s+', '', text)
+        return text
+    def to_dict(self) -> Dict[str, Any]:
+        return {"text": self.text, "label": self.label, "value": self.value, "unit": self.unit, "doc_source": self.doc_source, "chunk_id": self.chunk_id, "normalized": self.normalized, "confidence": self.confidence, "domain": self.domain, "category": self.category, "subcategory": self.subcategory, "context": self.context[:200]}
 
-    def __init__(self, laser_keywords: Dict[str, List[str]]):
-        self.laser_keywords = laser_keywords
-        self._compile_extraction_patterns()
-
-    def _compile_extraction_patterns(self):
-        numeric_pattern = r'([\d.]+(?:\s*[×x*]\s*10\^?-?\d+)?)(?:\s*([±\+-])\s*([\d.]+))?'
-        all_units = []
-        for param_config in LASER_PARAMETERS.values():
-            all_units.extend(param_config["unit_conversions"].keys())
-        unit_pattern = r'\s*(' + '|'.join(re.escape(u) for u in all_units) + r')'
-        self.property_pattern = re.compile(
-            r'([\w\s\-_/]+?)\s*(?:is|was|of|at|:|=|≈|~|yields|results in|measured as|set to|configured at)\s*' +
-            numeric_pattern + unit_pattern +
-            r'(?:\s*[\(\[]([^)\]]+)[\)\]])?', re.I)
-        self.table_row_pattern = re.compile(r'(?:^|\n)\s*[|│]?\s*([^|\n│]+?)\s*[|│]?\s*(?:\n|$)', re.MULTILINE)
-        source_keywords = [kw for v in LASER_SOURCE_TYPES.values() for kw in v]
-        self.source_type_pattern = re.compile(
-            r'\b(' + '|'.join(re.escape(kw) for kw in source_keywords) + r')\b', re.I)
-        mode_keywords = [kw for v in LASER_PROCESSING_MODES.values() for kw in v]
-        self.processing_mode_pattern = re.compile(
-            r'\b(' + '|'.join(re.escape(kw) for kw in mode_keywords) + r')\b', re.I)
-        instrument_keywords = [kw for v in POWER_INSTRUMENTS.values() for kw in v]
-        self.instrument_pattern = re.compile(
-            r'\b(' + '|'.join(re.escape(kw) for kw in instrument_keywords) + r')\b', re.I)
-
-    def extract_parameters_from_chunk(self, chunk_text: str, chunk_metadata: Dict[str, Any]) -> LaserDocumentRecord:
-        record = LaserDocumentRecord(
-            source_filename=chunk_metadata.get('source', 'unknown'),
-            chunk_index=chunk_metadata.get('chunk_index', 0),
-            chunk_id=f"{chunk_metadata.get('source', 'unknown')}:{chunk_metadata.get('chunk_index', 0)}",
-            bibliographic_citation=chunk_metadata.get('citation_display', 'Unknown'),
-            laser_topics=chunk_metadata.get('laser_topics', []),
-            experimental_setup=chunk_metadata.get('parameters_found', {}),
-            laser_source_type=self._detect_laser_source_type(chunk_text),
-            processing_mode=self._detect_processing_mode(chunk_text),
-            power_instruments_used=self._detect_power_instruments(chunk_text)
-        )
-        table_params = self._extract_from_tables(chunk_text)
-        for param in table_params:
-            param.source_chunk_id = record.chunk_id
-            param.source_citation = record.bibliographic_citation
-            param.laser_source_type = record.laser_source_type
-            param.processing_mode = record.processing_mode
-            record.add_parameter(param)
-        inline_params = self._extract_inline_parameters(chunk_text)
-        for param in inline_params:
-            if not any(p.normalized_name == param.normalized_name and
-                      (abs(p.normalized_value - param.normalized_value) < 1e-6 if p.normalized_value and param.normalized_value else False)
-                      for p in record.extracted_parameters):
-                param.source_chunk_id = record.chunk_id
-                param.source_citation = record.bibliographic_citation
-                record.add_parameter(param)
-        return record
-
-    def _detect_laser_source_type(self, text: str) -> Optional[str]:
-        text_lower = text.lower()
-        for source_type, keywords in LASER_SOURCE_TYPES.items():
-            if any(kw.lower() in text_lower for kw in keywords):
-                return source_type
-        return None
-
-    def _detect_processing_mode(self, text: str) -> Optional[str]:
-        text_lower = text.lower()
-        for mode, keywords in LASER_PROCESSING_MODES.items():
-            if any(kw.lower() in text_lower for kw in keywords):
-                return mode
-        return None
-
-    def _detect_power_instruments(self, text: str) -> List[str]:
-        instruments = []
-        text_lower = text.lower()
-        for instrument_type, keywords in POWER_INSTRUMENTS.items():
-            if any(kw.lower() in text_lower for kw in keywords):
-                instruments.append(instrument_type)
-        return instruments
-
-    def _extract_from_tables(self, text: str) -> List[LaserParameter]:
-        parameters = []
-        if r'\begin{tabular}' in text or r'\begin{table}' in text:
-            parameters.extend(self._parse_latex_table(text))
-        elif '|' in text and re.search(r'\|\s*[-:]+\s*\|', text):
-            parameters.extend(self._parse_markdown_table(text))
-        elif self._detect_plain_text_table(text):
-            parameters.extend(self._parse_plain_text_table(text))
-        return parameters
-
-    def _parse_latex_table(self, latex_text: str) -> List[LaserParameter]:
-        parameters = []
-        table_match = re.search(r'\\begin\{tabular\}.*?\\end\{tabular\}', latex_text, re.DOTALL)
-        if not table_match:
-            return parameters
-        table_content = table_match.group(0)
-        rows = re.split(r'\\\\', table_content)
-        header_row, data_rows = None, []
-        for row in rows:
-            cells = re.findall(r'&\s*([^{&}]+?)\s*(?:&|\\\\|$)', row)
-            cells = [c.strip().replace(r'\hline', '').replace(r'\cline', '').strip() for c in cells if c.strip()]
-            if not cells:
-                continue
-            if header_row is None:
-                header_row = cells
-            else:
-                data_rows.append(cells)
-        if not header_row or len(data_rows) == 0:
-            return parameters
-        header_map = {h.lower().strip(): i for i, h in enumerate(header_row)}
-        param_keywords = list(LASER_PARAMETERS.keys()) + ['power', 'energy', 'duration', 'fluence', 'wavelength', 'spot']
-        param_cols = [i for i, h in enumerate(header_row) if any(kw in h.lower() for kw in param_keywords)]
-        descriptor_cols = [i for i in range(len(header_row)) if i not in param_cols]
-        for row in data_rows:
-            if len(row) <= max(param_cols, default=-1):
-                continue
-            row_conditions = {}
-            for col_idx in descriptor_cols:
-                if col_idx < len(row) and row[col_idx]:
-                    cell = row[col_idx].strip()
-                    for source_type, keywords in LASER_SOURCE_TYPES.items():
-                        if any(kw.lower() in cell.lower() for kw in keywords):
-                            row_conditions['laser_type'] = source_type
-                            break
-                    for mode, keywords in LASER_PROCESSING_MODES.items():
-                        if any(kw.lower() in cell.lower() for kw in keywords):
-                            row_conditions['processing_mode'] = mode
-                            break
-            for prop_col in param_cols:
-                if prop_col >= len(row) or not row[prop_col].strip():
-                    continue
-                prop_name = header_row[prop_col].strip()
-                prop_value_raw = row[prop_col].strip()
-                parsed = self._parse_parameter_value(prop_value_raw, prop_name)
-                if parsed:
-                    param = LaserParameter(
-                        name=prop_name, value=parsed['value'], unit=parsed['unit'],
-                        uncertainty=parsed['uncertainty'], condition=self._format_conditions(row_conditions),
-                        extraction_confidence=0.85, context_snippet=prop_value_raw, parameter_type="measurement"
-                    )
-                    self._normalize_parameter_units(param)
-                    parameters.append(param)
-        return parameters
-
-    def _parse_markdown_table(self, text: str) -> List[LaserParameter]:
-        parameters = []
-        lines = [l.strip() for l in text.split('\n') if '|' in l and l.strip()]
-        if len(lines) < 3:
-            return parameters
-        headers = [h.strip() for h in lines[0].split('|') if h.strip()]
-        data_start = 2 if re.match(r'^[\s|:-]+$', lines[1]) else 1
-        for line in lines[data_start:]:
-            cells = [c.strip() for c in line.split('|') if c.strip()]
-            if len(cells) != len(headers):
-                continue
-            row_data = dict(zip(headers, cells))
-            for header, value in row_data.items():
-                if not value or value == '-':
-                    continue
-                if any(kw in header.lower() for kw in list(LASER_PARAMETERS.keys()) + ['power', 'energy', 'fluence', 'wavelength']):
-                    parsed = self._parse_parameter_value(value, header)
-                    if parsed:
-                        param = LaserParameter(
-                            name=header, value=parsed['value'], unit=parsed['unit'],
-                            uncertainty=parsed['uncertainty'], condition=row_data.get('Laser') or row_data.get('Mode'),
-                            extraction_confidence=0.8, context_snippet=value, parameter_type="measurement"
-                        )
-                        self._normalize_parameter_units(param)
-                        parameters.append(param)
-        return parameters
-
-    def _parse_plain_text_table(self, text: str) -> List[LaserParameter]:
-        parameters = []
-        lines = [l for l in text.split('\n') if l.strip() and not l.strip().startswith(('#', '//', '%'))]
-        for line in lines:
-            numeric_tokens = re.findall(r'[\d.]+(?:\s*[×x*]\s*10\^?-?\d+)?(?:\s*[±\+-]\s*[\d.]+)?\s*(?:[a-zA-Z/²³μ]+)?', line)
-            if len(numeric_tokens) >= 2:
-                tokens = line.split()
-                if len(tokens) >= 3:
-                    prop_name = ' '.join(tokens[:2]) if len(tokens[0]) < 15 else tokens[0]
-                    value_match = re.match(r'([\d.]+)', numeric_tokens[0])
-                    if value_match:
-                        try:
-                            param = LaserParameter(
-                                name=prop_name, value=float(value_match.group(1)),
-                                extraction_confidence=0.6, context_snippet=line[:100], parameter_type="observation"
-                            )
-                            parameters.append(param)
-                        except (ValueError, TypeError):
-                            continue
-        return parameters
-
-    def _extract_inline_parameters(self, text: str) -> List[LaserParameter]:
-        parameters = []
-        for match in self.property_pattern.finditer(text):
-            groups = match.groups()
-            if len(groups) >= 5 and groups[1]:
-                prop_name = groups[0].strip()
-                value_str = groups[1].strip()
-                uncertainty = f"{groups[2]}{groups[3]}" if groups[2] and groups[3] else None
-                unit = groups[4].strip() if groups[4] else None
-                condition = groups[5].strip() if len(groups) > 5 and groups[5] else None
-                numeric_value = self._safe_parse_numeric(value_str)
-                param = LaserParameter(
-                    name=prop_name, value=numeric_value if numeric_value is not None else value_str,
-                    unit=unit, uncertainty=uncertainty, condition=condition,
-                    extraction_confidence=0.7, context_snippet=match.group(0)[:150],
-                    parameter_type="parameter" if any(kw in prop_name.lower() for kw in LASER_PARAMETERS.keys()) else "observation"
-                )
-                self._normalize_parameter_units(param)
-                parameters.append(param)
-        return parameters
-
-    def _parse_parameter_value(self, raw_value: str, param_name: str) -> Optional[Dict[str, Any]]:
-        if not raw_value or raw_value.strip() in ['-', '.', '', 'N/A', 'n/a', 'NA', 'na', '--', '...']:
-            return None
-        result = {"value": None, "unit": None, "uncertainty": None}
-        uncertainty_match = re.search(r'([±\+-])\s*([\d.]+)', raw_value)
-        if uncertainty_match:
-            result["uncertainty"] = f"{uncertainty_match.group(1)}{uncertainty_match.group(2)}"
-            raw_value = raw_value.replace(uncertainty_match.group(0), '').strip()
-        for unit in sorted(LASER_PARAMETERS.get(param_name, {}).get("unit_conversions", {}).keys(), key=len, reverse=True):
-            if raw_value.lower().endswith(unit.lower()):
-                result["unit"] = unit
-                raw_value = raw_value[:-len(unit)].strip()
-                break
-        numeric_value = self._safe_parse_numeric(raw_value)
-        if numeric_value is not None:
-            result["value"] = numeric_value
-        else:
-            result["value"] = raw_value.strip() if raw_value.strip() else None
-        return result if result["value"] is not None else None
-
-    def _safe_parse_numeric(self, value_str: str) -> Optional[float]:
-        if not value_str:
-            return None
-        cleaned = value_str.strip()
-        if cleaned in ['.', '-', '--', '...', 'N/A', 'n/a', 'NA', 'na', 'null', 'None', '']:
-            return None
-        if '-' in cleaned and not cleaned.startswith('-'):
-            parts = cleaned.split('-')
-            if len(parts) == 2:
-                cleaned = parts[0].strip()
-        cleaned = re.sub(r'\s*[×x*]\s*10\^?', 'e', cleaned)
-        cleaned = re.sub(r'\s*[×x*]\s*10', 'e', cleaned)
-        match = re.match(r'^\s*([+-]?\s*[\d.]+(?:e[+-]?\d+)?)', cleaned, re.I)
-        if not match:
-            return None
-        num_str = match.group(1).replace(' ', '')
-        if num_str in ['.', '+.', '-.']:
-            return None
-        try:
-            return float(num_str)
-        except (ValueError, TypeError, OverflowError):
-            return None
-
-    def _normalize_parameter_units(self, param: LaserParameter):
-        param_config = LASER_PARAMETERS.get(param.normalized_name)
-        if not param_config or not param.unit or param.unit not in param_config["unit_conversions"]:
-            param.normalized_unit = param.unit
-            if isinstance(param.value, (int, float)):
-                param.normalized_value = param.value
-            elif param.normalized_value is None and isinstance(param.value, str):
-                param.normalized_value = self._safe_parse_numeric(param.value)
-            return
-        conversion = param_config["unit_conversions"][param.unit]
-        if isinstance(param.value, (int, float)):
-            param.normalized_value = param.value * conversion
-            param.normalized_unit = param_config["base_unit"]
-        elif param.normalized_value is not None:
-            param.normalized_value = param.normalized_value * conversion
-            param.normalized_unit = param_config["base_unit"]
-        else:
-            param.normalized_unit = param.unit
-
-    def _format_conditions(self, conditions: Dict[str, str]) -> Optional[str]:
-        if not conditions:
-            return None
-        parts = [f"{k}: {v}" for k, v in conditions.items() if v]
-        return "; ".join(parts) if parts else None
-
-    def _detect_plain_text_table(self, text: str) -> bool:
-        lines = [l for l in text.split('\n') if l.strip()]
-        if len(lines) < 3:
-            return False
-        first_line = lines[0].strip()
-        first_line_cols = len(first_line.split()) if first_line else 0
-        return first_line_cols >= 3 and all(len(l.split()) >= first_line_cols - 1 for l in lines[1:4])
+@dataclass
+class EnhancedScientificClaim:
+    claim_text: str; subject: str; predicate: str; object_val: str; doc_source: str; chunk_id: int; confidence: float
+    supporting: List[Tuple[str, int]] = field(default_factory=list); contradicting: List[Tuple[str, int]] = field(default_factory=list)
+    def to_dict(self) -> Dict[str, Any]:
+        return {"claim": self.claim_text, "subject": self.subject, "predicate": self.predicate, "object": self.object_val, "source": self.doc_source, "confidence": self.confidence, "supporting_count": len(self.supporting), "contradicting_count": len(self.contradicting)}
 
 # =============================================
-# LASER PARAMETER FUSION ENGINE
+# REASONING CHAIN (THINKING TRACE)
 # =============================================
-class LaserFusionEngine:
-    """Fuse laser heat source parameters across documents"""
+@dataclass
+class ReasoningStep:
+    step_type: str; description: str; data: Dict[str, Any]; timestamp: datetime = field(default_factory=datetime.now)
 
-    def __init__(self, parameter_extractor: LaserParameterExtractor):
-        self.extractor = parameter_extractor
-        self.fusion_history: List[Dict] = []
-
-    def fuse_laser_documents(self, retrieved_docs: List[Document], query: str,
-                          source_type_filter: Optional[str] = None,
-                          processing_mode_filter: Optional[str] = None,
-                          parameter_filter: Optional[List[str]] = None) -> Tuple[Dict[str, FusedLaserParameter], FusionEfficiencyMetrics]:
-        fusion_records: List[LaserDocumentRecord] = []
-        for doc in retrieved_docs:
-            record = self.extractor.extract_parameters_from_chunk(doc.page_content, doc.metadata)
-            if source_type_filter and record.laser_source_type != source_type_filter:
-                continue
-            if processing_mode_filter and record.processing_mode != processing_mode_filter:
-                continue
-            if parameter_filter:
-                record.extracted_parameters = [p for p in record.extracted_parameters if p.normalized_name in parameter_filter]
-            if record.extracted_parameters:
-                fusion_records.append(record)
-        if not fusion_records:
-            metrics = FusionEfficiencyMetrics(
-                unique_sources_used=len(retrieved_docs),
-                source_diversity_score=min(1.0, len(retrieved_docs) / 3.0),
-                overall_fusion_efficiency=min(1.0, len(retrieved_docs) / 3.0) * 0.3
-            )
-            return {}, metrics
-        parameter_groups: Dict[str, List[LaserParameter]] = defaultdict(list)
-        for record in fusion_records:
-            for param in record.extracted_parameters:
-                key = param.normalized_name
-                if not parameter_filter or key in parameter_filter:
-                    parameter_groups[key].append(param)
-        fused_parameters: Dict[str, FusedLaserParameter] = {}
-        for param_name, params in parameter_groups.items():
-            fused = self._fuse_parameter_group(param_name, params)
-            if fused:
-                fused_parameters[param_name] = fused
-        metrics = self._compute_fusion_metrics(fusion_records, fused_parameters, retrieved_docs, query)
-        self.fusion_history.append({
-            "timestamp": datetime.now().isoformat(), "query": query,
-            "input_docs": len(retrieved_docs),
-            "extracted_parameters": sum(len(r.extracted_parameters) for r in fusion_records),
-            "fused_parameters": len(fused_parameters),
-            "efficiency": metrics.overall_fusion_efficiency
-        })
-        return fused_parameters, metrics
-
-    def _fuse_parameter_group(self, param_name: str, parameters: List[LaserParameter]) -> Optional[FusedLaserParameter]:
-        if not parameters:
-            return None
-        numeric_params = [p for p in parameters if p.normalized_value is not None and isinstance(p.normalized_value, (int, float))]
-        fused = FusedLaserParameter(
-            parameter_name=param_name,
-            fused_value=None,
-            unit=parameters[0].normalized_unit if parameters[0].normalized_unit else parameters[0].unit,
-            source_count=len(parameters),
-            sources=[{"citation": p.source_citation, "chunk_id": p.source_chunk_id} for p in parameters],
-            laser_source_type=parameters[0].laser_source_type if parameters else None,
-            processing_mode=parameters[0].processing_mode if parameters else None
-        )
-        if numeric_params and len(numeric_params) >= 1:
-            values = [p.normalized_value for p in numeric_params if p.normalized_value is not None]
-            if values:
-                fused.fused_value = np.mean(values)
-                fused.value_range = (min(values), max(values))
-                fused.standard_deviation = np.std(values) if len(values) > 1 else 0.0
-                if fused.fused_value != 0:
-                    cv = fused.standard_deviation / abs(fused.fused_value)
-                else:
-                    cv = 1.0
-                if cv < 0.1 and len(numeric_params) >= 2:
-                    fused.fusion_confidence = FusionConfidence.HIGH
-                elif cv < 0.3 or len(numeric_params) == 1:
-                    fused.fusion_confidence = FusionConfidence.MODERATE
-                else:
-                    fused.fusion_confidence = FusionConfidence.LOW
-                    fused.conflicts_detected = True
-                    fused.conflict_notes.append(f"High variation: CV={cv:.2f}")
-                conditions = defaultdict(set)
-                for p in numeric_params:
-                    if p.condition:
-                        conditions["context"].add(p.condition)
-                    if p.experimental_setup:
-                        for k, v in p.experimental_setup.items():
-                            conditions[k].add(str(v))
-                fused.conditions_summary = {k: list(v) for k, v in conditions.items()}
-        else:
-            value_counts = Counter(str(p.value) for p in parameters if p.value is not None)
-            if value_counts:
-                fused.fused_value = value_counts.most_common(1)[0][0]
-                fused.fusion_confidence = (
-                    FusionConfidence.HIGH if value_counts.most_common(1)[0][1] == len(parameters)
-                    else FusionConfidence.MODERATE if value_counts.most_common(1)[0][1] > len(parameters) / 2
-                    else FusionConfidence.LOW
-                )
-                if fused.fusion_confidence == FusionConfidence.LOW:
-                    fused.conflicts_detected = True
-                    fused.conflict_notes.append(f"Multiple distinct values: {list(value_counts.keys())[:3]}")
-        return fused
-
-    def _compute_fusion_metrics(self, fusion_records: List[LaserDocumentRecord],
-                               fused_parameters: Dict[str, FusedLaserParameter],
-                               retrieved_docs: List[Document], query: str) -> FusionEfficiencyMetrics:
-        metrics = FusionEfficiencyMetrics()
-        unique_sources = set(r.chunk_id for r in fusion_records)
-        metrics.unique_sources_used = len(unique_sources)
-        metrics.source_diversity_score = min(1.0, len(unique_sources) / 3.0)
-        total_extracted = sum(len(r.extracted_parameters) for r in fusion_records)
-        metrics.total_parameters_extracted = total_extracted
-        metrics.parameters_fused_successfully = len(fused_parameters)
-        metrics.parameter_coverage_ratio = len(fused_parameters) / total_extracted if total_extracted > 0 else 0.0
-        if fused_parameters:
-            consistent = sum(1 for f in fused_parameters.values() if not f.conflicts_detected and f.fusion_confidence != FusionConfidence.LOW)
-            conflicting = sum(1 for f in fused_parameters.values() if f.conflicts_detected)
-            total_evaluated = consistent + conflicting
-            metrics.consistent_parameters = consistent
-            metrics.conflicting_parameters = conflicting
-            metrics.consistency_ratio = consistent / total_evaluated if total_evaluated > 0 else 1.0
-        else:
-            metrics.consistency_ratio = 1.0
-        numeric_with_uncertainty = [f for f in fused_parameters.values() if f.standard_deviation is not None or any("±" in str(s.get("citation", "")) for s in f.sources)]
-        metrics.numeric_parameters_with_uncertainty = len(numeric_with_uncertainty)
-        if fused_parameters:
-            uncertainties = []
-            for f in fused_parameters.values():
-                if isinstance(f.fused_value, (int, float)) and f.fused_value != 0 and f.standard_deviation is not None:
-                    uncertainties.append(f.standard_deviation / abs(f.fused_value))
-            if uncertainties:
-                metrics.average_uncertainty_magnitude = np.mean(uncertainties)
-            else:
-                metrics.average_uncertainty_magnitude = 0.1
-        else:
-            metrics.average_uncertainty_magnitude = 0.1
-        confidence_weights = {FusionConfidence.HIGH: 1.0, FusionConfidence.MODERATE: 0.7, FusionConfidence.LOW: 0.4, FusionConfidence.UNKNOWN: 0.2}
-        if fused_parameters:
-            weighted_sum = sum(confidence_weights.get(f.fusion_confidence, 0.5) for f in fused_parameters.values())
-            metrics.weighted_confidence_score = weighted_sum / len(fused_parameters)
-            metrics.high_confidence_fusions = sum(1 for f in fused_parameters.values() if f.fusion_confidence == FusionConfidence.HIGH)
-            metrics.low_confidence_fusions = sum(1 for f in fused_parameters.values() if f.fusion_confidence == FusionConfidence.LOW)
-        else:
-            metrics.weighted_confidence_score = 0.5
-        metrics.answer_specificity_score = self._estimate_answer_specificity(query, fused_parameters)
-        metrics.citation_density = min(1.0, len(fused_parameters) * 2 / 100)
-        metrics.compute_overall()
-        return metrics
-
-    def _estimate_answer_specificity(self, query: str, fused_params: Dict[str, FusedLaserParameter]) -> float:
-        if not fused_params:
-            query_lower = query.lower()
-            if any(kw in query_lower for kw in ['compare', 'versus', 'vs', 'difference', 'power', 'fluence', 'pulse', 'wavelength']):
-                return 0.5
-            return 0.3
-        query_lower = query.lower()
-        specificity_indicators = 0
-        for param_name in fused_params.keys():
-            if param_name.replace('_', ' ') in query_lower or param_name in query_lower:
-                specificity_indicators += 2
-        if any(src in query_lower for src in list(LASER_SOURCE_TYPES.keys())):
-            specificity_indicators += 1
-        if any(param in query_lower for param in ['power', 'fluence', 'pulse_duration', 'wavelength', 'spot_size']):
-            specificity_indicators += 1
-        if re.search(r'[\d.]+\s*(?:W|mW|J|mJ|fs|ps|ns|nm|μm|J/cm²|W/cm²)', query_lower):
-            specificity_indicators += 2
-        return min(1.0, specificity_indicators / 5.0)
-
-    def generate_comparison_table(self, fused_parameters: Dict[str, FusedLaserParameter], format: str = "markdown") -> str:
-        if not fused_parameters:
-            return "_No laser parameters available for comparison_"
-        if format == "markdown":
-            return self._generate_markdown_table(fused_parameters)
-        elif format == "latex":
-            return self._generate_latex_table(fused_parameters)
-        elif format == "html":
-            return self._generate_html_table(fused_parameters)
-        else:
-            return self._generate_plain_text_table(fused_parameters)
-
-    def _generate_markdown_table(self, fused_params: Dict[str, FusedLaserParameter]) -> str:
-        lines = []
-        lines.append("| Parameter | Value | Unit | Range | Sources | Confidence | Laser Type |")
-        lines.append("|-----------|-------|------|-------|---------|------------|------------|")
-        for param_name, entry in sorted(fused_params.items(), key=lambda x: x[0]):
-            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
-                value_str = f"{entry.fused_value:.3f}"
-                if entry.standard_deviation is not None:
-                    value_str = f"{value_str} ± {entry.standard_deviation:.3f}"
-            else:
-                value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
-            range_str = f"{entry.value_range[0]:.2f}–{entry.value_range[1]:.2f}" if entry.value_range else "–"
-            confidence_icon = {"high": "🟢", "moderate": "🟡", "low": "🔴", "unknown": "⚪"}.get(entry.fusion_confidence.value, "⚪")
-            laser_type = entry.laser_source_type or "–"
-            lines.append(f"| {param_name.replace('_', ' ').title()} | {value_str} | {entry.unit or '–'} | {range_str} | {entry.source_count} | {confidence_icon} {entry.fusion_confidence.value} | {laser_type} |")
-        return "\n".join(lines)
-
-    def _generate_latex_table(self, fused_params: Dict[str, FusedLaserParameter]) -> str:
-        lines = [r"\begin{tabular}{|l|c|c|c|c|c|l|}", r"\hline",
-                r"\textbf{Parameter} & \textbf{Value} & \textbf{Unit} & \textbf{Range} & \textbf{Sources} & \textbf{Confidence} & \textbf{Laser Type} \\", r"\hline"]
-        for param_name, entry in fused_params.items():
-            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
-                value_str = f"{entry.fused_value:.3f}"
-                if entry.standard_deviation is not None:
-                    value_str = f"{value_str} \\pm {entry.standard_deviation:.3f}"
-            else:
-                value_str = str(entry.fused_value) if entry.fused_value is not None else "--"
-            range_str = f"{entry.value_range[0]:.2f}--{entry.value_range[1]:.2f}" if entry.value_range else "--"
-            conf_symbol = {"high": "high", "moderate": "mod", "low": "low"}.get(entry.fusion_confidence.value, "?")
-            laser_type = entry.laser_source_type or "--"
-            lines.append(f"{param_name.replace('_', r'\_').title()} & {value_str} & {entry.unit or '--'} & {range_str} & {entry.source_count} & {conf_symbol} & {laser_type} \\\\")
-        lines.extend([r"\hline", r"\end{tabular}"])
-        return "\n".join(lines)
-
-    def _generate_html_table(self, fused_params: Dict[str, FusedLaserParameter]) -> str:
-        lines = ['<table class="fusion-table" style="border-collapse: collapse; width: 100%;">']
-        lines.append('<thead><tr style="background: #f0f9ff;">')
-        for header in ["Parameter", "Value", "Unit", "Range", "Sources", "Confidence", "Laser Type"]:
-            lines.append(f'<th style="border: 1px solid #ccc; padding: 8px; text-align: left;">{header}</th>')
-        lines.append('</tr></thead><tbody>')
-        for param_name, entry in fused_params.items():
-            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
-                value_str = f"{entry.fused_value:.3f}"
-                if entry.standard_deviation is not None:
-                    value_str = f"{value_str} ± {entry.standard_deviation:.3f}"
-            else:
-                value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
-            bg_color = {"high": "#dcfce7", "moderate": "#fef3c7", "low": "#fee2e2"}.get(entry.fusion_confidence.value, "#f1f5f9")
-            lines.append(f'<tr style="background: {bg_color};">')
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{param_name.replace("_", " ").title()}</td>')
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{value_str}</td>')
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{entry.unit or "–"}</td>')
-            range_display = f"{entry.value_range[0]:.2f}–{entry.value_range[1]:.2f}" if entry.value_range else "–"
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{range_display}</td>')
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px; text-align: center;">{entry.source_count}</td>')
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{entry.fusion_confidence.value.title()}</td>')
-            laser_type = entry.laser_source_type or "–"
-            lines.append(f'<td style="border: 1px solid #ccc; padding: 8px;">{laser_type}</td>')
-            lines.append('</tr>')
-        lines.append('</tbody></table>')
-        return "\n".join(lines)
-
-    def _generate_plain_text_table(self, fused_params: Dict[str, FusedLaserParameter]) -> str:
-        lines = []
-        lines.append(f"{'Parameter':<30} {'Value':<15} {'Unit':<10} {'Confidence':<10} {'Laser Type':<15}")
-        lines.append("-" * 85)
-        for param_name, entry in fused_params.items():
-            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
-                value_str = f"{entry.fused_value:.3f}"
-            else:
-                value_str = str(entry.fused_value) if entry.fused_value is not None else "–"
-            laser_type = entry.laser_source_type or "–"
-            lines.append(f"{param_name.replace('_', ' ').title():<30} {value_str:<15} {entry.unit or '–':<10} {entry.fusion_confidence.value:<10} {laser_type:<15}")
+class ReasoningChain:
+    def __init__(self, query: str): self.query = query; self.steps: List[ReasoningStep] = []; self.thinking_graph: Optional[nx.DiGraph] = None
+    def add_step(self, step_type: str, description: str, data: Dict[str, Any]): self.steps.append(ReasoningStep(step_type, description, data))
+    def build_thinking_graph(self) -> nx.DiGraph:
+        G = nx.DiGraph()
+        G.add_node("QUERY", node_type="query", text=self.query, layer=0)
+        prev_node = "QUERY"
+        for i, step in enumerate(self.steps):
+            node_id = f"STEP_{i}_{step.step_type}"
+            G.add_node(node_id, node_type=step.step_type, description=step.description, layer=i+1, timestamp=step.timestamp.isoformat())
+            G.add_edge(prev_node, node_id, relation="leads_to")
+            if "entities" in step.data:
+                for ent in step.data["entities"]:
+                    ent_id = f"ENT_{ent}_{i}"; G.add_node(ent_id, node_type="entity", name=ent, layer=i+1); G.add_edge(node_id, ent_id, relation="involves")
+            if "chunks" in step.data:
+                for chunk_idx, chunk_src in enumerate(step.data["chunks"]):
+                    chk_id = f"CHK_{chunk_src}_{chunk_idx}_{i}"; G.add_node(chk_id, node_type="chunk", source=chunk_src, layer=i+1); G.add_edge(node_id, chk_id, relation="retrieves")
+            prev_node = node_id
+        G.add_node("ANSWER", node_type="answer", layer=len(self.steps)+1); G.add_edge(prev_node, "ANSWER", relation="synthesizes")
+        self.thinking_graph = G; return G
+    def to_markdown(self) -> str:
+        lines = [f"### 🧠 Reasoning Trace: *{self.query}*", ""]
+        for i, step in enumerate(self.steps, 1):
+            lines.append(f"**Step {i} — {step.step_type}**  "); lines.append(f"{step.description}  ")
+            if step.data: lines.append(f"`{json.dumps(step.data, default=str)[:300]}`  "); lines.append("")
         return "\n".join(lines)
 
 # =============================================
-# LASER PHYSICS VALIDATOR
+# ENHANCED CROSS-DOCUMENT KNOWLEDGE GRAPH
 # =============================================
-class LaserPhysicsValidator:
-    """Validate laser parameters against physical constraints"""
-
+class EnhancedCrossDocumentKnowledgeGraph:
     def __init__(self):
-        self.violation_log: List[Dict] = []
-
-    def check_parameter_bounds(self, param_name: str, value: float, unit: str) -> Dict:
-        param_config = LASER_PARAMETERS.get(param_name)
-        if not param_config:
-            return {"valid": True, "message": "No bounds defined for this parameter"}
-        bounds = param_config["physical_bounds"]
-        if value < bounds["min"] or value > bounds["max"]:
-            violation = {
-                "type": "physical_bound_violation",
-                "parameter": param_name,
-                "value": value,
-                "unit": unit,
-                "bounds": bounds,
-                "severity": "HIGH" if value < 0 or value > bounds["max"] * 2 else "MEDIUM"
-            }
-            self.violation_log.append(violation)
-            return {"valid": False, "violation": violation}
-        return {"valid": True, "message": "Value within physical bounds"}
-
-    def check_energy_consistency(self, power: Optional[float], pulse_energy: Optional[float],
-                                pulse_duration: Optional[float], repetition_rate: Optional[float]) -> Dict:
-        violations = []
-        if power is not None and pulse_energy is not None and repetition_rate is not None:
-            calculated_power = pulse_energy * repetition_rate
-            if abs(calculated_power - power) / power > 0.1 and power > 0:
-                violations.append({
-                    "type": "energy_consistency",
-                    "rule": "P_avg = E_pulse × f_rep",
-                    "calculated": calculated_power,
-                    "reported": power,
-                    "severity": "MEDIUM"
-                })
-        if pulse_energy is not None and pulse_duration is not None:
-            peak_power = pulse_energy / pulse_duration if pulse_duration > 0 else None
-            if peak_power is not None and peak_power > 1e15:
-                violations.append({
-                    "type": "extreme_peak_power",
-                    "parameter": "peak_power_estimate",
-                    "value": peak_power,
-                    "severity": "LOW"
-                })
-        return {
-            "valid": len(violations) == 0,
-            "violations": violations,
-            "message": "Energy consistency check passed" if not violations else f"{len(violations)} inconsistency(ies) found"
-        }
-
-    def check_fluence_power_density_consistency(self, fluence: Optional[float], power_density: Optional[float],
-                                               pulse_duration: Optional[float]) -> Dict:
-        if fluence is None or power_density is None or pulse_duration is None or pulse_duration <= 0:
-            return {"valid": True, "message": "Insufficient data for consistency check"}
-        calculated_intensity = fluence / pulse_duration
-        if abs(calculated_intensity - power_density) / power_density > 0.2 and power_density > 0:
-            return {
-                "valid": False,
-                "message": f"Intensity mismatch: I=F/τ gives {calculated_intensity:.2e} W/m² vs reported {power_density:.2e} W/m²",
-                "severity": "MEDIUM"
-            }
-        return {"valid": True, "message": "Fluence-intensity consistency verified"}
-
-    def full_validation(self, fused_parameters: Dict[str, FusedLaserParameter]) -> Dict:
-        results = {
-            "total_checks": 0,
-            "passed": 0,
-            "failed": 0,
-            "violations": [],
-            "warnings": []
-        }
-        param_values = {}
-        for param_name, param in fused_parameters.items():
-            if isinstance(param.fused_value, (int, float)):
-                param_values[param_name] = param.fused_value
-        for param_name, param in fused_parameters.items():
-            if isinstance(param.fused_value, (int, float)) and param.unit:
-                results["total_checks"] += 1
-                check = self.check_parameter_bounds(param_name, param.fused_value, param.unit)
-                if check["valid"]:
-                    results["passed"] += 1
-                else:
-                    results["failed"] += 1
-                    results["violations"].append(check.get("violation", {}))
-        energy_check = self.check_energy_consistency(
-            param_values.get("power"),
-            param_values.get("pulse_energy"),
-            param_values.get("pulse_duration"),
-            param_values.get("repetition_rate")
-        )
-        if not energy_check["valid"]:
-            results["total_checks"] += 1
-            results["failed"] += 1
-            results["warnings"].extend(energy_check.get("violations", []))
+        self.entities: Dict[str, List[EnhancedScientificEntity]] = defaultdict(list); self.claims: List[EnhancedScientificClaim] = []
+        self.documents: Dict[str, Dict[str, Any]] = {}; self.entity_index: Dict[str, Set[str]] = defaultdict(set)
+        self.chunk_index: Dict[str, List[Document]] = defaultdict(list); self.dgl_graph = None; self.dgl_node_maps: Dict[str, Dict[str, int]] = {}
+        self.entity_embeddings: Optional[np.ndarray] = None; self._entity_list: List[str] = []
+    def add_document(self, doc_id: str, chunks: List[Document], bib_meta: Any):
+        self.documents[doc_id] = {"bib_meta": bib_meta.to_dict() if hasattr(bib_meta, 'to_dict') else {}, "chunk_count": len(chunks), "topics": set(), "years": bib_meta.year if hasattr(bib_meta, 'year') else None}
+        self.chunk_index[doc_id] = chunks
+        for i, chunk in enumerate(chunks):
+            entities = self._extract_entities_from_chunk(chunk, i)
+            for ent in entities: self.entities[ent.normalized].append(ent); self.entity_index[ent.normalized].add(doc_id)
+            self.documents[doc_id]["topics"].add(ent.label)
+            claims = self._extract_claims_from_chunk(chunk, i)
+            for claim in claims: self.claims.append(claim)
+    def _extract_entities_from_chunk(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificEntity]:
+        text = chunk.page_content; doc = chunk.metadata.get("source", "unknown"); entities = []
+        for param_name, pattern in QUANTITY_PATTERNS.items():
+            for match in pattern.finditer(text):
+                val_str = match.group(1)
+                try: val = float(val_str)
+                except: val = None
+                unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ|K/s|K/mm|°C/s)', match.group(0), re.I)
+                unit = unit_match.group(1) if unit_match else None
+                start = max(0, match.start() - 100); end = min(len(text), match.end() + 100); context = text[start:end].replace('\n', ' ')
+                entities.append(EnhancedScientificEntity(text=match.group(0), label=param_name, value=val, unit=unit, doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.85))
+        text_lower = text.lower()
+        for canonical, aliases in {**MATERIAL_ALIASES, **METHOD_ALIASES}.items():
+            for alias in aliases:
+                for match in re.finditer(r'\b' + re.escape(alias) + r'\b', text_lower):
+                    start = max(0, match.start() - 80); end = min(len(text), match.end() + 80); context = text[start:end]
+                    lbl = "MATERIAL" if canonical in MATERIAL_ALIASES else "METHOD"
+                    entities.append(EnhancedScientificEntity(text=alias, label=lbl, value=None, unit=None, doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.9))
+        for topic, keywords in LASER_KEYWORDS.items():
+            for kw in keywords:
+                for match in re.finditer(r'\b' + re.escape(kw.lower()) + r'\b', text_lower):
+                    start = max(0, match.start() - 80); end = min(len(text), match.end() + 80)
+                    entities.append(EnhancedScientificEntity(text=kw, label="TOPIC", value=None, unit=None, doc_source=doc, chunk_id=chunk_id, context=text[start:end], confidence=0.8))
+        return entities
+    def _extract_claims_from_chunk(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificClaim]:
+        text = chunk.page_content; doc = chunk.metadata.get("source", "unknown"); claims = []
+        claim_patterns = [
+            (r'(?:ablation\s*threshold|threshold\s*fluence)\s*(?:of|for)\s+([a-z\s\-]+?)\s+(?:is|was|were|are|≈|~|about)\s+(\d+\.?\d*\s*[A-Za-z/²²]+)', 'has_ablation_threshold'),
+            (r'([a-z\s\-]+?)\s+(?:exhibits|shows|displays|forms|produces)\s+([a-z\s\-]+?(?:ripples|LIPSS|structures|morphology))', 'exhibits_morphology'),
+            (r'(?:periodicity|period|spacing)\s*(?:of|for)\s+([a-z\s\-]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:nm|µm|um))', 'has_periodicity'),
+            (r'(?:roughness|Ra)\s*(?:of|for)\s+([a-z\s\-]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*(?:nm|µm|um))', 'has_roughness'),
+            (r'([a-z\s\-]+?)\s+(?:increases|decreases|reduces|enhances|promotes|suppresses)\s+([a-z\s\-]+?(?:growth|formation|porosity|cracking|stress))', 'causes_effect'),
+            (r'(?:laser\s*power|fluence)\s+(?:of|at)\s+([a-z\s\-]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*[A-Za-z/²²]+)', 'has_laser_input'),
+            (r'(?:melt\s*pool\s*width|depth|temperature)\s+(?:of|for)\s+([a-z\s\-]+?)\s+(?:is|was|≈|~)\s+(\d+\.?\d*\s*[A-Za-z/²]+)', 'has_thermal_metric'),
+        ]
+        for pattern, predicate in claim_patterns:
+            for match in re.finditer(pattern, text, re.I):
+                subject = match.group(1).strip(); obj = match.group(2).strip()
+                start = max(0, match.start() - 120); end = min(len(text), match.end() + 120); context = text[start:end]
+                claims.append(EnhancedScientificClaim(claim_text=context, subject=subject, predicate=predicate, object_val=obj, doc_source=doc, chunk_id=chunk_id, confidence=0.7))
+        return claims
+    def find_consensus(self, entity_normalized: str) -> Optional[Dict[str, Any]]:
+        ents = self.entities.get(entity_normalized, [])
+        if len(ents) < 2: return None
+        by_doc = defaultdict(list)
+        for e in ents: by_doc[e.doc_source].append(e)
+        if len(by_doc) < 2: return None
+        values = [e.value for e in ents if e.value is not None]
+        if not values: return None
+        return {"entity": entity_normalized, "domain": ents[0].domain, "category": ents[0].category, "subcategory": ents[0].subcategory, "doc_count": len(by_doc), "value_count": len(values), "mean": float(np.mean(values)), "std": float(np.std(values)), "min": float(np.min(values)), "max": float(np.max(values)), "median": float(np.median(values)), "unit": ents[0].unit, "sources": list(by_doc.keys()), "values_by_doc": {d: [e.value for e in ev if e.value is not None] for d, ev in by_doc.items()}}
+    def find_contradictions(self, entity_normalized: str, threshold_factor: float = 2.0) -> List[Dict[str, Any]]:
+        ents = self.entities.get(entity_normalized, [])
+        by_doc = defaultdict(list)
+        for e in ents:
+            if e.value is not None: by_doc[e.doc_source].append(e.value)
+        contradictions = []
+        docs = list(by_doc.keys())
+        for i in range(len(docs)):
+            for j in range(i + 1, len(docs)):
+                vals_i, vals_j = by_doc[docs[i]], by_doc[docs[j]]
+                mean_i, mean_j = np.mean(vals_i), np.mean(vals_j)
+                if mean_i > 0 and mean_j > 0:
+                    ratio = max(mean_i, mean_j) / min(mean_i, mean_j)
+                    if ratio > threshold_factor:
+                        contradictions.append({"entity": entity_normalized, "doc_a": docs[i], "mean_a": float(mean_i), "std_a": float(np.std(vals_i)), "doc_b": docs[j], "mean_b": float(mean_j), "std_b": float(np.std(vals_j)), "ratio": float(ratio), "severity": "critical" if ratio > 10 else "high" if ratio > 5 else "moderate"})
+        return contradictions
+    def find_all_consensus(self, min_docs: int = 2) -> List[Dict[str, Any]]:
+        results = []
+        for ent_norm in self.entities:
+            cons = self.find_consensus(ent_norm)
+            if cons and cons["doc_count"] >= min_docs: results.append(cons)
+        return sorted(results, key=lambda x: x["doc_count"], reverse=True)
+    def find_all_contradictions(self, threshold_factor: float = 2.0) -> List[Dict[str, Any]]:
+        results = []; seen = set()
+        for ent_norm in self.entities:
+            contrs = self.find_contradictions(ent_norm, threshold_factor)
+            for c in contrs:
+                key = tuple(sorted([c["doc_a"], c["doc_b"]]) + [c["entity"]])
+                if key not in seen: results.append(c); seen.add(key)
+        return sorted(results, key=lambda x: x["ratio"], reverse=True)
+    def get_related_chunks(self, query_entities: List[str], chunks: List[Document], depth: int = 2) -> List[Tuple[Document, float, str]]:
+        related_docs = set()
+        for ent_norm in query_entities: related_docs.update(self.entity_index.get(ent_norm, set()))
+        scored = []
+        for chunk in chunks:
+            doc = chunk.metadata.get("source", "unknown"); score = 0.0; reason = "semantic"; chunk_text = chunk.page_content.lower()
+            for ent_norm in query_entities:
+                if ent_norm in chunk_text: score += 0.3
+                if doc in related_docs: score += 0.2; reason = "cross-doc-link"
+            for claim in self.claims:
+                if claim.doc_source == doc and claim.chunk_id == chunk.metadata.get("chunk_index", -1):
+                    if any(ent in claim.subject.lower() or ent in claim.object_val.lower() for ent in query_entities): score += 0.25; reason = "claim-evidence"
+            if score > 0: scored.append((chunk, score, reason))
+        scored.sort(key=lambda x: x[1], reverse=True); return scored
+    def get_entity_cooccurrence_matrix(self, top_n: int = 20) -> Tuple[List[str], np.ndarray]:
+        ent_counts = Counter({k: len(v) for k, v in self.entities.items()})
+        top_entities = [e for e, _ in ent_counts.most_common(top_n)]; n = len(top_entities); mat = np.zeros((n, n))
+        for doc in self.documents:
+            present = set()
+            for ent in top_entities:
+                if any(e.doc_source == doc for e in self.entities.get(ent, [])): present.add(ent)
+            for i, e1 in enumerate(top_entities):
+                for j, e2 in enumerate(top_entities):
+                    if i != j and e1 in present and e2 in present: mat[i][j] += 1
+        return top_entities, mat
+    def build_dgl_heterograph(self, embedding_fn: Optional[Callable] = None):
+        if not DGL_AVAILABLE: return None
+        docs = list(self.documents.keys()); chunks = []
+        for doc_id, chks in self.chunk_index.items():
+            for c in chks: chunks.append((doc_id, c))
+        entities = list(self.entities.keys()); claims = [(c.doc_source, c.chunk_id, i) for i, c in enumerate(self.claims)]; topics = list(LASER_KEYWORDS.keys())
+        doc_map = {d: i for i, d in enumerate(docs)}
+        chunk_map = {(d, c.metadata.get("chunk_index", i)): i for i, (d, c) in enumerate(chunks)}
+        ent_map = {e: i for i, e in enumerate(entities)}; claim_map = {i: i for i in range(len(claims))}; topic_map = {t: i for i, t in enumerate(topics)}
+        self.dgl_node_maps = {"doc": doc_map, "chunk": chunk_map, "entity": ent_map, "claim": claim_map, "topic": topic_map}
+        def edges(pairs):
+            if not pairs: return None
+            src, dst = zip(*pairs); return (torch.tensor(src, dtype=torch.int64), torch.tensor(dst, dtype=torch.int64))
+        dc_pairs, ce_pairs, cc_pairs, ee_pairs, et_pairs, cle_pairs = [], [], [], [], [], []
+        for (d, c), idx in chunk_map.items(): dc_pairs.append((doc_map[d], idx))
+        for ent_norm, ent_list in self.entities.items():
+            for e in ent_list:
+                key = (e.doc_source, e.chunk_id)
+                if key in chunk_map: ce_pairs.append((chunk_map[key], ent_map[ent_norm]))
+        for ci, (doc, chunk_id, _) in enumerate(claims):
+            key = (doc, chunk_id)
+            if key in chunk_map: cc_pairs.append((chunk_map[key], ci))
+        for doc_id, chks in self.chunk_index.items():
+            for c in chks:
+                cidx = c.metadata.get("chunk_index", -1); key = (doc_id, cidx)
+                if key not in chunk_map: continue
+                present_ents = []
+                for ent_norm, ent_list in self.entities.items():
+                    if any(e.doc_source == doc_id and e.chunk_id == cidx for e in ent_list): present_ents.append(ent_map[ent_norm])
+                for i in range(len(present_ents)):
+                    for j in range(i + 1, len(present_ents)): ee_pairs.append((present_ents[i], present_ents[j])); ee_pairs.append((present_ents[j], present_ents[i]))
+        for ent_norm, ent_list in self.entities.items():
+            for topic in topics:
+                if any(kw in ent_norm for kw in LASER_KEYWORDS[topic]): et_pairs.append((ent_map[ent_norm], topic_map[topic]))
+        for ci, claim in enumerate(self.claims):
+            for ent_norm in entities:
+                if ent_norm in claim.subject.lower() or ent_norm in claim.object_val.lower(): cle_pairs.append((ci, ent_map[ent_norm]))
+        data_dict = {}
+        if dc_pairs: data_dict[('doc', 'contains', 'chunk')] = edges(dc_pairs)
+        if ce_pairs: data_dict[('chunk', 'mentions', 'entity')] = edges(ce_pairs)
+        if cc_pairs: data_dict[('chunk', 'has_claim', 'claim')] = edges(cc_pairs)
+        if ee_pairs: data_dict[('entity', 'cooccurs', 'entity')] = edges(ee_pairs)
+        if et_pairs: data_dict[('entity', 'belongs_to', 'topic')] = edges(et_pairs)
+        if cle_pairs: data_dict[('claim', 'about', 'entity')] = edges(cle_pairs)
+        if not data_dict: self.dgl_graph = None; return None
+        g = dgl.heterograph(data_dict); emb_dim = 384
+        if embedding_fn:
+            doc_feats, chunk_feats, ent_feats = [], [], []
+            for d in docs:
+                chks = self.chunk_index.get(d, [])
+                if chks: embs = [embedding_fn(c.page_content) for c in chks]; doc_feats.append(np.mean(embs, axis=0))
+                else: doc_feats.append(np.zeros(emb_dim))
+            g.nodes['doc'].data['feat'] = torch.tensor(np.stack(doc_feats), dtype=torch.float32)
+            chunk_feats = [embedding_fn(c.page_content) for (_, c) in chunks]
+            g.nodes['chunk'].data['feat'] = torch.tensor(np.stack(chunk_feats), dtype=torch.float32)
+            for ent_norm in entities:
+                ctxs = [e.context for e in self.entities[ent_norm]]
+                if ctxs: embs = [embedding_fn(c) for c in ctxs]; ent_feats.append(np.mean(embs, axis=0))
+                else: ent_feats.append(np.zeros(emb_dim))
+            g.nodes['entity'].data['feat'] = torch.tensor(np.stack(ent_feats), dtype=torch.float32)
         else:
-            results["total_checks"] += 1
-            results["passed"] += 1
-        fluence_check = self.check_fluence_power_density_consistency(
-            param_values.get("fluence"),
-            param_values.get("power_density"),
-            param_values.get("pulse_duration")
-        )
-        if not fluence_check["valid"]:
-            results["total_checks"] += 1
-            results["failed"] += 1
-            results["warnings"].append({"type": "fluence_consistency", "message": fluence_check["message"]})
-        else:
-            results["total_checks"] += 1
-            results["passed"] += 1
-        results["validation_score"] = results["passed"] / results["total_checks"] if results["total_checks"] > 0 else 1.0
-        return results
+            for ntype in g.ntypes: g.nodes[ntype].data['feat'] = torch.randn(g.num_nodes(ntype), emb_dim) * 0.01
+        if 'claim' in g.ntypes: g.nodes['claim'].data['feat'] = torch.randn(g.num_nodes('claim'), emb_dim) * 0.01
+        if 'topic' in g.ntypes: g.nodes['topic'].data['feat'] = torch.eye(g.num_nodes('topic'))
+        self.dgl_graph = g; return g
+    def get_knowledge_summary(self) -> Dict[str, Any]:
+        return {"total_entities": sum(len(v) for v in self.entities.values()), "unique_entities": len(self.entities), "total_claims": len(self.claims), "document_count": len(self.documents), "top_entities": Counter([e.normalized for ents in self.entities.values() for e in ents]).most_common(15), "consensus_topics": [k for k, v in self.entities.items() if len(self.entity_index.get(k, set())) > 1], "domains": Counter([e.domain for ents in self.entities.values() for e in ents]).most_common(), "categories": Counter([e.category for ents in self.entities.values() for e in ents]).most_common()}
 
 # =============================================
-# LASER VISUALIZATION ENGINE
+# GRAPH DIFFUSION RETRIEVER
 # =============================================
-class LaserVisualizationEngine:
-    """Generate visualizations focused on laser heat source parameters"""
+class GraphDiffusionRetriever:
+    def __init__(self, graph: EnhancedCrossDocumentKnowledgeGraph, embedding_fn: Optional[Callable] = None):
+        self.graph = graph; self.embedding_fn = embedding_fn; self.nx_graph: Optional[nx.Graph] = None; self._build_nx_fallback()
+    def _build_nx_fallback(self):
+        G = nx.Graph()
+        for doc_id in self.graph.documents: G.add_node(doc_id, node_type="doc", bipartite=0)
+        for ent_norm, ents in self.graph.entities.items():
+            G.add_node(ent_norm, node_type="entity", bipartite=1, domain=ents[0].domain if ents else "UNKNOWN")
+            for e in ents: G.add_edge(e.doc_source, ent_norm, weight=e.confidence)
+        self.nx_graph = G
+    def retrieve(self, query: str, query_entities: List[str], chunks: List[Document], vector_scores: Dict[int, float], top_k: int = 6, alpha: float = 0.5) -> List[Tuple[Document, float, str]]:
+        if not query_entities:
+            sorted_chunks = sorted(chunks, key=lambda c: vector_scores.get(c.metadata.get("chunk_index", -1), 0), reverse=True)
+            return [(c, vector_scores.get(c.metadata.get("chunk_index", -1), 0), "vector-only") for c in sorted_chunks[:top_k]]
+        if DGL_AVAILABLE and self.graph.dgl_graph is not None: diffusion_scores = self._dgl_diffusion(query_entities, chunks)
+        else: diffusion_scores = self._nx_diffusion(query_entities, chunks)
+        hybrid = []
+        for chunk in chunks:
+            cidx = chunk.metadata.get("chunk_index", -1); v_score = vector_scores.get(cidx, 0.0); g_score = diffusion_scores.get(cidx, 0.0)
+            final = alpha * v_score + (1 - alpha) * g_score; reason = "graph-boosted" if g_score > v_score else "hybrid"
+            hybrid.append((chunk, final, reason))
+        hybrid.sort(key=lambda x: x[1], reverse=True); return hybrid[:top_k]
+    def _nx_diffusion(self, query_entities: List[str], chunks: List[Document]) -> Dict[int, float]:
+        if self.nx_graph is None: return {}
+        personalization = {n: 0.0 for n in self.nx_graph.nodes()}
+        for ent in query_entities:
+            if ent in personalization: personalization[ent] = 1.0
+        if sum(personalization.values()) == 0: return {}
+        try: pr = nx.pagerank(self.nx_graph, personalization=personalization, weight='weight')
+        except: pr = {}
+        chunk_scores = {}
+        for chunk in chunks:
+            cidx = chunk.metadata.get("chunk_index", -1); doc = chunk.metadata.get("source", "unknown"); score = pr.get(doc, 0.0) * 0.3
+            for ent in query_entities: score += pr.get(ent, 0.0) * 0.7
+            chunk_scores[cidx] = score
+        return chunk_scores
+    def _dgl_diffusion(self, query_entities: List[str], chunks: List[Document]) -> Dict[int, float]:
+        return self._nx_diffusion(query_entities, chunks)
 
-    @staticmethod
-    def create_power_parameter_chart(parameter_data: List[Dict],
-                                    x_param: str = "pulse_duration",
-                                    y_param: str = "fluence",
-                                    title: str = None) -> go.Figure:
-        if not parameter_data:
-            return None
-        df = pd.DataFrame(parameter_data)
-        if x_param not in df.columns or y_param not in df.columns:
-            return None
-        fig = px.scatter(
-            df,
-            x=x_param,
-            y=y_param,
-            color='laser_type' if 'laser_type' in df.columns else None,
-            size='sources' if 'sources' in df.columns else None,
-            hover_data=['unit', 'confidence', 'processing_mode'],
-            title=title or f"{y_param.replace('_', ' ').title()} vs {x_param.replace('_', ' ').title()}",
-            labels={x_param: x_param.replace('_', ' ').title(), y_param: y_param.replace('_', ' ').title()},
-            log_x=True if any(v < 0.01 for v in df[x_param] if isinstance(v, (int, float))) else False,
-            log_y=True if any(v < 0.01 for v in df[y_param] if isinstance(v, (int, float))) else False
-        )
-        fig.update_layout(
-            height=400,
-            margin=dict(t=50, b=40, l=40, r=20),
-            showlegend=True
-        )
-        return fig
+# =============================================
+# CROSS-DOCUMENT THINKER
+# =============================================
+class CrossDocumentThinker:
+    def __init__(self, graph: EnhancedCrossDocumentKnowledgeGraph, vectorstore: Any, embedding_fn: Callable, llm_generate_fn: Callable):
+        self.graph = graph; self.vectorstore = vectorstore; self.embedding_fn = embedding_fn; self.llm_generate_fn = llm_generate_fn
+        self.retriever = GraphDiffusionRetriever(graph, embedding_fn)
+    def think_and_answer(self, query: str, k: int = 6) -> Tuple[str, ReasoningChain, List[Document], Dict[str, Any]]:
+        chain = ReasoningChain(query); query_entities = self._extract_query_entities(query)
+        chain.add_step("entity_extraction", f"Extracted {len(query_entities)} entities from query", {"entities": query_entities})
+        semantic_docs = self.vectorstore.as_retriever(search_type="similarity_score_threshold", search_kwargs={"k": k * 3, "score_threshold": 0.2}).invoke(query)
+        vector_scores = {}
+        query_emb = self.embedding_fn(query)
+        for doc in semantic_docs:
+            cidx = doc.metadata.get("chunk_index", -1); doc_emb = self.embedding_fn(doc.page_content[:500])
+            sim = float(np.dot(query_emb, doc_emb) / (np.linalg.norm(query_emb) * np.linalg.norm(doc_emb) + 1e-8)); vector_scores[cidx] = sim
+        chain.add_step("vector_retrieval", f"Retrieved {len(semantic_docs)} chunks via vector similarity", {"chunks": [d.metadata.get("source", "unknown") for d in semantic_docs[:5]]})
+        all_chunks = []
+        for doc_id in self.graph.chunk_index: all_chunks.extend(self.graph.chunk_index[doc_id])
+        hybrid_results = self.retriever.retrieve(query, query_entities, all_chunks, vector_scores, top_k=k, alpha=0.6)
+        retrieved_docs = [r[0] for r in hybrid_results]
+        chain.add_step("graph_diffusion", f"Re-ranked via graph diffusion, top {len(retrieved_docs)} chunks", {"chunks": [d.metadata.get("source", "unknown") for d in retrieved_docs], "reasons": [r[2] for r in hybrid_results]})
+        relevant_claims = []
+        for claim in self.graph.claims:
+            if any(ent in claim.subject.lower() or ent in claim.object_val.lower() for ent in query_entities): relevant_claims.append(claim)
+        chain.add_step("claim_analysis", f"Found {len(relevant_claims)} relevant claims", {"claims": [c.predicate for c in relevant_claims[:5]]})
+        consensus_data, contradictions = [], []
+        for ent in query_entities:
+            cons = self.graph.find_consensus(ent)
+            if cons: consensus_data.append(cons)
+            contr = self.graph.find_contradictions(ent, threshold_factor=1.5); contradictions.extend(contr)
+        chain.add_step("cross_doc_analysis", f"Consensus: {len(consensus_data)}, Contradictions: {len(contradictions)}", {"consensus_entities": [c["entity"] for c in consensus_data], "contradiction_pairs": [(c["doc_a"], c["doc_b"], c["entity"]) for c in contradictions[:3]]})
+        prompt = self._build_reasoning_prompt(retrieved_docs, query, consensus_data, contradictions, relevant_claims)
+        answer = self.llm_generate_fn(prompt)
+        chain.add_step("synthesis", "Generated answer via LLM synthesis", {"prompt_length": len(prompt), "answer_length": len(answer)})
+        meta = {"query_entities": query_entities, "consensus_found": len(consensus_data), "contradictions_found": len(contradictions), "claim_count": len(relevant_claims), "retrieval_method": "hybrid_vector_graph", "reasoning_chain": chain.to_markdown()}
+        return answer, chain, retrieved_docs, meta
+    def _extract_query_entities(self, query: str) -> List[str]:
+        entities = []; q = query.lower()
+        for canonical, aliases in {**MATERIAL_ALIASES, **METHOD_ALIASES}.items():
+            if any(alias in q for alias in aliases): entities.append(canonical)
+        for param_name in QUANTITY_PATTERNS.keys():
+            if param_name.replace("_", " ") in q or param_name in q: entities.append(param_name)
+        for topic, keywords in LASER_KEYWORDS.items():
+            if any(kw in q for kw in keywords): entities.append(topic)
+        return list(set(entities))
+    def _build_reasoning_prompt(self, retrieved_docs, query, consensus_data, contradictions, claims) -> str:
+        context_parts = []
+        for i, chunk in enumerate(retrieved_docs, 1):
+            citation = chunk.metadata.get("citation_display")
+            if not citation:
+                source = chunk.metadata.get("source", "unknown"); citation = f"[Source {i} - {source}]"
+            section = chunk.metadata.get("section", "UNKNOWN")
+            content = chunk.page_content[:500] + "..." if len(chunk.page_content) > 500 else chunk.page_content
+            context_parts.append(f"---\n[{i}] {citation} | Section: {section}\n{content}\n")
+        context = "\n".join(context_parts)
+        consensus_text, contradiction_text, claim_text = "", "", ""
+        if consensus_data:
+            consensus_text = "\nCross-Document Consensus:\n"
+            for cons in consensus_data[:3]: consensus_text += f"- {cons['entity']} ({cons['domain']}): {cons['mean']:.2f} ± {cons['std']:.2f} {cons['unit']} across {cons['doc_count']} papers (n={cons['value_count']})\n"
+        if contradictions:
+            contradiction_text = "\nDetected Contradictions:\n"
+            for contr in contradictions[:3]: contradiction_text += f"- {contr['entity']}: {Path(contr['doc_a']).stem}={contr['mean_a']:.2f} vs {Path(contr['doc_b']).stem}={contr['mean_b']:.2f} (ratio {contr['ratio']:.1f}x, {contr['severity']})\n"
+        if claims:
+            claim_text = "\nRelevant Claims from Literature:\n"
+            for c in claims[:5]: claim_text += f"- [{c.doc_source}] {c.subject} → {c.predicate} → {c.object_val}\n"
+        system = """You are an expert scientific research assistant specializing in laser-material interaction physics, specializing in heat source modeling, energy deposition, and thermal transport in multicomponent alloys.
+SYNTHESIZE across documents. Identify CONSENSUS and CONTRADICTIONS explicitly.
+Report UNCERTAINTY: use ranges, standard deviations, and confidence statements.
+Cite using the exact format provided. Distinguish experimental results from theory.
+If evidence is insufficient, state so clearly.
+OUTPUT STRUCTURE:
+1. **Direct Answer**
+2. **Evidence Synthesis** (with citations)
+3. **Consensus & Variability**
+4. **Contradictions & Limitations**
+5. **Confidence Assessment** (High/Medium/Low)"""
+        user = f"{context}\n{consensus_text}\n{contradiction_text}\n{claim_text}\nQuestion: {query}\nProvide a rigorous scientific answer following the structure above."
+        return system + "\n" + user
 
-    @staticmethod
-    def create_parameter_distribution_chart(parameter_data: List[Dict],
-                                           param_name: str,
-                                           title: str = None) -> go.Figure:
-        if not parameter_data:
-            return None
-        values = [d['value'] for d in parameter_data if d.get('value') is not None and isinstance(d['value'], (int, float))]
-        if not values:
-            return None
-        fig = make_subplots(rows=1, cols=2, subplot_titles=("Distribution", "By Laser Type"))
-        fig.add_trace(
-            go.Histogram(x=values, name=param_name, marker_color='rgb(31, 119, 180)', nbinsx=20),
-            row=1, col=1
-        )
-        if 'laser_type' in parameter_data[0]:
-            for lt in set(d.get('laser_type') for d in parameter_data if d.get('laser_type')):
-                lt_values = [d['value'] for d in parameter_data if d.get('laser_type') == lt and d.get('value') is not None]
-                if lt_values:
-                    fig.add_trace(
-                        go.Box(y=lt_values, name=lt),
-                        row=1, col=2
-                    )
-        fig.update_layout(
-            title=title or f"{param_name.replace('_', ' ').title()} Distribution",
-            height=400,
-            margin=dict(t=50, b=40, l=40, r=20),
-            showlegend=False
-        )
-        fig.update_xaxes(title_text=param_name.replace('_', ' ').title(), row=1, col=1)
-        fig.update_yaxes(title_text="Frequency", row=1, col=1)
-        fig.update_yaxes(title_text=param_name.replace('_', ' ').title(), row=1, col=2)
-        return fig
-
-    @staticmethod
-    def create_laser_type_comparison_chart(parameter_data: List[Dict],
-                                          param_name: str,
-                                          title: str = None) -> go.Figure:
-        if not parameter_data:
-            return None
-        df = pd.DataFrame(parameter_data)
-        if 'laser_type' not in df.columns:
-            return None
-        agg_df = df.groupby('laser_type')[param_name].agg(['mean', 'std', 'count']).reset_index()
-        agg_df = agg_df[agg_df['count'] >= 1]
-        if agg_df.empty:
-            return None
-        fig = px.bar(
-            agg_df,
-            x='laser_type',
-            y='mean',
-            error_y='std',
-            title=title or f"{param_name.replace('_', ' ').title()} by Laser Source Type",
-            labels={'laser_type': 'Laser Source Type', 'mean': param_name.replace('_', ' ').title()},
-            color='laser_type',
-            text=agg_df['count'].apply(lambda x: f"n={int(x)}")
-        )
-        fig.update_layout(
-            height=400,
-            margin=dict(t=50, b=60, l=40, r=20),
-            xaxis_title="Laser Source Type",
-            yaxis_title=param_name.replace('_', ' ').title(),
-            showlegend=False
-        )
-        return fig
-
-    @staticmethod
-    def create_processing_mode_radar_chart(mode_data: List[Dict],
-                                          title: str = "Processing Mode Parameter Profile") -> go.Figure:
-        if not mode_data:
-            return None
-        modes = list(set(d.get('processing_mode') for d in mode_data if d.get('processing_mode')))
-        if not modes:
-            return None
-        param_counts = Counter(d.get('parameter') for d in mode_data if d.get('parameter'))
-        top_params = [p for p, c in param_counts.most_common(5) if p]
-        if not top_params:
-            return None
-        categories = [p.replace('_', ' ').title() for p in top_params]
+# =============================================
+# VISUALIZATION ENGINE
+# =============================================
+class VisualizationEngine:
+    def __init__(self, graph: EnhancedCrossDocumentKnowledgeGraph):
+        self.graph = graph
+        self.color_map = {"LASER_SOURCE": "#3b82f6", "HEAT_TRANSFER": "#8b5cf6", "ENERGY_DEPOSITION": "#f59e0b", "MATERIAL": "#10b981", "METHOD": "#06b6d4", "PHENOMENON": "#ec4899", "PARAMETER": "#84cc16", "UNKNOWN": "#6b7280", "TOPIC": "#f43f5e"}
+    def plot_static_knowledge_network(self, top_n: int = 25, figsize: Tuple[int, int] = (14, 12), layout: str = "spring") -> plt.Figure:
+        G = nx.Graph(); ent_counts = Counter({k: len(v) for k, v in self.graph.entities.items()}); top_entities = [e for e, _ in ent_counts.most_common(top_n)]
+        for doc_id in self.graph.documents: G.add_node(Path(doc_id).stem, node_type="doc", bipartite=0)
+        for ent in top_entities:
+            ents = self.graph.entities[ent]; domain = ents[0].domain if ents else "UNKNOWN"
+            G.add_node(ent, node_type="entity", domain=domain, bipartite=1)
+            for e in ents:
+                doc_node = Path(e.doc_source).stem
+                if doc_node in G: G.add_edge(doc_node, ent, weight=e.confidence)
+        fig, ax = plt.subplots(figsize=figsize)
+        if layout == "spring": pos = nx.spring_layout(G, k=0.6, iterations=50, seed=42)
+        elif layout == "kamada": pos = nx.kamada_kawai_layout(G)
+        else: pos = nx.shell_layout(G)
+        doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
+        ent_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "entity"]
+        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#1e40af", node_shape="s", node_size=900, alpha=0.9, ax=ax, label="Documents")
+        ent_colors = [self.color_map.get(G.nodes[n].get("domain", "UNKNOWN"), "#6b7280") for n in ent_nodes]
+        nx.draw_networkx_nodes(G, pos, nodelist=ent_nodes, node_color=ent_colors, node_shape="o", node_size=450, alpha=0.85, ax=ax, label="Entities")
+        nx.draw_networkx_edges(G, pos, alpha=0.25, width=0.8, ax=ax); nx.draw_networkx_labels(G, pos, font_size=7, ax=ax)
+        legend_patches = [mpatches.Patch(color="#1e40af", label="Document")]
+        for dom, col in self.color_map.items():
+            if dom != "UNKNOWN": legend_patches.append(mpatches.Patch(color=col, label=dom))
+        ax.legend(handles=legend_patches, loc="upper left", fontsize=8)
+        ax.set_title("Laser & Heat Source Knowledge Network", fontsize=14, fontweight='bold'); ax.axis("off"); plt.tight_layout(); return fig
+    def plot_chord_cooccurrence(self, top_n: int = 14) -> go.Figure:
+        entities, mat = self.graph.get_entity_cooccurrence_matrix(top_n)
+        if not entities: fig = go.Figure(); fig.update_layout(title="No entity co-occurrence data"); return fig
+        angles = np.linspace(0, 2 * np.pi, len(entities), endpoint=False)
         fig = go.Figure()
-        for mode in modes:
-            mode_params = [d for d in mode_data if d.get('processing_mode') == mode]
+        for i, ent in enumerate(entities):
+            fig.add_trace(go.Barpolar(r=[1], theta=[np.degrees(angles[i])], width=[10], marker_color=self.color_map.get(self.graph.entities[ent][0].domain if self.graph.entities.get(ent) else "UNKNOWN", "gray"), name=ent, opacity=0.9, showlegend=False, hoverinfo="text", text=[f"{ent}<br>Count: {len(self.graph.entities.get(ent, []))}"]))
+        for i in range(len(entities)):
+            for j in range(i + 1, len(entities)):
+                if mat[i][j] > 0: fig.add_trace(go.Scatterpolar(r=[0.2, 0.6, 0.2], theta=[np.degrees(angles[i]), np.degrees((angles[i] + angles[j]) / 2), np.degrees(angles[j])], mode='lines', line=dict(color='rgba(100,100,100,0.3)', width=min(mat[i][j], 3)), showlegend=False, hoverinfo='skip'))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=False), angularaxis=dict(visible=False)), title="Entity Co-occurrence Chord Diagram (Document-level)", height=700, width=700); return fig
+    def _build_sunburst_df(self, domain_filter: str) -> pd.DataFrame:
+        rows = []
+        for norm, ents in self.graph.entities.items():
+            if not ents: continue
+            e = ents[0]
+            if e.domain != domain_filter: continue
+            rows.append({"domain": e.domain, "category": e.category, "subcategory": e.subcategory, "entity": norm, "value": len(ents), "doc_count": len(set(x.doc_source for x in ents))})
+        return pd.DataFrame(rows)
+    def plot_methods_sunburst(self) -> go.Figure:
+        df = self._build_sunburst_df("METHOD")
+        if df.empty: fig = go.Figure(); fig.update_layout(title="No METHOD entities found"); return fig
+        fig = px.sunburst(df, path=["domain", "category", "subcategory", "entity"], values="value", color="doc_count", color_continuous_scale="Blues", title="Hierarchical Methods Taxonomy<br><sub>Experimental → Microscopy/Spectroscopy | Computational → FEM/MD/DFT/Phase-Field/ML</sub>"); return fig
+    def plot_materials_sunburst(self) -> go.Figure:
+        df = self._build_sunburst_df("MATERIAL")
+        if df.empty: fig = go.Figure(); fig.update_layout(title="No MATERIAL entities found"); return fig
+        fig = px.sunburst(df, path=["domain", "category", "subcategory", "entity"], values="value", color="doc_count", color_continuous_scale="Greens", title="Material System Hierarchy<br><sub>Pure → Binary → Ternary → HEA → Compound → Polymer</sub>"); return fig
+    def plot_topics_sunburst(self) -> go.Figure:
+        rows = []
+        for topic, keywords in LASER_KEYWORDS.items():
+            count = sum(1 for norm, ents in self.graph.entities.items() if any(kw in norm for kw in keywords) or any(kw in e.text.lower() for e in ents for kw in keywords))
+            if count > 0: rows.append({"topic": topic, "count": count})
+        df = pd.DataFrame(rows)
+        if df.empty: fig = go.Figure(); fig.update_layout(title="No topic entities found"); return fig
+        fig = px.sunburst(df, path=["topic"], values="count", color="count", color_continuous_scale="Oranges", title="Laser & Thermal Study Topics<br><sub>Laser Source, Energy Deposition, Heat Transfer, Thermal Simulation...</sub>"); return fig
+    def plot_document_radar(self) -> go.Figure:
+        categories = ["Laser Power", "Beam Properties", "Energy Deposition", "Thermal Modeling", "Melt Pool Metrics", "Validation Methods"]
+        cat_map = {"Laser Power": ["PARAMETER:Laser Input"], "Beam Properties": ["LASER_SOURCE"], "Energy Deposition": ["ENERGY_DEPOSITION"], "Thermal Modeling": ["HEAT_TRANSFER", "METHOD:Computational"], "Melt Pool Metrics": ["PARAMETER:Thermal Outcome"], "Validation Methods": ["METHOD:Experimental"]}
+        fig = go.Figure()
+        for doc_id in self.graph.documents:
             values = []
-            for param in top_params:
-                param_vals = [d.get('normalized_value') for d in mode_params if d.get('parameter') == param and d.get('normalized_value') is not None]
-                if param_vals:
-                    values.append(np.mean(param_vals) / max(1, max(abs(v) for v in param_vals)))
-                else:
-                    values.append(0)
-            values.append(values[0])
-            cats_closed = categories + [categories[0]]
-            fig.add_trace(go.Scatterpolar(
-                r=values,
-                theta=cats_closed,
-                fill='toself',
-                name=mode,
-                line=dict(width=2),
-            ))
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(visible=True, range=[0, 1], tickformat='.0%'),
-                angularaxis=dict(tickfont=dict(size=10))
-            ),
-            title=dict(text=title, x=0.5),
-            showlegend=True,
-            height=450,
-            margin=dict(t=50, b=20, l=20, r=20)
-        )
+            for cat in categories:
+                count = 0; target_domains = cat_map[cat]
+                for norm, ents in self.graph.entities.items():
+                    if any(e.doc_source == doc_id for e in ents):
+                        e = ents[0]
+                        if e.domain in target_domains or f"{e.domain}:{e.category}" in target_domains or any(e.domain == d for d in target_domains if ":" not in target_domains[0]): count += len([x for x in ents if x.doc_source == doc_id])
+                values.append(count)
+            values += values[:1]
+            fig.add_trace(go.Scatterpolar(r=values, theta=categories + [categories[0]], fill='toself', name=Path(doc_id).stem))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, max(5, max([max(t.r) for t in fig.data] or [5]))])), showlegend=True, title="Document Coverage Profiles (Laser/Thermal Focus)"); return fig
+    def plot_contradiction_matrix(self) -> go.Figure:
+        contrs = self.graph.find_all_contradictions(threshold_factor=1.5)
+        if not contrs: fig = go.Figure(); fig.update_layout(title="No contradictions detected"); return fig
+        docs = sorted(list(self.graph.documents.keys())); doc_stems = [Path(d).stem for d in docs]; n = len(docs)
+        mat = np.zeros((n, n)); annotations = [["" for _ in range(n)] for _ in range(n)]
+        for c in contrs:
+            i, j = docs.index(c["doc_a"]), docs.index(c["doc_b"]); severity_score = {"moderate": 1, "high": 2, "critical": 3}[c["severity"]]
+            mat[i][j] = max(mat[i][j], severity_score); mat[j][i] = mat[i][j]; annotations[i][j] += f"{c['entity'][:15]}({c['ratio']:.1f}x)<br>"; annotations[j][i] = annotations[i][j]
+        fig = go.Figure(data=go.Heatmap(z=mat, x=doc_stems, y=doc_stems, colorscale=[[0, "white"], [0.33, "#fcd34d"], [0.66, "#f97316"], [1, "#dc2626"]], text=annotations, texttemplate="%{text}", hoverinfo="text"))
+        fig.update_layout(title="Cross-Document Contradiction Severity Matrix", height=600, width=600); return fig
+    def plot_consensus_waterfall(self, top_n: int = 10) -> go.Figure:
+        consensus = self.graph.find_all_consensus(min_docs=2)[:top_n]
+        if not consensus: fig = go.Figure(); fig.update_layout(title="No consensus data available"); return fig
+        entities = [c["entity"] for c in consensus]; means = [c["mean"] for c in consensus]; stds = [c["std"] for c in consensus]; doc_counts = [c["doc_count"] for c in consensus]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=entities, y=means, error_y=dict(type='data', array=stds, visible=True, color="black"), marker_color=["#059669" if d >= 3 else "#3b82f6" for d in doc_counts], text=[f"μ={m:.2f}<br>σ={s:.2f}<br>n={d} docs" for m, s, d in zip(means, stds, doc_counts)], textposition="outside"))
+        fig.update_layout(title="Laser/Thermal Parameter Consensus Waterfall<br><sub>Green = strong agreement on energy deposition or thermal response</sub>", yaxis_title="Mean Value", xaxis_tickangle=-45, height=500); return fig
+    def plot_reasoning_chain(self, chain: ReasoningChain, figsize: Tuple[int, int] = (12, 8)) -> plt.Figure:
+        G = chain.build_thinking_graph(); fig, ax = plt.subplots(figsize=figsize); pos = nx.multipartite_layout(G, subset_key="layer")
+        color_map = {"query": "#1e40af", "entity_extraction": "#3b82f6", "vector_retrieval": "#8b5cf6", "graph_diffusion": "#a855f7", "claim_analysis": "#f59e0b", "cross_doc_analysis": "#10b981", "synthesis": "#ec4899", "answer": "#059669", "entity": "#60a5fa", "chunk": "#c084fc"}
+        node_colors = [color_map.get(G.nodes[n].get("node_type", "query"), "#6b7280") for n in G.nodes()]
+        node_sizes = [1200 if G.nodes[n].get("node_type") in ["query", "answer"] else 600 for n in G.nodes()]
+        nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_sizes, alpha=0.9, ax=ax)
+        nx.draw_networkx_edges(G, pos, arrows=True, arrowsize=15, alpha=0.5, ax=ax, connectionstyle="arc3,rad=0.1", edge_color="#4b5563")
+        nx.draw_networkx_labels(G, pos, font_size=7, ax=ax); ax.set_title("Explicit Reasoning Chain (Thinking Graph)", fontsize=13, fontweight='bold'); ax.axis("off"); plt.tight_layout(); return fig
+    def plot_entity_tsne(self, embedding_fn: Callable, top_n: int = 80) -> Optional[plt.Figure]:
+        if not SKLEARN_AVAILABLE: return None
+        ent_counts = Counter({k: len(v) for k, v in self.graph.entities.items()}); top = [e for e, _ in ent_counts.most_common(top_n)]
+        if len(top) < 5: return None
+        embs, domains = [], []
+        for ent in top: vec = embedding_fn(ent); embs.append(vec); domains.append(self.graph.entities[ent][0].domain if self.graph.entities.get(ent) else "UNKNOWN")
+        embs = np.stack(embs); tsne = TSNE(n_components=2, perplexity=min(30, len(top)-1), random_state=42); coords = tsne.fit_transform(embs)
+        fig, ax = plt.subplots(figsize=(10, 8))
+        for domain in set(domains):
+            mask = [d == domain for d in domains]; x, y = coords[mask, 0], coords[mask, 1]
+            ax.scatter(x, y, c=self.color_map.get(domain, "gray"), label=domain, alpha=0.8, s=80, edgecolors='white')
+        for i, ent in enumerate(top): ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]), fontsize=6, alpha=0.8)
+        ax.legend(loc='best', fontsize=8); ax.set_title("Entity Embedding Space (t-SNE)", fontsize=12, fontweight='bold'); ax.axis("off"); plt.tight_layout(); return fig
+    def plot_temporal_timeline(self) -> go.Figure:
+        rows = []
+        for doc_id, meta in self.graph.documents.items():
+            year = meta.get("years") or meta.get("bib_meta", {}).get("year")
+            if year:
+                for topic in meta.get("topics", []): rows.append({"year": int(year), "topic": topic, "doc": Path(doc_id).stem})
+        df = pd.DataFrame(rows)
+        if df.empty: fig = go.Figure(); fig.update_layout(title="No temporal metadata available"); return fig
+        fig = px.scatter(df, x="year", y="topic", color="doc", symbol="doc", title="Research Topic Timeline by Document", labels={"year": "Publication Year", "topic": "Topic"}, height=500); fig.update_traces(marker=dict(size=12)); return fig
+    def plot_entity_treemap(self) -> go.Figure:
+        rows = []
+        for norm, ents in self.graph.entities.items():
+            if not ents: continue
+            rows.append({"domain": ents[0].domain, "category": ents[0].category, "subcategory": ents[0].subcategory, "entity": norm, "value": len(ents), "docs": len(set(e.doc_source for e in ents))})
+        df = pd.DataFrame(rows)
+        if df.empty: fig = go.Figure(); fig.update_layout(title="No entity data"); return fig
+        fig = px.treemap(df, path=["domain", "category", "subcategory", "entity"], values="value", color="docs", color_continuous_scale="Viridis", title="Hierarchical Entity Treemap"); return fig
+    # NEW LASER/THERMAL SPECIFIC PLOTS
+    def plot_energy_deposition_histogram(self) -> go.Figure:
+        rows = []
+        for norm, ents in self.graph.entities.items():
+            if norm in ["fluence", "irradiance", "linear_energy", "volumetric_energy", "absorption_coeff"]:
+                for e in ents:
+                    if e.value is not None: rows.append({"Parameter": norm, "Value": e.value, "Document": Path(e.doc_source).stem, "Unit": e.unit})
+        df = pd.DataFrame(rows)
+        if df.empty: fig = go.Figure(); fig.update_layout(title="No energy deposition data found"); return fig
+        fig = px.histogram(df, x="Value", color="Parameter", marginal="box", title="Energy Deposition & Absorption Parameters<br><sub>Distribution across documents</sub>", labels={"Value": "Measured/Simulated Value"})
         return fig
-
-    @staticmethod
-    def create_parameter_space_heatmap(parameter_data: List[Dict],
-                                      x_param: str,
-                                      y_param: str,
-                                      z_param: str,
-                                      title: str = None) -> go.Figure:
-        if not parameter_data:
-            return None
-        df = pd.DataFrame(parameter_data)
-        if x_param not in df.columns or y_param not in df.columns or z_param not in df.columns:
-            return None
-        df_clean = df.dropna(subset=[x_param, y_param, z_param])
-        if df_clean.empty:
-            return None
-        fig = px.density_heatmap(
-            df_clean,
-            x=x_param,
-            y=y_param,
-            z=z_param,
-            title=title or f"Parameter Space: {z_param.replace('_', ' ').title()} over {x_param}×{y_param}",
-            labels={x_param: x_param.replace('_', ' ').title(), y_param: y_param.replace('_', ' ').title(), z_param: z_param.replace('_', ' ').title()},
-            log_x=True if df_clean[x_param].min() < 0.01 else False,
-            log_y=True if df_clean[y_param].min() < 0.01 else False
-        )
-        fig.update_layout(
-            height=400,
-            margin=dict(t=50, b=40, l=40, r=20)
-        )
-        return fig
+    def plot_heat_source_model_comparison(self) -> go.Figure:
+        models = ["Goldak double ellipsoid", "conical heat source", "cylindrical heat source", "surface heat flux", "volumetric heat source", "Gaussian distribution"]
+        counts = Counter()
+        for norm, ents in self.graph.entities.items():
+            if any(m in norm.lower() for m in models): counts[norm] += len(ents)
+        if not counts: fig = go.Figure(); fig.update_layout(title="No heat source models detected"); return fig
+        fig = go.Figure(data=[go.Bar(x=list(counts.keys()), y=list(counts.values()), marker_color="#10b981")])
+        fig.update_layout(title="Heat Source Model Usage Frequency<br><sub>Extracted from simulation & methodology sections</sub>", yaxis_title="Occurrence Count", xaxis_tickangle=-30); return fig
 
 # =============================================
-# SESSION STATE & UTILITIES - FIXED VERSION
+# EMBEDDING WRAPPER
 # =============================================
-def safe_get_session_state(key: str, default: Any = None) -> Any:
-    """Safely get a session state value with fallback to default"""
-    return st.session_state.get(key, default)
+class EmbeddingWrapper:
+    def __init__(self, embedding_source): self.source = embedding_source
+    def __call__(self, text: str) -> np.ndarray:
+        if hasattr(self.source, 'embed_query'): return np.array(self.source.embed_query(text))
+        elif hasattr(self.source, 'embed_documents'): return np.array(self.source.embed_documents([text])[0])
+        else: raise ValueError("Embedding source has no embed_query or embed_documents method")
 
-def safe_set_session_state(key: str, value: Any) -> None:
-    """Safely set a session state value"""
-    st.session_state[key] = value
+# =============================================
+# SEMANTIC CHUNKING WITH STRUCTURE AWARENESS
+# =============================================
+def detect_scientific_sections(text: str) -> List[Tuple[str, str]]:
+    section_patterns = [
+        (r'(?:^|\n)\s*Abstract\s*\n', 'ABSTRACT'), (r'(?:^|\n)\s*1\.\s*Introduction\s*\n', 'INTRODUCTION'),
+        (r'(?:^|\n)\s*(?:2\.)?\s*Experimental\s*(?:Setup|Methods|Details)?\s*\n', 'METHODS'),
+        (r'(?:^|\n)\s*(?:3\.)?\s*Results\s*(?:and\s*Discussion)?\s*\n', 'RESULTS'),
+        (r'(?:^|\n)\s*(?:4\.)?\s*Discussion\s*\n', 'DISCUSSION'), (r'(?:^|\n)\s*Conclusion', 'CONCLUSION'),
+    ]
+    boundaries = []
+    for pattern, name in section_patterns:
+        for match in re.finditer(pattern, text, re.I): boundaries.append((match.start(), name))
+    if not boundaries: return [("BODY", text)]
+    boundaries.sort(); sections = []
+    for i, (pos, name) in enumerate(boundaries):
+        end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(text); section_text = text[pos:end].strip()
+        if len(section_text) > 50: sections.append((name, section_text))
+    return sections if sections else [("BODY", text)]
 
+def semantic_chunk_document(pages: List[Document], filename: str) -> List[Document]:
+    all_text = "\n".join([p.page_content for p in pages]); sections = detect_scientific_sections(all_text); chunks = []
+    for section_name, section_text in sections:
+        if section_name in ['ABSTRACT', 'CONCLUSION']: chunk_size, overlap = 400, 50
+        elif section_name == 'METHODS': chunk_size, overlap = 600, 100
+        else: chunk_size, overlap = LASER_DOMAIN_CONFIG["chunk_size"], LASER_DOMAIN_CONFIG["chunk_overlap"]
+        splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap, separators=["\n", "\n\n", ". ", "; ", ", "], length_function=len)
+        section_chunks = splitter.create_documents([section_text])
+        for i, chunk in enumerate(section_chunks):
+            chunk.metadata.update({"source": filename, "section": section_name, "chunk_index": len(chunks) + i, "section_chunk_index": i})
+            chunks.extend(section_chunks)
+    for i, chunk in enumerate(chunks): chunk.metadata["chunk_index"] = i; chunk.metadata["total_chunks"] = len(chunks)
+    return chunks
+
+# =============================================
+# SESSION STATE INITIALIZATION (extended)
+# =============================================
 def initialize_session_state():
-    """
-    Initialize ALL session state variables with defaults.
-    This prevents AttributeError when accessing st.session_state attributes.
-    """
-    defaults = {
-        # === File Processing ===
-        "processed_files": set(),
-        "vectorstore": None,
-        "all_chunks": [],
-        "processing_complete": False,
-        
-        # === Chat System ===
-        "messages": [],
-        
-        # === LLM Configuration ===
-        "llm_model_choice": None,
-        "llm_tokenizer": None,
-        "llm_model": None,
-        "llm_backend": None,
-        "llm_backend_type": None,
-        "llm_device_or_host": None,
-        "inference_backend": "Hugging Face Transformers",
-        
-        # === Embeddings ===
-        "embeddings": None,
-        
-        # === Domain Settings ===
-        "laser_domain_boost": True,
-        "show_sources": True,
-        "citation_style": "apa",
-        "max_retrieved_chunks": 4,
-        "use_4bit_quantization": True,
-        "ollama_host": "http://localhost:11434",
-        "metadata_cache": metadata_cache,
-        
-        # === Fusion Engine ===
-        "enable_laser_fusion": True,
-        "fusion_source_type_filter": None,
-        "fusion_processing_mode_filter": None,
-        "fusion_parameter_filter": None,
-        
-        # === Debug & Evaluation ===
-        "debug_extraction": False,
-        "evaluation_mode": False,
-        
-        # === Visualization Controls - ALL REQUIRED ATTRIBUTES ===
-        "viz_chart_type": "scatter",
-        "viz_param_focus": None,
-        "viz_laser_type_focus": None,
-        "viz_mode": "All Modes",  # ← THE KEY FIX: Always initialized
-        "viz_x_param": "pulse_duration",
-        "viz_y_param": "fluence",
-        "viz_z_param": "power_density",
-        
-        # === Demo & Utility ===
-        "demo_question": None,
-        "last_query": None,
-        "response_timestamp": None,
-    }
-    
-    # Initialize each key defensively
+    defaults = {"processed_files": set(), "vectorstore": None, "all_chunks": [], "messages": [], "llm_model_choice": None, "llm_tokenizer": None, "llm_model": None, "llm_backend": None, "llm_device_or_host": None, "llm_backend_type": None, "embeddings": None, "processing_complete": False, "laser_domain_boost": True, "show_sources": True, "citation_style": "apa", "max_retrieved_chunks": 6, "use_4bit_quantization": True, "ollama_host": "http://localhost:11434", "metadata_cache": metadata_cache, "knowledge_graph": None, "reasoning_mode": True, "show_reasoning_chain": True, "cross_doc_consensus": True, "feedback_map": {}, "precision_recall": None, "show_network": False, "selected_entity": None, "plot_code": "", "last_plot_fig": None, "reasoning_chain": None, "visualization_engine": None}
     for key, value in defaults.items():
-        if key not in st.session_state:
-            if isinstance(value, (set, list, dict)):
-                # Create new instance for mutable defaults
-                st.session_state[key] = type(value)(value) if value else type(value)()
-            else:
-                st.session_state[key] = value
+        if key not in st.session_state: st.session_state[key] = value
 
-def is_ollama_model(model_key: str) -> bool:
-    return model_key.startswith("ollama:") or model_key.startswith("[Ollama]")
-
+# =============================================
+# UTILITY FUNCTIONS
+# =============================================
+def is_ollama_model(model_key: str) -> bool: return model_key.startswith("ollama:") or model_key.startswith("[Ollama]")
 def extract_ollama_tag(model_key: str) -> str:
-    if model_key.startswith("ollama:"):
-        return model_key.replace("ollama:", "", 1)
+    if model_key.startswith("ollama:"): return model_key.replace("ollama:", "", 1)
     elif model_key.startswith("[Ollama]"):
         match = re.search(r'\]\s*([^\s(]+)', model_key)
-        if match:
-            return match.group(1)
+        if match: return match.group(1)
     return model_key
-
 def get_hf_repo_id(model_key: str) -> str:
     if ":" in model_key and not model_key.startswith("http"):
         parts = model_key.split(":", 1)
-        if len(parts) == 2 and "/" in parts[1]:
-            return parts[1].strip()
+        if len(parts) == 2 and "/" in parts[1]: return parts[1].strip()
     return model_key
-
 def get_available_gpu_memory() -> Optional[float]:
-    if not torch.cuda.is_available():
-        return None
-    try:
-        total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        reserved = torch.cuda.memory_reserved(0) / (1024**3)
-        return total_memory - reserved
-    except:
-        return None
-
+    if not torch.cuda.is_available(): return None
+    try: return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3) - torch.cuda.memory_reserved(0) / (1024 ** 3)
+    except: return None
 def estimate_model_memory(model_key: str, use_4bit: bool = False) -> Dict[str, any]:
     repo_id = get_hf_repo_id(model_key) if not is_ollama_model(model_key) else model_key
     return MODEL_MEMORY_ESTIMATES.get(repo_id, {"params": "Unknown", "vram_fp16": "Unknown", "vram_4bit": "Unknown", "cpu_ok": False})
 
 # =============================================
-# MODEL LOADING
+# LOCAL MODEL LOADING
 # =============================================
 @st.cache_resource(show_spinner="Loading local embedding model (~80MB)...")
 def load_local_embeddings():
-    #device = "cuda" if torch.cuda.is_available() else "cpu"
-    try:
-        embeddings = HuggingFaceEmbeddings(
-            model_name=LOCAL_EMBEDDING_MODEL,
-            model_kwargs={'device': 'cpu'},
-            #model_kwargs={'device': device},
-            encode_kwargs={'normalize_embeddings': True}
-        )
-        return embeddings
-    except Exception as e:
-        st.error(f"Failed to load embeddings: {e}")
-        return None
+    try: return HuggingFaceEmbeddings(model_name=LOCAL_EMBEDDING_MODEL, model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})
+    except Exception as e: st.error(f"Failed to load embeddings: {e}"); return None
 
 @st.cache_resource(show_spinner="Loading local LLM (this may take 1-2 minutes on first load)...")
 def load_local_llm(model_key: str, use_4bit: bool = True):
     try:
-        if is_ollama_model(model_key):
-            return _load_ollama_model(model_key)
-        else:
-            return _load_transformers_model(model_key, use_4bit)
+        if is_ollama_model(model_key): return _load_ollama_model(model_key)
+        else: return _load_transformers_model(model_key, use_4bit)
     except Exception as e:
-        st.error(f"Failed to load LLM '{model_key}': {e}")
-        st.warning("Falling back to GPT-2...")
+        st.error(f"Failed to load LLM '{model_key}': {e}"); st.warning("Falling back to GPT-2...")
         try:
-            tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-            model = GPT2LMHeadModel.from_pretrained("gpt2")
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            model.eval()
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            return tokenizer, model, device, "transformers"
-        except Exception as e2:
-            st.error(f"Fallback also failed: {e2}")
-            return None, None, None, None
+            tokenizer = GPT2Tokenizer.from_pretrained("gpt2"); model = GPT2LMHeadModel.from_pretrained("gpt2")
+            if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token; model.eval()
+            return tokenizer, model, "cuda" if torch.cuda.is_available() else "cpu", "transformers"
+        except Exception as e2: st.error(f"Fallback also failed: {e2}"); return None, None, None, None
 
 def _load_ollama_model(model_key: str):
-    if not OLLAMA_AVAILABLE:
-        raise ImportError("ollama library not installed. Run: pip install ollama")
+    if not OLLAMA_AVAILABLE: raise ImportError("ollama library not installed. Run: pip install ollama")
     model_tag = extract_ollama_tag(model_key)
     try:
-        client = ollama.Client(host=st.session_state.ollama_host)
-        response = client.list()
+        client = ollama.Client(host=st.session_state.ollama_host); response = client.list()
         models_list = response.get('models', []) if isinstance(response, dict) else getattr(response, 'models', [])
         model_names = []
         for m in models_list:
-            if isinstance(m, dict):
-                name = m.get('model') or m.get('name')
-            else:
-                name = getattr(m, 'model', None) or getattr(m, 'name', None)
-            if name:
-                model_names.append(name)
+            name = m.get('model') if isinstance(m, dict) else getattr(m, 'model', None)
+            if name: model_names.append(name)
         if model_tag not in model_names:
             st.warning(f"⚠️ Model '{model_tag}' not found in Ollama.")
-            if model_names:
-                st.info(f"📋 Available: {', '.join(model_names[:5])}")
-            return None, None, st.session_state.ollama_host, "ollama"
-    except Exception as conn_err:
-        st.error(f"❌ Connection Error: {conn_err}")
-        return None, None, st.session_state.ollama_host, "ollama"
-    return None, model_tag, st.session_state.ollama_host, "ollama"
+            if model_names: st.info(f"📋 Available: {', '.join(model_names[:5])}")
+        return None, model_tag, st.session_state.ollama_host, "ollama"
+    except Exception as conn_err: st.error(f"❌ Connection Error: {conn_err}"); return None, None, st.session_state.ollama_host, "ollama"
 
 def _load_transformers_model(model_key: str, use_4bit: bool = True):
-    repo_id = get_hf_repo_id(model_key)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    available_vram = get_available_gpu_memory()
+    repo_id = get_hf_repo_id(model_key); device = "cuda" if torch.cuda.is_available() else "cpu"; available_vram = get_available_gpu_memory()
     mem_info = estimate_model_memory(model_key, use_4bit)
-    st.sidebar.info(f"""📊 Model Memory Estimate:
-- Parameters: {mem_info['params']}
-- VRAM (FP16): {mem_info['vram_fp16']}
-- VRAM (4-bit): {mem_info['vram_4bit']}
-- CPU OK: {'✅ Yes' if mem_info['cpu_ok'] else '❌ No'}
-- Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}""")
-    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id:
-        use_4bit = False
-    quantization_config = None
+    st.sidebar.info(f"📊 Model Memory Estimate:\n- Parameters: {mem_info['params']}\n- VRAM (FP16): {mem_info['vram_fp16']}\n- VRAM (4-bit): {mem_info['vram_4bit']}\n- CPU OK: {'✅ Yes' if mem_info['cpu_ok'] else '❌ No'}\n- Available VRAM: {f'{available_vram:.1f}GB' if available_vram else 'N/A (CPU)'}")
+    if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id: use_4bit = False; quantization_config = None
     if use_4bit and device == "cuda" and available_vram:
-        try:
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
-            )
-            st.sidebar.success("✅ 4-bit quantization enabled")
-        except ImportError:
-            st.sidebar.warning("⚠️ bitsandbytes not installed.")
-            use_4bit = False
+        try: quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4"); st.sidebar.success("✅ 4-bit quantization enabled")
+        except ImportError: st.sidebar.warning("⚠️ bitsandbytes not installed."); use_4bit = False
     tokenizer = AutoTokenizer.from_pretrained(repo_id, trust_remote_code=True, padding_side="left", use_fast=True)
     model_kwargs = {"trust_remote_code": True, "torch_dtype": torch.float16 if device == "cuda" else torch.float32}
-    if quantization_config:
-        model_kwargs["quantization_config"] = quantization_config
-        model_kwargs["device_map"] = "auto"
-    elif device == "cuda":
-        model_kwargs["device_map"] = "auto"
+    if quantization_config: model_kwargs["quantization_config"] = quantization_config; model_kwargs["device_map"] = "auto"
+    elif device == "cuda": model_kwargs["device_map"] = "auto"
     model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
-    if "device_map" not in model_kwargs and device == "cpu":
-        model = model.to(device)
-    model.eval()
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if "device_map" not in model_kwargs and device == "cpu": model = model.to(device); model.eval()
+    if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
     return tokenizer, model, device, "transformers"
 
 # =============================================
-# DOCUMENT PROCESSING - LASER FOCUSED
+# DOCUMENT PROCESSING
 # =============================================
-def extract_laser_source_metadata(text: str, filename: str) -> Dict[str, any]:
-    """Extract laser-specific metadata from text"""
-    metadata = {
-        "source": filename,
-        "laser_topics": [],
-        "parameters_found": {},
-        "has_equations": bool(re.search(r'[\(=]\s*[\d.]+\s*[×*]\s*10\^', text)),
-        "has_figures": bool(re.search(r'Figure\s*\d+|Fig\.\s*\d+', text, re.I)),
-    }
+def extract_laser_metadata(text: str, filename: str) -> Dict[str, any]:
+    metadata = {"source": filename, "laser_topics": [], "parameters_found": {}, "has_equations": bool(re.search(r'[\(=]\s*[\d.]+\s*[×*]\s*10\^', text)), "has_figures": bool(re.search(r'Figure\s*\d+|Fig\.\s*\d+', text, re.I))}
     text_lower = text.lower()
     for topic, keywords in LASER_KEYWORDS.items():
-        if any(kw.lower() in text_lower for kw in keywords):
-            metadata["laser_topics"].append(topic)
-    for param_name, param_config in LASER_PARAMETERS.items():
-        for pattern in param_config["patterns"]:
-            match = re.search(pattern, text, re.I)
-            if match:
-                try:
-                    metadata["parameters_found"][param_name] = float(match.group(1))
-                except:
-                    pass
+        if any(kw in text_lower for kw in keywords): metadata["laser_topics"].append(topic)
+    param_patterns = {"wavelength_nm": r'(\d+(?:\.\d+)?)\s*(?:nm|nanometers?)\s*(?:wavelength|λ|lambda)', "pulse_duration_fs": r'(\d+(?:\.\d+)?)\s*(?:fs|femtoseconds?)\s*(?:pulse|duration)', "fluence_Jcm2": r'(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2|fluence)', "repetition_rate": r'(\d+(?:\.\d+)?)\s*(?:kHz|MHz|Hz)\s*(?:repetition|rate|freq)', "spot_size_um": r'(\d+(?:\.\d+)?)\s*(?:µm|um|microns?)\s*(?:spot|diameter)'}
+    for param, pattern in param_patterns.items():
+        match = re.search(pattern, text, re.I)
+        if match:
+            try: metadata["parameters_found"][param] = float(match.group(1))
+            except: pass
     return metadata
 
-def load_and_chunk_laser_documents(uploaded_files: List) -> List[Document]:
-    """Load and chunk documents with laser-aware splitting"""
-    all_chunks = []
+def load_and_chunk_laser_documents(uploaded_files: List) -> Tuple[List[Document], EnhancedCrossDocumentKnowledgeGraph]:
+    all_chunks = []; graph = EnhancedCrossDocumentKnowledgeGraph()
     for uploaded_file in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf" if uploaded_file.name.endswith('.pdf') else ".txt") as tmp:
-            tmp.write(uploaded_file.getbuffer())
-            tmp_path = tmp.name
-        try:
-            file_hash = compute_file_hash(tmp_path)
-            cached_meta = st.session_state.metadata_cache.get(uploaded_file.name, file_hash)
-            if cached_meta:
-                bib_meta = cached_meta
-                st.info(f"📚 Using cached metadata for `{uploaded_file.name}`")
-            else:
-                if uploaded_file.name.endswith('.pdf'):
-                    bib_meta = extract_metadata_from_pdf_file(tmp_path, uploaded_file.name)
+            tmp.write(uploaded_file.getbuffer()); tmp_path = tmp.name
+            try:
+                file_hash = compute_file_hash(tmp_path)
+                cached_meta = st.session_state.metadata_cache.get(uploaded_file.name, file_hash)
+                if cached_meta: bib_meta = cached_meta; st.info(f"📚 Using cached metadata for `{uploaded_file.name}`")
                 else:
-                    with open(tmp_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        text_content = f.read()
-                    bib_meta = extract_metadata_from_text_file(text_content, uploaded_file.name)
-                st.session_state.metadata_cache.set(uploaded_file.name, bib_meta, file_hash)
-                st.info(f"📚 Extracted metadata: {bib_meta.format_citation('apa')}")
-            if uploaded_file.name.endswith('.pdf'):
-                loader = PyPDFLoader(tmp_path)
-            else:
-                loader = TextLoader(tmp_path, encoding='utf-8')
-            pages = loader.load()
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=LASER_DOMAIN_CONFIG["chunk_size"],
-                chunk_overlap=LASER_DOMAIN_CONFIG["chunk_overlap"],
-                separators=["\n\n", "\n", "Power:", "Fluence:", "Wavelength:", "Pulse:", "Table", "Parameter:", "Laser:", ""],
-                length_function=len
-            )
-            chunks = text_splitter.split_documents(pages)
-            for i, chunk in enumerate(chunks):
-                chunk.metadata.update({
-                    "source": uploaded_file.name,
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    **extract_laser_source_metadata(chunk.page_content, uploaded_file.name),
-                    "bibliographic": bib_meta.to_dict(),
-                    "citation_display": bib_meta.format_citation(st.session_state.get('citation_style', 'apa')),
-                })
-                all_chunks.extend(chunks)
-            st.info(f"✅ Loaded {len(chunks)} laser-focused chunks from `{uploaded_file.name}`")
-        except Exception as e:
-            st.error(f"❌ Error processing `{uploaded_file.name}`: {e}")
-            import traceback
-            st.error(traceback.format_exc())
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-    return all_chunks
+                    if uploaded_file.name.endswith('.pdf'): bib_meta = extract_metadata_from_pdf_file(tmp_path, uploaded_file.name)
+                    else:
+                        with open(tmp_path, 'r', encoding='utf-8', errors='ignore') as f: text_content = f.read()
+                        bib_meta = extract_metadata_from_text_file(text_content, uploaded_file.name)
+                    st.session_state.metadata_cache.set(uploaded_file.name, bib_meta, file_hash)
+                    st.info(f"📚 Extracted metadata: {bib_meta.format_citation('apa')}")
+                if uploaded_file.name.endswith('.pdf'): loader = PyPDFLoader(tmp_path)
+                else: loader = TextLoader(tmp_path, encoding='utf-8')
+                pages = loader.load(); chunks = semantic_chunk_document(pages, uploaded_file.name)
+                for chunk in chunks:
+                    chunk.metadata.update({**extract_laser_metadata(chunk.page_content, uploaded_file.name), "bibliographic": bib_meta.to_dict(), "citation_display": bib_meta.format_citation(st.session_state.get('citation_style', 'apa'))})
+                    graph.add_document(uploaded_file.name, chunks, bib_meta); all_chunks.extend(chunks)
+                st.info(f"✅ Loaded {len(chunks)} semantic chunks from `{uploaded_file.name}`")
+            except Exception as e:
+                st.error(f"❌ Error processing `{uploaded_file.name}`: {e}"); import traceback; st.error(traceback.format_exc())
+            finally:
+                if os.path.exists(tmp_path): os.remove(tmp_path)
+    return all_chunks, graph
 
 @st.cache_resource
 def create_local_vector_store(chunks: List[Document], embedding_model_key: str):
-    """Create FAISS vector store with laser-boosted embeddings"""
     try:
         embeddings = load_local_embeddings()
-        if embeddings is None:
-            return None
+        if embeddings is None: return None
         vectorstore = FAISS.from_documents(chunks, embeddings)
-        vectorstore.metadata = {
-            "total_chunks": len(chunks),
-            "embedding_model": embedding_model_key,
-            "created_at": datetime.now().isoformat(),
-            "laser_topics": list(set(topic for chunk in chunks for topic in chunk.metadata.get("laser_topics", [])))
-        }
+        vectorstore.metadata = {"total_chunks": len(chunks), "embedding_model": embedding_model_key, "created_at": datetime.now().isoformat(), "laser_topics": list(set(topic for chunk in chunks for topic in chunk.metadata.get("laser_topics", [])))}
         return vectorstore
-    except Exception as e:
-        st.error(f"Failed to create vector store: {e}")
-        return None
+    except Exception as e: st.error(f"Failed to create vector store: {e}"); return None
 
 # =============================================
-# RAG WITH LASER FUSION & VISUALIZATION
+# RAG FUNCTIONS (Enhanced with Thinking)
 # =============================================
-def create_laser_rag_prompt(retrieved_chunks: List[Document], query: str) -> str:
-    """Create prompt for laser-focused RAG"""
+def extract_query_entities(query: str) -> List[str]:
+    entities = []; query_lower = query.lower()
+    for canonical, aliases in MATERIAL_ALIASES.items():
+        if any(alias in query_lower for alias in aliases): entities.append(canonical)
+    for canonical, aliases in METHOD_ALIASES.items():
+        if any(alias in query_lower for alias in aliases): entities.append(canonical)
+    for param_name in QUANTITY_PATTERNS.keys():
+        if param_name.replace("_", " ") in query_lower or param_name in query_lower: entities.append(param_name)
+    for topic, keywords in LASER_KEYWORDS.items():
+        if any(kw in query_lower for kw in keywords): entities.append(topic)
+    return entities
+
+def create_scientific_reasoning_prompt(retrieved_chunks: List[Document], query: str, graph: EnhancedCrossDocumentKnowledgeGraph, consensus_data: List[Dict], contradictions: List[Dict]) -> str:
     context_parts = []
     for i, chunk in enumerate(retrieved_chunks, 1):
         citation = chunk.metadata.get("citation_display")
-        if not citation:
-            source = chunk.metadata.get("source", "unknown")
-            topics = chunk.metadata.get("laser_topics", [])
-            topic_str = f" [{', '.join(topics)}]" if topics else ""
-            citation = f"[Source {i}{topic_str} - {source}]"
-        content = chunk.page_content[:500] + "..." if len(chunk.page_content) > 500 else chunk.page_content
-        context_parts.append(f"{citation}\n{content}\n")
-    context = "\n---\n".join(context_parts)
-    laser_system_prompt = """You are an expert assistant for laser heat source research.
-Your role is to answer questions about laser source types, power instruments, and processing parameters.
-Focus ONLY on: laser power, pulse characteristics, wavelength, fluence, spot size, scan parameters.
-Do NOT discuss material properties, microstructure, or non-laser topics unless explicitly asked.
-Rules:
-1. Use ONLY information from the retrieved context below
-2. If the answer isn't in the context, say "Based on the provided documents, I cannot determine..."
-3. Never invent laser parameters or experimental conditions
-4. When citing, use the EXACT citation string provided (e.g., "Smith et al., Opt. Express, 2023" or "DOI:10.1364/OE.123456")
-5. For numerical values, ALWAYS include units
-6. Be precise about laser source type (CW, pulsed, femtosecond, fiber, etc.)
-7. Note measurement instruments when mentioned (power meter, energy meter, etc.)
-"""
-    user_query = f"""Retrieved Context from Laser Heat Source Documents:
-{context}
-User Question: {query}
-Answer (cite sources using provided citation format, focus on laser parameters only):"""
-    return laser_system_prompt + user_query
-
-def _create_fusion_aware_laser_prompt(retrieved_docs: List[Document], query: str,
-                                     fused_parameters: Dict[str, FusedLaserParameter],
-                                     fusion_metrics: FusionEfficiencyMetrics,
-                                     comparison_table: Optional[str]) -> Tuple[str, Dict[str, Any]]:
-    """Create prompt that incorporates fused laser parameter data"""
-    context_parts = []
-    for i, doc in enumerate(retrieved_docs):
-        citation = doc.metadata.get('citation_display', f"[Source {i+1}]")
-        content = doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content
-        context_parts.append(f"[{i+1}] {citation}\n{content}\n")
-    context = "\n---\n".join(context_parts)
-    parameters_summary = ""
-    if fused_parameters:
-        parameters_summary = "**Fused Laser Parameter Summary**:\n"
-        for param_name, entry in list(fused_parameters.items())[:8]:
-            if entry.fused_value is not None and isinstance(entry.fused_value, (int, float)):
-                value_str = f"{entry.fused_value:.3f}"
-                if entry.standard_deviation is not None:
-                    value_str = f"{value_str} ± {entry.standard_deviation:.3f}"
-            else:
-                value_str = str(entry.fused_value) if entry.fused_value is not None else "N/A"
-            laser_info = f" ({entry.laser_source_type})" if entry.laser_source_type else ""
-            parameters_summary += f"• {param_name.replace('_', ' ').title()}: {value_str} {entry.unit or ''}{laser_info} [conf: {entry.fusion_confidence.value}, sources: {entry.source_count}]\n"
-        parameters_summary += "\n"
-    table_section = f"**Parameter Comparison Table**:\n{comparison_table}\n" if comparison_table else ""
-    efficiency_note = ""
-    if fusion_metrics.overall_fusion_efficiency >= 0.7:
-        efficiency_note = f"🎯 High-confidence fusion ({fusion_metrics.overall_fusion_efficiency:.2f}/1.0): Parameters synthesized from {fusion_metrics.unique_sources_used} laser studies.\n"
-    elif fusion_metrics.overall_fusion_efficiency >= 0.4:
-        efficiency_note = f"⚠️ Moderate-confidence fusion ({fusion_metrics.overall_fusion_efficiency:.2f}/1.0): Some parameter variations detected across sources.\n"
-    else:
-        efficiency_note = f"🔍 Low-confidence fusion ({fusion_metrics.overall_fusion_efficiency:.2f}/1.0): Limited or conflicting laser parameter data.\n"
-    system_prompt = """You are an expert scientific assistant specializing in laser heat source research.
-YOUR TASK:
-1. Answer the user's question using the retrieved document context AND the fused parameter summary below
-2. When laser parameter values are available from fusion, PREFER the fused consensus value with its uncertainty range
-3. Cite sources precisely using [Author, Year] or [DOI:xxx] format immediately after claims
-4. If fused parameters show conflicts, acknowledge the variation and note possible causes (different laser types, measurement methods, conditions)
-5. For comparative questions, reference the comparison table if provided
-6. ALWAYS include units for numerical values and specify laser source type when relevant
-7. FOCUS on laser heat source parameters: power, pulse, wavelength, fluence, spot size, scan parameters
-RESPONSE STRUCTURE:
-1. Direct answer (1-2 sentences)
-2. Supporting evidence with fused parameter values and citations
-3. Comparison table reference if relevant to query
-4. Uncertainty/limitations note if fusion confidence is moderate/low
-5. Suggested follow-up if appropriate
-"""
-    user_prompt = f"""RETRIEVED DOCUMENT CONTEXT:
-{context}
-{efficiency_note}{parameters_summary}{table_section}
-USER QUESTION: {query}
-SCIENTIFIC ANSWER (use fused parameters when available, cite sources precisely, focus on laser heat source parameters):"""
-    full_prompt = system_prompt + user_prompt
-    context_metadata = {
-        "fused_parameters_count": len(fused_parameters),
-        "fusion_efficiency": fusion_metrics.overall_fusion_efficiency,
-        "comparison_table_available": comparison_table is not None
-    }
-    return full_prompt, context_metadata
+        if not citation: source = chunk.metadata.get("source", "unknown"); citation = f"[Source {i} - {source}]"
+        section = chunk.metadata.get("section", "UNKNOWN"); content = chunk.page_content[:600] + "..." if len(chunk.page_content) > 600 else chunk.page_content
+        context_parts.append(f"---\n[{i}] {citation} | Section: {section}\n{content}\n")
+    context = "\n".join(context_parts)
+    consensus_text, contradiction_text = "", ""
+    if consensus_data:
+        consensus_text = "\nCross-Document Consensus (statistical agreement across papers):\n"
+        for cons in consensus_data[:3]: consensus_text += f"- {cons['entity']}: {cons['mean']:.2f} ± {cons['std']:.2f} {cons['unit']} (across {cons['doc_count']} papers, n={cons['value_count']})\n"
+    if contradictions:
+        contradiction_text = "\nDetected Contradictions Across Documents:\n"
+        for contr in contradictions[:3]: contradiction_text += f"- {contr['entity']}: {Path(contr['doc_a']).stem} reports {contr['mean_a']:.2f} vs {Path(contr['doc_b']).stem} reports {contr['mean_b']:.2f} (ratio: {contr['ratio']:.1f}x, {contr['severity']})\n"
+    system_prompt = """You are an expert scientific research assistant specializing in laser-material interaction physics, heat source modeling, and thermal transport in multicomponent alloys.
+Your task is to synthesize evidence from multiple research papers and provide a scientifically rigorous answer.
+REASONING RULES:
+1. SYNTHESIZE across documents — do not just summarize one paper at a time
+2. Identify CONSENSUS where multiple papers agree, and CONTRADICTIONS where they disagree
+3. Report UNCERTAINTY explicitly — use phrases like "reported values range from X to Y", "the consensus mean is Z ± σ"
+4. Cite sources using the EXACT citation format provided (Author et al., Journal, Year)
+5. If evidence is insufficient or contradictory, state this explicitly rather than fabricating consensus
+6. Distinguish between direct experimental results and inferred/theoretical claims
+7. For numerical values, include units and note if papers use different measurement conditions
+OUTPUT STRUCTURE:
+1. **Direct Answer**
+2. **Evidence Synthesis** (with citations)
+3. **Consensus & Variability**
+4. **Contradictions & Limitations**
+5. **Confidence Assessment** (High/Medium/Low)"""
+    user_prompt = f"Retrieved Document Context:\n{context}\n{consensus_text}\n{contradiction_text}\nUser Question: {query}\nProvide a scientifically rigorous answer following the structure above. Be precise about uncertainty and cross-document agreement."
+    return system_prompt + user_prompt
 
 def generate_local_response_transformers(tokenizer, model, device: str, prompt: str, backend_name: str) -> str:
-    """Generate response using HuggingFace Transformers"""
     try:
         if "Qwen" in backend_name or "qwen" in backend_name.lower():
-            messages = [
-                {"role": "system", "content": "You are an expert in laser heat source research. Focus on power, pulse, wavelength, fluence."},
-                {"role": "user", "content": prompt}
-            ]
+            messages = [{"role": "system", "content": "You are an expert in laser-material interaction physics. Synthesize evidence across multiple papers rigorously."}, {"role": "user", "content": prompt}]
             formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         elif "Llama" in backend_name or "llama" in backend_name.lower():
-            messages = [
-                {"role": "system", "content": "You are an expert in laser heat source research. Focus on power, pulse, wavelength, fluence."},
-                {"role": "user", "content": prompt}
-            ]
+            messages = [{"role": "system", "content": "You are an expert in laser-material interaction physics. Synthesize evidence across multiple papers rigorously."}, {"role": "user", "content": prompt}]
             formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        elif "Mistral" in backend_name or "mistral" in backend_name.lower():
-            formatted_prompt = f"<s>[INST] {prompt} [/INST]"
-        else:
-            formatted_prompt = prompt
-        inputs = tokenizer.encode(
-            formatted_prompt, return_tensors='pt', truncation=True,
-            max_length=LASER_DOMAIN_CONFIG["max_context_tokens"]
-        )
-        if device == "cuda" and torch.cuda.is_available():
-            inputs = inputs.to('cuda')
+        elif "Mistral" in backend_name or "mistral" in backend_name.lower(): formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+        else: formatted_prompt = prompt
+        inputs = tokenizer.encode(formatted_prompt, return_tensors='pt', truncation=True, max_length=LASER_DOMAIN_CONFIG["max_context_tokens"])
+        if device == "cuda" and torch.cuda.is_available(): inputs = inputs.to('cuda')
         with torch.no_grad():
-            outputs = model.generate(
-                inputs,
-                max_new_tokens=LASER_DOMAIN_CONFIG["max_new_tokens"],
-                temperature=LASER_DOMAIN_CONFIG["temperature"],
-                do_sample=(LASER_DOMAIN_CONFIG["temperature"] > 0),
-                pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                no_repeat_ngram_size=3,
-                early_stopping=True,
-            )
+            outputs = model.generate(inputs, max_new_tokens=LASER_DOMAIN_CONFIG["max_new_tokens"], temperature=LASER_DOMAIN_CONFIG["temperature"], do_sample=(LASER_DOMAIN_CONFIG["temperature"] > 0), pad_token_id=tokenizer.eos_token_id, eos_token_id=tokenizer.eos_token_id, no_repeat_ngram_size=3, early_stopping=True)
         full_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        if "[/INST]" in full_text:
-            answer = full_text.split("[/INST]")[-1].strip()
-        elif "Answer (cite sources" in full_text:
-            answer = full_text.split("Answer (cite sources")[-1].strip()
-            answer = re.split(r'\n(?:Question|User|Context):', answer)[0].strip()
-        else:
-            answer = full_text[-LASER_DOMAIN_CONFIG["max_new_tokens"]*2:].strip()
+        if "[/INST]" in full_text: answer = full_text.split("[/INST]")[-1].strip()
+        elif "Confidence Assessment:" in full_text: answer = full_text[full_text.find("Direct Answer:"):].strip() if "Direct Answer:" in full_text else full_text[-1500:].strip()
+        else: answer = full_text[-LASER_DOMAIN_CONFIG["max_new_tokens"] * 2:].strip()
         answer = re.sub(r'\s+', ' ', answer).strip()
         return answer if answer else "I was unable to generate a response. Please try rephrasing your question."
-    except Exception as e:
-        st.error(f"Generation error: {e}")
-        return f"Error generating response: {str(e)[:200]}..."
+    except Exception as e: st.error(f"Generation error: {e}"); return f"Error generating response: {str(e)[:200]}..."
 
 def generate_local_response_ollama(model_tag: str, ollama_host: str, prompt: str) -> str:
-    """Generate response using Ollama"""
     try:
-        client = ollama.Client(host=ollama_host)
-        messages = [
-            {"role": "system", "content": "You are an expert in laser heat source research. Answer based ONLY on the provided context."},
-            {"role": "user", "content": prompt}
-        ]
+        client = ollama.Client(host=ollama_host); messages = [{"role": "system", "content": "You are an expert in laser-material interaction physics. Synthesize evidence across multiple papers rigorously."}, {"role": "user", "content": prompt}]
         try:
-            response = client.chat(
-                model=model_tag, messages=messages,
-                options={"temperature": LASER_DOMAIN_CONFIG["temperature"], "num_predict": LASER_DOMAIN_CONFIG["max_new_tokens"]},
-                stream=True
-            )
+            response = client.chat(model=model_tag, messages=messages, options={"temperature": LASER_DOMAIN_CONFIG["temperature"], "num_predict": LASER_DOMAIN_CONFIG["max_new_tokens"]}, stream=True)
             full_response = ""
             for chunk in response:
                 if isinstance(chunk, dict):
-                    if 'message' in chunk and 'content' in chunk['message']:
-                        full_response += chunk['message']['content']
-                    elif 'content' in chunk:
-                        full_response += chunk['content']
-                elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                    full_response += chunk.message.content
+                    if 'message' in chunk and 'content' in chunk['message']: full_response += chunk['message']['content']
+                    elif 'content' in chunk: full_response += chunk['content']
+                elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'): full_response += chunk.message.content
         except TypeError:
-            response = client.chat(
-                model=model_tag, messages=messages,
-                options={"temperature": LASER_DOMAIN_CONFIG["temperature"], "num_predict": LASER_DOMAIN_CONFIG["max_new_tokens"]}
-            )
-            if isinstance(response, dict):
-                full_response = response.get('message', {}).get('content', '')
-            elif hasattr(response, 'message'):
-                full_response = response.message.content
-            else:
-                full_response = str(response)
+            response = client.chat(model=model_tag, messages=messages, options={"temperature": LASER_DOMAIN_CONFIG["temperature"], "num_predict": LASER_DOMAIN_CONFIG["max_new_tokens"]})
+            if isinstance(response, dict): full_response = response.get('message', {}).get('content', '')
+            elif hasattr(response, 'message'): full_response = response.message.content
+            else: full_response = str(response)
         return full_response.strip() if full_response.strip() else "I was unable to generate a response. Please try rephrasing your question."
-    except Exception as e:
-        st.error(f"Ollama generation error: {e}")
-        return f"Error generating response via Ollama: {str(e)[:200]}..."
+    except Exception as e: st.error(f"Ollama generation error: {e}"); return f"Error generating response via Ollama: {str(e)[:200]}..."
 
 def generate_local_response(tokenizer, model_or_tag, device_or_host: str, prompt: str, backend: str, backend_type: str) -> str:
-    """Unified response generation"""
-    if backend_type == "ollama":
-        return generate_local_response_ollama(model_or_tag, device_or_host, prompt)
-    else:
-        return generate_local_response_transformers(tokenizer, model_or_tag, device_or_host, prompt, backend)
+    if backend_type == "ollama": return generate_local_response_ollama(model_or_tag, device_or_host, prompt)
+    else: return generate_local_response_transformers(tokenizer, model_or_tag, device_or_host, prompt, backend)
 
-def retrieve_and_answer_with_laser_fusion(vectorstore, tokenizer, model, device_or_host: str, backend: str, backend_type: str,
-                                         query: str, k: int = None, score_threshold: float = None,
-                                         enable_fusion: bool = True, source_type_filter: Optional[str] = None,
-                                         processing_mode_filter: Optional[str] = None,
-                                         parameter_filter: Optional[List[str]] = None) -> Tuple[str, List[Document], float, Dict[str, Any]]:
-    """Main retrieval and answer function with laser parameter fusion"""
-    k = k or LASER_DOMAIN_CONFIG["retrieval_k"]
-    score_threshold = score_threshold or LASER_DOMAIN_CONFIG["score_threshold"]
-    retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={"k": k, "score_threshold": score_threshold}
-    )
-    retrieved_docs = retriever.invoke(query)
+def retrieve_and_answer(vectorstore, graph: EnhancedCrossDocumentKnowledgeGraph, tokenizer, model, device_or_host: str, backend: str, backend_type: str, query: str, k: int = None, score_threshold: float = None) -> Tuple[str, List[Document], float, Dict[str, Any], Optional[ReasoningChain]]:
+    k = k or LASER_DOMAIN_CONFIG["retrieval_k"]; score_threshold = score_threshold or LASER_DOMAIN_CONFIG["score_threshold"]
+    emb_source = getattr(vectorstore, 'embedding_function', getattr(vectorstore, 'embeddings', vectorstore))
+    emb_fn = EmbeddingWrapper(emb_source)
+    def llm_generate(prompt: str) -> str: return generate_local_response(tokenizer=tokenizer, model_or_tag=model, device_or_host=device_or_host, prompt=prompt, backend=backend, backend_type=backend_type)
+    thinker = CrossDocumentThinker(graph, vectorstore, emb_fn, llm_generate)
+    answer, chain, retrieved_docs, meta = thinker.think_and_answer(query, k=k)
+    avg_relevance = 0.0
     if retrieved_docs:
-        query_embedding = vectorstore.embedding_function.embed_query(query)
-        scores = []
+        query_emb = emb_fn(query); scores = []
         for doc in retrieved_docs:
-            doc_embedding = vectorstore.embedding_function.embed_query(doc.page_content[:500])
-            sim = np.dot(query_embedding, doc_embedding) / (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding) + 1e-8)
-            scores.append(sim)
+            doc_emb = emb_fn(doc.page_content[:500]); sim = float(np.dot(query_emb, doc_emb) / (np.linalg.norm(query_emb) * np.linalg.norm(doc_emb) + 1e-8)); scores.append(sim)
         avg_relevance = np.mean(scores) if scores else 0.0
-    else:
-        avg_relevance = 0.0
-    if not retrieved_docs:
-        return ("Based on the uploaded documents, I could not find information relevant to your laser heat source question. Try rephrasing or checking document content.",
-                [], avg_relevance, {"error": "no_relevant_chunks", "fusion_enabled": enable_fusion})
-    if enable_fusion:
-        parameter_extractor = LaserParameterExtractor(LASER_KEYWORDS)
-        fusion_engine = LaserFusionEngine(parameter_extractor)
-        fused_parameters, fusion_metrics = fusion_engine.fuse_laser_documents(
-            retrieved_docs, query,
-            source_type_filter=source_type_filter,
-            processing_mode_filter=processing_mode_filter,
-            parameter_filter=parameter_filter
-        )
-        comparison_table = None
-        if fused_parameters:
-            comparison_table = fusion_engine.generate_comparison_table(fused_parameters, format="markdown")
-        prompt, fusion_context = _create_fusion_aware_laser_prompt(
-            retrieved_docs, query, fused_parameters, fusion_metrics, comparison_table
-        )
-        answer = generate_local_response(
-            tokenizer=tokenizer, model_or_tag=model, device_or_host=device_or_host,
-            prompt=prompt, backend=backend, backend_type=backend_type
-        )
-        if fusion_metrics.overall_fusion_efficiency > 0.5 and comparison_table:
-            answer += f"\n---\n**📊 Laser Parameter Comparison**:\n{comparison_table}"
-        metadata = {
-            "fusion_enabled": True,
-            "fusion_metrics": {"efficiency": fusion_metrics.overall_fusion_efficiency, "display": fusion_metrics.to_display_dict()},
-            "fused_parameters": {k: v.to_comparison_row() for k, v in fused_parameters.items()},
-            "comparison_table": comparison_table,
-            "source_citations": [
-                {"citation": doc.metadata.get('citation_display', 'Unknown'), "relevance": scores[i] if i < len(scores) else 0, "topics": doc.metadata.get('laser_topics', [])}
-                for i, doc in enumerate(retrieved_docs)
-            ],
-            "retrieval_relevance": avg_relevance
-        }
-        return answer, retrieved_docs, avg_relevance, metadata
-    else:
-        prompt = create_laser_rag_prompt(retrieved_docs, query)
-        answer = generate_local_response(
-            tokenizer=tokenizer, model_or_tag=model, device_or_host=device_or_host,
-            prompt=prompt, backend=backend, backend_type=backend_type
-        )
-        return answer, retrieved_docs, avg_relevance, {"fusion_enabled": False}
+        meta["avg_vector_score"] = avg_relevance
+    return answer, retrieved_docs, avg_relevance, meta, chain
 
 # =============================================
-# VISUALIZATION UI COMPONENTS
+# ORIGINAL VISUALIZATION HELPERS (PyVis)
 # =============================================
-def render_viz_control_panel(fused_parameters: Dict[str, FusedLaserParameter], retrieved_docs: List[Document]):
-    """Render interactive visualization controls for laser parameters"""
-    st.markdown("### 📊 Laser Parameter Visualizations")
-    
-    # Ensure viz_mode and other viz attributes exist before use (defensive initialization)
-    if "viz_mode" not in st.session_state:
-        st.session_state.viz_mode = "All Modes"
-    if "viz_laser_type_focus" not in st.session_state:
-        st.session_state.viz_laser_type_focus = "All Laser Types"
-    if "viz_param_focus" not in st.session_state:
-        st.session_state.viz_param_focus = "All Parameters"
-    if "viz_chart_type" not in st.session_state:
-        st.session_state.viz_chart_type = "scatter"
-    
-    # Visualization type selector
-    viz_type = st.selectbox(
-        "Select Visualization Type",
-        ["Parameter Scatter Plot", "Parameter Distribution", "Laser Type Comparison",
-         "Processing Mode Radar", "Parameter Space Heatmap"],
-        key="viz_type_select"
-    )
-    
-    # Filters with safe session state access
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        laser_options = ["All Laser Types"] + list(LASER_SOURCE_TYPES.keys())
-        current_laser = safe_get_session_state("viz_laser_type_focus", "All Laser Types")
-        st.session_state.viz_laser_type_focus = st.selectbox(
-            "Laser Source Type Filter", 
-            options=laser_options, 
-            key="viz_laser",
-            index=0 if current_laser == "All Laser Types" else (laser_options.index(current_laser) if current_laser in laser_options else 0)
-        )
-    with col2:
-        param_options = ["All Parameters"] + [p.replace('_', ' ').title() for p in LASER_PARAMETERS.keys()]
-        current_param = safe_get_session_state("viz_param_focus", "All Parameters")
-        st.session_state.viz_param_focus = st.selectbox(
-            "Parameter Focus", 
-            options=param_options, 
-            key="viz_param",
-            index=0 if current_param == "All Parameters" else (param_options.index(current_param) if current_param in param_options else 0)
-        )
-    with col3:
-        mode_options = ["All Modes"] + list(LASER_PROCESSING_MODES.keys())
-        current_mode = safe_get_session_state("viz_mode", "All Modes")
-        st.session_state.viz_mode = st.selectbox(
-            "Processing Mode Filter", 
-            options=mode_options, 
-            key="viz_mode",
-            index=0 if current_mode == "All Modes" else (mode_options.index(current_mode) if current_mode in mode_options else 0)
-        )
-    
-    # Generate visualization based on selection
-    viz_engine = LaserVisualizationEngine()
-    if viz_type == "Parameter Scatter Plot":
-        parameter_data = []
-        for param_name, param in fused_parameters.items():
-            if param.fused_value is not None and isinstance(param.fused_value, (int, float)):
-                if st.session_state.viz_param_focus == "All Parameters" or st.session_state.viz_param_focus == param_name.replace('_', ' ').title():
-                    parameter_data.append({
-                        "parameter": param_name,
-                        "value": param.fused_value,
-                        "unit": param.unit,
-                        "laser_type": param.laser_source_type,
-                        "processing_mode": param.processing_mode,
-                        "sources": param.source_count,
-                        "confidence": param.fusion_confidence.value,
-                        "normalized_value": param.fused_value
-                    })
-        if parameter_data:
-            x_param = st.selectbox("X-axis Parameter", options=["pulse_duration", "wavelength", "power", "fluence"], key="viz_x")
-            y_param = st.selectbox("Y-axis Parameter", options=["fluence", "power_density", "spot_size", "pulse_energy"], key="viz_y")
-            title = f"Laser Parameter Relationship"
-            if st.session_state.viz_laser_type_focus != "All Laser Types":
-                title += f" - {st.session_state.viz_laser_type_focus}"
-            fig = viz_engine.create_power_parameter_chart(parameter_data, x_param=x_param, y_param=y_param, title=title)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No parameter data available for scatter plot. Upload documents with quantitative laser parameters.")
-    elif viz_type == "Parameter Distribution":
-        param_name = st.session_state.viz_param_focus if st.session_state.viz_param_focus != "All Parameters" else list(fused_parameters.keys())[0] if fused_parameters else None
-        if param_name:
-            param_data = []
-            for p_name, param in fused_parameters.items():
-                if p_name == param_name and param.fused_value is not None and isinstance(param.fused_value, (int, float)):
-                    param_data.append({
-                        "value": param.fused_value,
-                        "laser_type": param.laser_source_type,
-                        "unit": param.unit
-                    })
-            if param_data:
-                title = f"{param_name.replace('_', ' ').title()} Distribution"
-                fig = viz_engine.create_parameter_distribution_chart(param_data, param_name, title=title)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info(f"No numeric values found for parameter: {param_name}")
-        else:
-            st.info("Select a parameter to visualize its distribution")
-    elif viz_type == "Laser Type Comparison":
-        param_name = st.session_state.viz_param_focus if st.session_state.viz_param_focus != "All Parameters" else list(fused_parameters.keys())[0] if fused_parameters else None
-        if param_name:
-            param_data = []
-            for p_name, param in fused_parameters.items():
-                if p_name == param_name and param.fused_value is not None and isinstance(param.fused_value, (int, float)):
-                    param_data.append({
-                        "parameter": p_name,
-                        "value": param.fused_value,
-                        "laser_type": param.laser_source_type,
-                        "unit": param.unit
-                    })
-            if param_data:
-                title = f"{param_name.replace('_', ' ').title()} by Laser Source Type"
-                fig = viz_engine.create_laser_type_comparison_chart(param_data, param_name, title=title)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("Need multiple laser types with the same parameter for comparison")
-            else:
-                st.info(f"No numeric values found for parameter: {param_name}")
-        else:
-            st.info("Select a parameter to compare across laser types")
-    elif viz_type == "Processing Mode Radar":
-        mode_data = []
-        for param_name, param in fused_parameters.items():
-            if param.fused_value is not None and isinstance(param.fused_value, (int, float)):
-                mode_data.append({
-                    "parameter": param_name,
-                    "normalized_value": param.fused_value,
-                    "processing_mode": param.processing_mode,
-                    "laser_type": param.laser_source_type
-                })
-        if mode_data:
-            title = "Processing Mode Parameter Profile"
-            if st.session_state.viz_laser_type_focus != "All Laser Types":
-                title += f" - {st.session_state.viz_laser_type_focus}"
-            fig = viz_engine.create_processing_mode_radar_chart(mode_data, title=title)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Insufficient processing mode data for radar chart")
-    elif viz_type == "Parameter Space Heatmap":
-        param_data = []
-        for param_name, param in fused_parameters.items():
-            if param.fused_value is not None and isinstance(param.fused_value, (int, float)):
-                param_data.append({
-                    param_name: param.fused_value,
-                    "laser_type": param.laser_source_type,
-                    "processing_mode": param.processing_mode
-                })
-        if len(param_data) >= 3:
-            x_param = st.selectbox("X-axis", options=list(LASER_PARAMETERS.keys()), index=2, key="heatmap_x")
-            y_param = st.selectbox("Y-axis", options=list(LASER_PARAMETERS.keys()), index=5, key="heatmap_y")
-            z_param = st.selectbox("Color/Size", options=list(LASER_PARAMETERS.keys()), index=4, key="heatmap_z")
-            title = f"Parameter Space: {z_param} over {x_param}×{y_param}"
-            fig = viz_engine.create_parameter_space_heatmap(param_data, x_param, y_param, z_param, title=title)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Need at least 3 parameters with numeric values for heatmap visualization")
+def build_network_html(graph: EnhancedCrossDocumentKnowledgeGraph) -> str:
+    if not PYVIS_AVAILABLE: return "<p>Install pyvis to see network graph: pip install pyvis</p>"
+    net = Network(height="500px", width="100%", directed=False)
+    for doc_id in graph.documents: net.add_node(doc_id, label=Path(doc_id).stem, shape="box", color="#97C2FC")
+    entity_counts = Counter([e.normalized for ents in graph.entities.values() for e in ents]); added_entities = set()
+    for ent, cnt in entity_counts.most_common(15): net.add_node(ent, label=f"{ent} ({cnt})", shape="ellipse", color="#FFA500"); added_entities.add(ent)
+    for ent_norm, doc_names in graph.entity_index.items():
+        if ent_norm in added_entities and entity_counts[ent_norm] >= 2:
+            for doc in doc_names:
+                if doc in graph.documents: net.add_edge(ent_norm, doc)
+    return net.generate_html()
 
-def render_fusion_metrics_panel(fusion_metadata: Dict[str, Any]):
-    """Display fusion efficiency metrics for laser parameters"""
-    if not fusion_metadata.get("fusion_enabled"):
-        return
-    metrics_display = fusion_metadata.get("fusion_metrics", {}).get("display", {})
-    if not metrics_display:
-        return
-    with st.expander("📊 Laser Parameter Fusion Efficiency", expanded=True):
-        overall = fusion_metadata["fusion_metrics"]["efficiency"]
-        if overall is not None:
-            st.progress(min(1.0, max(0.0, overall)))
-            st.caption(f"Overall Fusion Efficiency: {overall:.2f}/1.0")
-        else:
-            st.caption("Overall Fusion Efficiency: N/A")
-        cols = st.columns(2)
-        metric_items = list(metrics_display.items())
-        for i, (label, value) in enumerate(metric_items):
-            with cols[i % 2]:
-                display_value = value.split(":")[-1].strip() if ":" in value and value else "N/A"
-                st.metric(label=label, value=display_value)
-        sources = fusion_metadata.get("source_citations", [])
-        if sources:
-            st.markdown("**📚 Sources Contributing to Fusion**:")
-            for src in sources[:4]:
-                relevance = src.get("relevance", 0)
-                relevance_bar = "🟢" if relevance > 0.6 else "🟡" if relevance > 0.3 else "🔴"
-                topics = src.get("topics", [])
-                topics_str = ", ".join(topics[:2]) if topics else "none"
-                st.caption(f"{relevance_bar} {src['citation']} (laser topics: {topics_str})")
-        fused_params = fusion_metadata.get("fused_parameters", {})
-        if fused_params:
-            conflicts = [k for k, v in fused_params.items() if v.get("confidence") == "low"]
-            if conflicts:
-                st.warning(f"⚠️ {len(conflicts)} parameter(s) have low-confidence fusion: {', '.join(conflicts[:3])}")
+def plot_consensus_chart(consensus_data: List[Dict]) -> go.Figure:
+    if not consensus_data: return None
+    entities = [d['entity'] for d in consensus_data]; means = [d['mean'] for d in consensus_data]; stds = [d['std'] for d in consensus_data]; units = [d['unit'] for d in consensus_data]
+    fig = go.Figure(); fig.add_trace(go.Bar(x=entities, y=means, error_y=dict(type='data', array=stds, visible=True), name='Consensus value', text=[f"{m:.2f} ± {s:.2f} ({u})" for m, s, u in zip(means, stds, units)], hoverinfo='text'))
+    fig.update_layout(title="Cross-document consensus (mean ± std)", yaxis_title="Value", xaxis_title="Entity"); return fig
 
-def render_extracted_parameters_debug(extracted_params: List[LaserParameter], source_citation: str):
-    """Debug view for extracted laser parameters"""
-    if not extracted_params:
-        st.info("🔍 No laser parameters extracted from this chunk")
-        return
-    with st.expander(f"🐛 Extracted Laser Parameters: {source_citation}", expanded=False):
-        for i, param in enumerate(extracted_params, 1):
-            st.markdown(f"**{i}. {param.normalized_name}**")
-            st.caption(f"Value: `{param.value}` {param.unit or ''} | Type: {param.parameter_type}")
-            if param.laser_source_type:
-                st.caption(f"Laser Type: {param.laser_source_type}")
-            if param.processing_mode:
-                st.caption(f"Processing Mode: {param.processing_mode}")
-            if param.condition:
-                st.caption(f"Condition: {param.condition}")
-            if param.context_snippet:
-                st.code(param.context_snippet[:200] + "..." if len(param.context_snippet) > 200 else param.context_snippet, language="text")
-            st.divider()
+def render_contradiction_table(contradictions: List[Dict]) -> pd.DataFrame:
+    if not contradictions: return pd.DataFrame()
+    rows = []
+    for c in contradictions: rows.append({"Entity": c['entity'], "Doc A": Path(c['doc_a']).stem, "Mean A": f"{c['mean_a']:.3f}", "Doc B": Path(c['doc_b']).stem, "Mean B": f"{c['mean_b']:.3f}", "Ratio": f"{c['ratio']:.1f}x", "Severity": c['severity']})
+    return pd.DataFrame(rows)
 
-def render_comparison_table_in_chat(comparison_table: Optional[str], fused_parameters: Dict):
-    """Display comparison table in chat interface"""
-    if not comparison_table:
-        return
-    with st.expander("📋 Laser Parameter Comparison Table", expanded=False):
-        st.markdown(comparison_table, unsafe_allow_html=True)
-        if fused_parameters:
-            selected_param = st.selectbox(
-                "🔍 Explore parameter details:",
-                options=["Select a parameter..."] + list(fused_parameters.keys()),
-                key="fusion_param_select"
-            )
-            if selected_param and selected_param != "Select a parameter...":
-                param_data = fused_parameters[selected_param]
-                st.json({
-                    "parameter": selected_param,
-                    "fused_value": param_data["value"],
-                    "unit": param_data["unit"],
-                    "range": param_data["range"],
-                    "sources": param_data["sources"],
-                    "confidence": param_data["confidence"],
-                    "laser_type": param_data.get("laser_type"),
-                    "processing_mode": param_data.get("processing_mode")
-                })
-
-def render_physics_validation_panel(fused_parameters: Dict[str, FusedLaserParameter]):
-    """Display physics validation results for laser parameters"""
-    if not fused_parameters:
-        return
-    validator = LaserPhysicsValidator()
-    validation_results = validator.full_validation(fused_parameters)
-    with st.expander("🧮 Laser Physics Validation", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Validation Score", f"{validation_results['validation_score']:.0%}")
-        col2.metric("Checks Passed", validation_results["passed"])
-        col3.metric("Checks Failed", validation_results["failed"])
-        if validation_results["violations"]:
-            st.warning("⚠️ Physical bound violations detected:")
-            for v in validation_results["violations"]:
-                st.error(f"**{v.get('parameter')}**: {v.get('value')} {v.get('unit')} outside bounds")
-                st.caption(f"Severity: {v.get('severity')}")
-        if validation_results["warnings"]:
-            st.info("ℹ️ Validation warnings:")
-            for w in validation_results["warnings"]:
-                st.caption(w.get("message", "Unknown warning"))
+def extract_equations_from_text(text: str) -> List[str]:
+    eq_pattern = re.compile(r'(\$[^$]+\$|\\\[.*?\\\]|([A-Za-z_\{\}]+)\s*=\s*[^
+]+)'); matches = eq_pattern.findall(text); return [m[0].strip() for m in matches if len(m[0]) > 10]
 
 # =============================================
-# MAIN UI COMPONENTS
+# STREAMLIT UI (Fully Extended)
 # =============================================
 def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
-        backend_option = st.radio(
-            "🔧 Inference Backend",
-            options=["Hugging Face Transformers", "Ollama (if installed)"],
-            index=0,
-            help="Transformers: direct HF model loading\nOllama: use local ollama serve (faster switching)"
-        )
+        backend_option = st.radio("🔧 Inference Backend", options=["Hugging Face Transformers", "Ollama (if installed)"], index=0)
         st.session_state.inference_backend = backend_option
         if backend_option == "Ollama (if installed)":
-            if not OLLAMA_AVAILABLE:
-                st.error("❌ ollama library not installed")
-                st.code("pip install ollama")
-                st.info("Also ensure Ollama server is running: ollama serve")
+            if not OLLAMA_AVAILABLE: st.error("❌ ollama library not installed"); st.code("pip install ollama")
             available_ollama_models = [k for k in LOCAL_LLM_OPTIONS.keys() if is_ollama_model(k)]
-            model_choice = st.selectbox(
-                "🧠 Local LLM Backend (Ollama)",
-                options=available_ollama_models if available_ollama_models else ["No Ollama models available"],
-                index=0 if available_ollama_models else 0,
-                help="Models served via local Ollama instance"
-            )
+            model_choice = st.selectbox("🧠 Local LLM Backend (Ollama)", options=available_ollama_models if available_ollama_models else ["No Ollama models available"], index=0)
         else:
-            hf_models = [k for k in LOCAL_LLM_OPTIONS.keys() if not is_ollama_model(k)]
-            model_choice = st.selectbox(
-                "🧠 Local LLM Backend (Hugging Face)",
-                options=hf_models, index=2,
-                help="Models loaded directly via transformers library"
-            )
+            hf_models = [k for k in LOCAL_LLM_OPTIONS.keys() if not is_ollama_model(k)]; model_choice = st.selectbox("🧠 Local LLM Backend (Hugging Face)", options=hf_models, index=2)
         st.session_state.llm_model_choice = model_choice
-        if backend_option == "Hugging Face Transformers" and not is_ollama_model(model_choice):
-            st.session_state.use_4bit_quantization = st.checkbox(
-                "🗜️ Use 4-bit quantization (reduces VRAM usage)", value=True,
-                help="Enable for models >3B parameters to reduce memory usage by ~75%"
-            )
-        if backend_option == "Ollama (if installed)" or is_ollama_model(model_choice):
-            st.session_state.ollama_host = st.text_input(
-                "🌐 Ollama Host", value=st.session_state.ollama_host,
-                help="URL of your Ollama server (default: http://localhost:11434)"
-            )
-        st.markdown("#### 🔬 Laser Domain Settings")
-        st.session_state.laser_domain_boost = st.checkbox(
-            "Boost laser-topic relevance", value=True,
-            help="Prioritize chunks containing laser-specific keywords (power, fluence, pulse, wavelength)"
-        )
-        st.session_state.show_sources = st.checkbox(
-            "Show source citations", value=True,
-            help="Display which documents chunks came from"
-        )
-        st.session_state.enable_laser_fusion = st.checkbox(
-            "🔗 Enable Laser Parameter Fusion", value=True,
-            help="Enable cross-document laser parameter extraction and consensus (power, pulse, fluence, etc.)"
-        )
-        st.session_state.debug_extraction = st.checkbox(
-            "🐛 Debug Parameter Extraction", value=False,
-            help="Show extracted laser parameters in UI for diagnosis"
-        )
-        st.session_state.evaluation_mode = st.checkbox(
-            "📊 Enable Evaluation Mode", value=False,
-            help="Show retrieval metrics and physics validation"
-        )
-        st.markdown("#### 📊 Visualization Settings")
-        st.session_state.viz_chart_type = st.selectbox(
-            "Default Chart Type",
-            options=["scatter", "bar", "radar", "heatmap"],
-            index=0,
-            help="Default visualization type for laser parameters"
-        )
+        if backend_option == "Hugging Face Transformers" and not is_ollama_model(model_choice): st.session_state.use_4bit_quantization = st.checkbox("🗜️ Use 4-bit quantization", value=True)
+        if backend_option == "Ollama (if installed)" or is_ollama_model(model_choice): st.session_state.ollama_host = st.text_input("🌐 Ollama Host", value=st.session_state.ollama_host)
+        st.markdown("#### 🔬 Reasoning Settings")
+        st.session_state.reasoning_mode = st.checkbox("🧠 Cross-document reasoning", value=True, help="Enable entity extraction, consensus detection, and multi-hop retrieval across papers")
+        st.session_state.cross_doc_consensus = st.checkbox("📊 Detect consensus & contradictions", value=True, help="Statistically compare reported values across documents")
+        st.session_state.show_reasoning_chain = st.checkbox("🔍 Show reasoning chain", value=True, help="Display the logical steps and evidence linking")
+        st.markdown("#### 🔬 Laser & Heat Source Focus")
+        st.session_state.laser_domain_boost = st.checkbox("Boost laser/thermal relevance", value=True)
+        st.session_state.show_sources = st.checkbox("Show source citations", value=True)
         st.markdown("#### 📝 Citation Format")
-        st.session_state.citation_style = st.selectbox(
-            "Citation display style",
-            options=["apa", "doi", "full", "short"], index=0,
-            format_func=lambda x: {
-                "apa": "APA: FirstAuthor et al., Journal, Year",
-                "doi": "DOI: 10.xxxx/xxxxx",
-                "full": "Full: Author (Year). Title. Journal, Vol(Issue), Pages",
-                "short": "Short: [FirstAuthor Year] or [DOI]"
-            }[x],
-            help="How citations appear in responses and source lists"
-        )
-        st.session_state.max_retrieved_chunks = st.slider(
-            "Chunks to retrieve", min_value=2, max_value=8, value=4,
-            help="More chunks = more context but slower responses"
-        )
-        st.markdown("---")
-        st.markdown("""<div style="background:#f0f9ff;padding:1rem;border-radius:0.5rem;border-left:4px solid #3b82f6">
-<strong>💡 Tips for Best Results:</strong><ul style="margin:0.5rem 0 0 1rem;padding:0">
-<li>Upload papers about laser sources, power measurement, processing parameters</li>
-<li>Ask specific questions: "What pulse energy for femtosecond ablation?"</li>
-<li>Small models (≤1.5B) work on CPU; larger need GPU</li>
-<li>First load may take 1-2 min (model download)</li>
-<li>For Ollama: run <code>ollama pull qwen2.5:7b</code> first</li>
-<li>🔗 Fusion works best with comparative queries across multiple laser studies</li>
-<li>🐛 Enable debug mode to see extracted laser parameters</li>
-<li>📊 Use visualization panel for interactive parameter charts</li>
-<li>🎯 SCOPE: This system focuses ONLY on laser heat source parameters</li>
-</ul></div>""", unsafe_allow_html=True)
+        st.session_state.citation_style = st.selectbox("Citation display style", options=["apa", "doi", "full", "short"], index=0, format_func=lambda x: {"apa": "APA: FirstAuthor et al., Journal, Year", "doi": "DOI: 10.xxxx/xxxxx", "full": "Full: Author (Year). Title. Journal, Vol(Issue), Pages", "short": "Short: [FirstAuthor Year] or [DOI]"}[x])
+        st.session_state.max_retrieved_chunks = st.slider("Chunks to retrieve", min_value=2, max_value=10, value=6)
+        st.markdown("---"); st.markdown("### 🕸️ Visualisations")
+        st.session_state.show_network = st.sidebar.checkbox("Show Knowledge Graph", value=False)
+        if st.session_state.knowledge_graph and st.session_state.knowledge_graph.entities:
+            entity_options = list(st.session_state.knowledge_graph.entities.keys())
+            if entity_options: st.session_state.selected_entity = st.sidebar.selectbox("Explore entity consensus", options=entity_options, format_func=lambda x: x, key="selected_entity_select")
+            else: st.session_state.selected_entity = None
         st.markdown("---")
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
-        st.caption(f"🖥️ Device: {gpu_info}")
-        st.caption(f"💾 Available VRAM: {vram_info}")
-        st.caption(f"📦 Embedding model: ~80MB")
-        st.caption(f"🤖 LLM: {LOCAL_LLM_OPTIONS.get(model_choice, 'unknown')}")
-        st.markdown("#### 📚 Metadata Extraction")
-        if PDF2DOI_AVAILABLE:
-            st.success("✅ pdf2doi: Available for DOI lookup")
-        else:
-            st.info("ℹ️ pdf2doi: Install with `pip install pdf2doi` for enhanced DOI extraction")
-        if CROSSREF_AVAILABLE:
-            st.success("✅ Crossref API: Available for metadata enrichment")
-        else:
-            st.info("ℹ️ Crossref: Install with `pip install crossrefapi` for journal/author lookup")
-        if backend_option == "Ollama (if installed)" and OLLAMA_AVAILABLE:
-            try:
-                client = ollama.Client(host=st.session_state.ollama_host)
-                models = client.list()
-                st.success(f"✅ Ollama connected: {len(models.get('models', []))} models available")
-            except:
-                st.error("❌ Cannot connect to Ollama")
+        st.caption(f"🖥️ Device: {gpu_info}"); st.caption(f"💾 Available VRAM: {vram_info}")
+        if PDF2DOI_AVAILABLE: st.success("✅ pdf2doi: Available")
+        else: st.info("ℹ️ pdf2doi: Optional for DOI lookup")
+        if CROSSREF_AVAILABLE: st.success("✅ Crossref API: Available")
+        else: st.info("ℹ️ Crossref: Optional for metadata enrichment")
 
 def render_document_uploader():
-    st.markdown("### 📁 Upload Laser Heat Source Documents")
-    uploaded_files = st.file_uploader(
-        "Select PDF or TXT files about laser sources, power instruments, processing parameters, etc.",
-        type=["pdf", "txt"], accept_multiple_files=True,
-        help="Documents will be processed locally - no data leaves your browser. Bibliographic metadata (DOI, authors, journal, year) will be extracted for human-readable citations. FOCUS: laser power, pulse characteristics, wavelength, fluence, spot size, scan parameters."
-    )
+    st.markdown("### 📁 Upload Laser & Thermal Research Documents")
+    uploaded_files = st.file_uploader("Select PDF or TXT files about laser processing, heat source modeling, energy deposition, and multicomponent alloys.", type=["pdf", "txt"], accept_multiple_files=True, help="Documents will be processed with semantic section detection and cross-document entity linking.")
     return uploaded_files
 
 def process_documents(uploaded_files):
-    if not uploaded_files:
-        return False
+    if not uploaded_files: return False
     new_files = [f for f in uploaded_files if f.name not in st.session_state.processed_files]
-    if not new_files:
-        st.info("✓ All uploaded files already processed")
-        return st.session_state.processing_complete
-    st.session_state.messages = []
-    st.session_state.vectorstore = None
-    st.session_state.all_chunks = []
-    with st.spinner(f"Processing {len(new_files)} document(s) and extracting laser parameter metadata..."):
+    if not new_files: st.info("✓ All uploaded files already processed"); return st.session_state.processing_complete
+    st.session_state.messages = []; st.session_state.vectorstore = None; st.session_state.all_chunks = []; st.session_state.knowledge_graph = None; st.session_state.visualization_engine = None
+    with st.spinner(f"Processing {len(new_files)} document(s) with semantic reasoning..."):
         try:
-            chunks = load_and_chunk_laser_documents(new_files)
-            if not chunks:
-                st.error("No chunks extracted. Check file format.")
-                return False
-            for f in new_files:
-                st.session_state.processed_files.add(f.name)
-            st.session_state.all_chunks.extend(chunks)
-            with st.spinner("Creating vector index (this may take a minute)..."):
+            chunks, graph = load_and_chunk_laser_documents(new_files)
+            if not chunks: st.error("No chunks extracted. Check file format."); return False
+            for f in new_files: st.session_state.processed_files.add(f.name)
+            st.session_state.all_chunks.extend(chunks); st.session_state.knowledge_graph = graph
+            with st.spinner("Creating vector index and knowledge graph..."):
                 vectorstore = create_local_vector_store(st.session_state.all_chunks, LOCAL_EMBEDDING_MODEL)
-                if vectorstore is None:
-                    return False
+                if vectorstore is None: return False
                 st.session_state.vectorstore = vectorstore
-            st.success(f"✅ Ready! Indexed {len(st.session_state.all_chunks)} laser-focused chunks from {len(st.session_state.processed_files)} files")
-            st.session_state.processing_complete = True
-            return True
-        except Exception as e:
-            st.error(f"Processing failed: {e}")
-            import traceback
-            st.error(traceback.format_exc())
-            return False
+            if graph:
+                summary = graph.get_knowledge_summary()
+                st.success(f"✅ Ready! Indexed {len(st.session_state.all_chunks)} chunks, {summary['unique_entities']} unique entities, {summary['total_claims']} claims from {summary['document_count']} papers")
+                if summary['consensus_topics']: st.caption(f"🔗 Cross-document consensus available for: {', '.join(summary['consensus_topics'][:5])}")
+            else: st.success(f"✅ Ready! Indexed {len(st.session_state.all_chunks)} chunks")
+            st.session_state.processing_complete = True; return True
+        except Exception as e: st.error(f"Processing failed: {e}"); import traceback; st.error(traceback.format_exc()); return False
 
 def render_chat_interface():
-    if not st.session_state.get('vectorstore'):
-        st.info("👆 Upload laser heat source documents above to start chatting")
-        return
+    if not st.session_state.get('vectorstore'): st.info("👆 Upload documents above to start chatting with cross-document reasoning"); return
     if st.session_state.llm_tokenizer is None and st.session_state.llm_model_choice:
         backend_type = "ollama" if is_ollama_model(st.session_state.llm_model_choice) else "transformers"
         with st.spinner(f"Loading {st.session_state.llm_model_choice}..."):
             result = load_local_llm(st.session_state.llm_model_choice, use_4bit=st.session_state.get('use_4bit_quantization', True))
             tokenizer, model, device_or_host, loaded_backend = result
             if tokenizer is not None or model is not None:
-                st.session_state.llm_tokenizer = tokenizer
-                st.session_state.llm_model = model
-                st.session_state.llm_device_or_host = device_or_host
-                st.session_state.llm_backend_type = loaded_backend
-                st.success("✓ Model loaded!")
-            else:
-                st.error("Failed to load model. Try selecting a different option.")
-                return
-    has_model = (
-        st.session_state.llm_backend_type == "ollama" and st.session_state.llm_model is not None
-    ) or (
-        st.session_state.llm_backend_type == "transformers" and st.session_state.llm_tokenizer is not None
-    )
-    if not has_model:
-        st.warning("Please select and load a model in the sidebar first")
-        return
-    # Display chat history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message.get("sources") and st.session_state.show_sources:
-                with st.expander("📚 Retrieved Sources with Citations"):
-                    for i, src in enumerate(message["sources"], 1):
-                        citation = src.metadata.get("citation_display", "Unknown source")
-                        source_name = src.metadata.get("source", "unknown")
-                        topics = src.metadata.get("laser_topics", [])
-                        st.markdown(f"**[{i}]** {citation}")
-                        bib = src.metadata.get("bibliographic", {})
-                        if bib and any(bib.get(k) for k in ['doi', 'authors', 'journal', 'year']):
-                            with st.expander("🔍 Bibliographic Details"):
-                                if bib.get('doi'):
-                                    st.markdown(f"**DOI:** `{bib['doi']}`")
-                                if bib.get('arxiv_id'):
-                                    st.markdown(f"**arXiv:** `{bib['arxiv_id']}`")
-                                if bib.get('authors'):
-                                    st.markdown(f"**Authors:** {', '.join(bib['authors'][:3])}{'...' if len(bib['authors'])>3 else ''}")
-                                if bib.get('journal'):
-                                    st.markdown(f"**Journal:** {bib['journal']}")
-                                if bib.get('year'):
-                                    st.markdown(f"**Year:** {bib['year']}")
-                                st.caption(f"Extraction method: {bib.get('extraction_method', 'unknown')} (confidence: {bib.get('confidence', 0):.2f})")
-                        st.markdown(f"> {src.page_content[:300]}...")
-                        if st.session_state.debug_extraction:
-                            extractor = LaserParameterExtractor(LASER_KEYWORDS)
-                            record = extractor.extract_parameters_from_chunk(src.page_content, src.metadata)
-                            render_extracted_parameters_debug(record.extracted_parameters, citation)
-            if message.get("fusion_metadata") and st.session_state.enable_laser_fusion:
-                render_fusion_metrics_panel(message["fusion_metadata"])
-                if message["fusion_metadata"].get("comparison_table"):
-                    render_comparison_table_in_chat(
-                        message["fusion_metadata"]["comparison_table"],
-                        message["fusion_metadata"].get("fused_parameters", {})
-                    )
-            fused_params = message["fusion_metadata"].get("fused_parameters", {}) if message.get("fusion_metadata") else {}
-            if fused_params:
-                render_physics_validation_panel(fused_params)
-    # Chat input
-    if prompt := st.chat_input("Ask about laser power, pulse parameters, wavelength, fluence, or compare laser sources..."):
+                st.session_state.llm_tokenizer = tokenizer; st.session_state.llm_model = model; st.session_state.llm_device_or_host = device_or_host; st.session_state.llm_backend_type = loaded_backend; st.success("✓ Model loaded!")
+            else: st.error("Failed to load model. Try selecting a different option."); return
+    has_model = (st.session_state.llm_backend_type == "ollama" and st.session_state.llm_model is not None) or (st.session_state.llm_backend_type == "transformers" and st.session_state.llm_tokenizer is not None)
+    if not has_model: st.warning("Please select and load a model in the sidebar first"); return
+    for i, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]): st.markdown(message["content"])
+        if message.get("sources") and st.session_state.show_sources:
+            with st.expander("📚 Retrieved Sources with Citations"):
+                for j, src in enumerate(message["sources"], 1):
+                    citation = src.metadata.get("citation_display", "Unknown source"); section = src.metadata.get("section", "UNKNOWN"); st.markdown(f"**[{j}]** {citation} | *{section}*")
+                    bib = src.metadata.get("bibliographic", {})
+                    if bib and any(bib.get(k) for k in ['doi', 'authors', 'journal', 'year']):
+                        with st.expander("🔍 Bibliographic Details"):
+                            if bib.get('doi'): st.markdown(f"**DOI:** `{bib['doi']}`")
+                            if bib.get('authors'): st.markdown(f"**Authors:** {', '.join(bib['authors'][:3])}{'...' if len(bib['authors'])>3 else ''}")
+                            if bib.get('journal'): st.markdown(f"**Journal:** {bib['journal']}")
+                            if bib.get('year'): st.markdown(f"**Year:** {bib['year']}")
+                            st.markdown(f"> {src.page_content[:300]}...")
+        if message.get("reasoning_meta") and st.session_state.show_reasoning_chain and message["role"] == "assistant":
+            meta = message["reasoning_meta"]
+            with st.expander("🧠 Reasoning Chain"):
+                st.markdown(f"**Query entities detected:** {', '.join(meta.get('query_entities', [])) or 'None'}")
+                st.markdown(f"**Cross-document consensus found:** {meta.get('consensus_found', 0)}")
+                st.markdown(f"**Contradictions detected:** {meta.get('contradictions_found', 0)}")
+                st.markdown(f"**Multi-hop expansion:** {'Yes' if meta.get('multi_hop_expansion') else 'No'}")
+                if meta.get('relevance'): st.markdown(f"**Response relevance:** {meta['relevance']:.2f}/1.0")
+        if message.get("reasoning_chain") and st.session_state.show_reasoning_chain and message["role"] == "assistant":
+            with st.expander("🧠 Full Thinking Trace", expanded=False): st.markdown(message["reasoning_chain"].to_markdown())
+            if st.button("Render Thinking Graph", key=f"think_graph_{i}"):
+                viz = st.session_state.visualization_engine
+                if viz: fig = viz.plot_reasoning_chain(message["reasoning_chain"]); st.pyplot(fig)
+    if prompt := st.chat_input("Ask a cross-document scientific question..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        with st.chat_message("user"): st.markdown(prompt)
         with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            with st.spinner("🔍 Retrieving, fusing laser parameter data, and generating..."):
+            with st.spinner("Thinking across documents..."):
+                answer, retrieved_docs, avg_relevance, reasoning_meta, chain = retrieve_and_answer(st.session_state.vectorstore, st.session_state.knowledge_graph, st.session_state.llm_tokenizer, st.session_state.llm_model, st.session_state.llm_device_or_host, st.session_state.llm_model_choice, st.session_state.llm_backend_type, prompt, k=st.session_state.max_retrieved_chunks)
+                reasoning_meta['relevance'] = avg_relevance
+                st.markdown(answer); st.session_state.messages.append({"role": "assistant", "content": answer, "sources": retrieved_docs, "reasoning_meta": reasoning_meta, "reasoning_chain": chain})
+    if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+        last_answer = st.session_state.messages[-1]["content"]
+        if st.button("📈 Generate plot from answer (LLM will write Python code)", key="gen_plot"):
+            with st.spinner("Generating plot code..."):
+                plot_prompt = f"Based on the following scientific answer, write a short Python script using matplotlib to create a relevant plot. Only output the Python code, no explanation.\nAnswer:\n{last_answer}\nPython code:"
+                if st.session_state.llm_backend_type == "transformers" and st.session_state.llm_tokenizer:
+                    inputs = st.session_state.llm_tokenizer.encode(plot_prompt, return_tensors='pt', truncation=True, max_length=1024)
+                    if torch.cuda.is_available(): inputs = inputs.to('cuda')
+                    with torch.no_grad(): outputs = st.session_state.llm_model.generate(inputs, max_new_tokens=300, temperature=0.1)
+                    raw_code = st.session_state.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    if "Python code:" in raw_code: raw_code = raw_code.split("Python code:")[-1].strip()
+                    st.session_state.plot_code = raw_code
+                else: st.session_state.plot_code = "# Ollama backend: replace with actual LLM call"
                 try:
-                    # Safe access for viz filters with defaults
-                    viz_laser = safe_get_session_state("viz_laser_type_focus", "All Laser Types")
-                    viz_mode = safe_get_session_state("viz_mode", "All Modes")
-                    viz_param = safe_get_session_state("viz_param_focus", "All Parameters")
-                    
-                    source_type_filter = viz_laser if viz_laser != "All Laser Types" else None
-                    processing_mode_filter = viz_mode if viz_mode != "All Modes" else None
-                    parameter_filter = [viz_param.lower().replace(' ', '_')] if viz_param != "All Parameters" else None
-                    
-                    # Always capture 4 return values
-                    answer, retrieved_docs, relevance, metadata = retrieve_and_answer_with_laser_fusion(
-                        vectorstore=st.session_state.vectorstore,
-                        tokenizer=st.session_state.llm_tokenizer,
-                        model=st.session_state.llm_model,
-                        device_or_host=st.session_state.llm_device_or_host,
-                        backend=st.session_state.llm_model_choice,
-                        backend_type=st.session_state.llm_backend_type,
-                        query=prompt,
-                        k=st.session_state.max_retrieved_chunks,
-                        enable_fusion=st.session_state.enable_laser_fusion,
-                        source_type_filter=source_type_filter,
-                        processing_mode_filter=processing_mode_filter,
-                        parameter_filter=parameter_filter
-                    )
-                    # Stream the response
-                    display_text = ""
-                    for word in answer.split():
-                        display_text += word + " "
-                        message_placeholder.markdown(display_text + "▌")
-                        time.sleep(0.02)
-                    message_placeholder.markdown(answer)
-                    # Save message with metadata
-                    message_dict = {
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": retrieved_docs if st.session_state.show_sources else None,
-                        "relevance": relevance
-                    }
-                    if st.session_state.enable_laser_fusion and metadata.get("fusion_enabled"):
-                        message_dict["fusion_metadata"] = metadata
-                    st.session_state.messages.append(message_dict)
-                    # Show relevance and fusion metrics
-                    if relevance > 0:
-                        fusion_eff = metadata.get("fusion_metrics", {}).get("efficiency", 0) if metadata.get("fusion_enabled") else None
-                        if fusion_eff is not None:
-                            st.caption(f"📊 Response relevance: {relevance:.2f}/1.0 | Fusion efficiency: {fusion_eff:.2f}/1.0")
-                        else:
-                            st.caption(f"📊 Response relevance: {relevance:.2f}/1.0")
-                    # Show visualization panel if fusion was enabled
-                    if st.session_state.enable_laser_fusion and metadata.get("fusion_enabled") and metadata.get("fused_parameters"):
-                        render_viz_control_panel(metadata["fused_parameters"], retrieved_docs)
-                except Exception as e:
-                    error_msg = f"❌ Error: {str(e)[:300]}"
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    local_vars = {}; exec(st.session_state.plot_code, {"plt": __import__('matplotlib.pyplot')}, local_vars)
+                    fig = local_vars.get('plt').gcf(); st.session_state.last_plot_fig = fig; st.pyplot(fig)
+                except Exception as e: st.error(f"Plot execution error: {e}"); st.code(st.session_state.plot_code)
+
+    if st.session_state.show_network and st.session_state.knowledge_graph:
+        st.markdown("### 🕸️ Cross-Document Knowledge Graph")
+        if PYVIS_AVAILABLE: st.components.v1.html(build_network_html(st.session_state.knowledge_graph), height=550, scrolling=True)
+        else: st.warning("Install pyvis to display network graph: `pip install pyvis`")
+    if st.session_state.knowledge_graph and st.session_state.selected_entity:
+        with st.expander(f"📊 Consensus for '{st.session_state.selected_entity}'", expanded=True):
+            cons = st.session_state.knowledge_graph.find_consensus(st.session_state.selected_entity)
+            if cons:
+                chart = plot_consensus_chart([cons])
+                if chart: st.plotly_chart(chart, use_container_width=True)
+                docs_data = []
+                for ent in st.session_state.knowledge_graph.entities.get(st.session_state.selected_entity, []): docs_data.append({"Document": Path(ent.doc_source).stem, "Value": ent.value, "Unit": ent.unit})
+                if docs_data:
+                    df = pd.DataFrame(docs_data).dropna(subset=["Value"])
+                    if not df.empty: st.dataframe(df, use_container_width=True)
+            else: st.info("No numerical consensus (need multiple documents with quantitative data).")
+            contr = st.session_state.knowledge_graph.find_contradictions(st.session_state.selected_entity, threshold_factor=1.5)
+            if contr:
+                st.markdown("**Contradictions**")
+                contr_df = render_contradiction_table(contr)
+                if not contr_df.empty: st.dataframe(contr_df.style.applymap(lambda x: 'background-color: #ffcccc' if x == 'high' else '', subset=['Severity']))
+    with st.sidebar.expander("🔍 Retrieval Debugger", expanded=False):
+        if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
+            last_meta = st.session_state.messages[-1].get("reasoning_meta", {}); last_sources = st.session_state.messages[-1].get("sources", [])
+            if last_sources:
+                st.markdown("**Retrieved chunks (click to view)**")
+                for j, doc in enumerate(last_sources):
+                    source = doc.metadata.get("source", "unknown"); section = doc.metadata.get("section", ""); chunk_id = doc.metadata.get("chunk_index", -1)
+                    score = last_meta.get('relevance', 0.0) if j == 0 else 0.0
+                    with st.expander(f"Chunk {j+1} ({Path(source).stem}, {section}) – score: {score:.3f}"): st.text(doc.page_content[:500])
+                col_fb1, col_fb2 = st.columns(2)
+                with col_fb1:
+                    if st.button("👍 Relevant", key=f"rel_{source}_{chunk_id}"): st.session_state.feedback_map[f"{source}_{chunk_id}"] = 1
+                with col_fb2:
+                    if st.button("👎 Not relevant", key=f"nrel_{source}_{chunk_id}"): st.session_state.feedback_map[f"{source}_{chunk_id}"] = 0
+                if st.button("Compute Precision/Recall"):
+                    feedbacks = list(st.session_state.feedback_map.values())
+                    if feedbacks:
+                        retrieved = len(feedbacks); relevant = sum(feedbacks)
+                        st.session_state.precision_recall = {"precision": relevant / retrieved if retrieved else 0, "recall": relevant / retrieved if retrieved else 0}
+                if st.session_state.precision_recall:
+                    st.metric("Precision (user-rated)", f"{st.session_state.precision_recall['precision']:.2%}"); st.metric("Recall (session)", f"{st.session_state.precision_recall['recall']:.2%}")
 
 def render_footer():
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**📚 Example Questions:**")
-        st.caption("• What pulse energy is typical for femtosecond laser ablation?")
-        st.caption("• Compare fluence thresholds for CW vs pulsed lasers")
-        st.caption("• How does wavelength affect power density for a given spot size?")
-        st.caption("• What scan speeds are used for laser marking with fiber lasers?")
+        st.caption("• How does laser power density affect melt pool depth in multicomponent alloys?")
+        st.caption("• What heat source models (Goldak vs Gaussian) show the best validation accuracy?")
+        st.caption("• Is there consensus on absorption coefficients for Sn-Ag-Cu under fiber lasers?")
     with col2:
-        st.markdown("**⚡ Performance Tips:**")
-        st.caption("• Keep questions focused on laser parameters (power, pulse, fluence)")
-        st.caption("• Specify laser source type (femtosecond, fiber, CO2) for better retrieval")
-        st.caption("• CPU mode: allow 10-30s per response; GPU: 2-10s")
-        st.caption("• Enable fusion for comparative queries across laser studies")
+        st.markdown("**⚡ Reasoning Tips:**")
+        st.caption("• Ask comparative questions to trigger consensus detection")
+        st.caption("• Query specific thermal parameters (e.g., 'cooling rate', 'fluence') to activate entity linking")
+        st.caption("• Look for the 🧠 Reasoning Chain expander for transparency")
     with col3:
-        st.markdown("**🔐 Privacy & Fusion:**")
-        st.caption("• All processing happens locally in your session")
-        st.caption("• Multi-document fusion extracts & compares laser parameters ONLY")
-        st.caption("• Fusion efficiency metrics quantify synthesis quality")
-        st.caption("• Citations display as 'FirstAuthor et al., Journal, Year' or DOI")
-        st.caption("• Physics validation checks energy consistency, parameter bounds")
+        st.markdown("**🔐 Privacy & Science:**")
+        st.caption("• All processing happens locally")
+        st.caption("• Cross-document reasoning uses extracted entities only")
+        st.caption("• Uncertainty is explicitly reported, never hidden")
 
-# =============================================
-# MAIN APPLICATION
-# =============================================
 def main():
-    st.set_page_config(
-        page_title="🔬 Laser Heat Source RAG + Fusion + Viz",
-        page_icon="🔬",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    # Custom CSS
+    st.set_page_config(page_title="🔬 Deciphering laser-microstructure interaction in Multicomponent alloys", page_icon="🔬", layout="wide", initial_sidebar_state="expanded")
     st.markdown("""<style>
-.main-header {
-    font-size: 2.5rem;
-    background: linear-gradient(90deg, #1e40af, #7c3aed, #059669);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-weight: 800;
-    text-align: center;
-    padding: 1rem 0;
-}
-.info-card {
-    background: #f8fafc;
-    border-left: 4px solid #3b82f6;
-    padding: 1rem;
-    border-radius: 0 0.5rem 0.5rem 0;
-    margin: 0.5rem 0;
-}
-.stChatMessage {
-    border-radius: 0.5rem;
-    margin: 0.25rem 0;
-}
-.model-warning {
-    background: #fef3c7;
-    border-left: 4px solid #f59e0b;
-    padding: 0.75rem;
-    border-radius: 0 0.5rem 0.5rem 0;
-    margin: 0.5rem 0;
-}
-.citation-badge {
-    display: inline-block;
-    background: #e0e7ff;
-    color: #3730a3;
-    padding: 0.2rem 0.5rem;
-    border-radius: 0.25rem;
-    font-size: 0.85rem;
-    margin: 0.1rem 0;
-}
-.fusion-badge {
-    display: inline-block;
-    background: #dcfce7;
-    color: #166534;
-    padding: 0.2rem 0.5rem;
-    border-radius: 0.25rem;
-    font-size: 0.85rem;
-    margin: 0.1rem 0;
-}
+.main-header { font-size: 2.5rem; background: linear-gradient(90deg, #1e40af, #7c3aed, #059669); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 800; text-align: center; padding: 1rem 0; }
+.info-card { background: #f8fafc; border-left: 4px solid #3b82f6; padding: 1rem; border-radius: 0 0.5rem 0.5rem 0; margin: 0.5rem 0; }
+.reasoning-badge { display: inline-block; background: #dbeafe; color: #1e40af; padding: 0.2rem 0.6rem; border-radius: 0.25rem; font-size: 0.85rem; margin: 0.1rem 0.2rem 0.1rem 0; }
+.consensus-badge { display: inline-block; background: #d1fae5; color: #065f46; padding: 0.2rem 0.6rem; border-radius: 0.25rem; font-size: 0.85rem; margin: 0.1rem 0.2rem 0.1rem 0; }
+.contradiction-badge { display: inline-block; background: #fee2e2; color: #991b1b; padding: 0.2rem 0.6rem; border-radius: 0.25rem; font-size: 0.85rem; margin: 0.1rem 0.2rem 0.1rem 0; }
 </style>""", unsafe_allow_html=True)
-    # Header
-    st.markdown('<h1 class="main-header">🔬 Laser Heat Source RAG + Fusion + Visualization</h1>', unsafe_allow_html=True)
-    st.markdown("""<div style="text-align:center;color:#64748b;margin-bottom:1.5rem">
-Upload research papers on laser sources, power instruments, and processing parameters. Get answers with
-<strong>human-readable citations</strong> and <strong>interactive visualizations</strong>.
-<br><span class="fusion-badge">🔗 Multi-document fusion: power, pulse, wavelength, fluence, spot size</span>
-<br><span class="fusion-badge">📊 Customizable charts: Scatter, Distribution, Comparison with laser-type filters</span>
-<br><span class="fusion-badge">🧮 Physics validation: Energy consistency, parameter bounds</span>
-<br><span class="fusion-badge">🎯 SCOPE: LASER HEAT SOURCE PARAMETERS ONLY</span>
-</div>""", unsafe_allow_html=True)
-    
-    # ⚠️ CRITICAL: Initialize session state BEFORE any access
-    initialize_session_state()
-    
-    render_sidebar()
-    
-    # Memory warning if needed
+    st.markdown('<h1 class="main-header">🔬 Deciphering laser-microstructure interaction in Multicomponent alloys</h1>', unsafe_allow_html=True)
+    st.markdown("""<div style="text-align:center;color:#64748b;margin-bottom:1.5rem">Upload research papers on laser physics, heat source modeling, and multicomponent alloys. Get <strong>scientifically rigorous answers</strong> with <span class="consensus-badge">cross-document consensus</span>, <span class="contradiction-badge">contradiction detection</span>, and <span class="reasoning-badge">multi-hop reasoning</span>.</div>""", unsafe_allow_html=True)
+    initialize_session_state(); render_sidebar()
     if st.session_state.llm_model_choice and not is_ollama_model(st.session_state.llm_model_choice):
         mem_info = estimate_model_memory(st.session_state.llm_model_choice, st.session_state.get('use_4bit_quantization', True))
         available_vram = get_available_gpu_memory()
         if available_vram and not mem_info['cpu_ok']:
             required = float(mem_info['vram_4bit'].replace('GB','').replace('~','').strip()) if 'GB' in mem_info['vram_4bit'] else 100
             if available_vram < required:
-                st.markdown(f"""<div class="model-warning">⚠️ <strong>Memory Warning:</strong> {st.session_state.llm_model_choice} requires ~{mem_info['vram_4bit']} VRAM.
-You have ~{available_vram:.1f}GB available. Consider:
-<ul><li>Using 4-bit quantization (already enabled)</li><li>Selecting a smaller model</li><li>Using Ollama backend for better memory management</li></ul></div>""", unsafe_allow_html=True)
-    
-    # Main layout
+                st.markdown(f"""<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:0.75rem;border-radius:0 0.5rem 0.5rem 0;margin:0.5rem 0">⚠️ <strong>Memory Warning:</strong> {st.session_state.llm_model_choice} requires ~{mem_info['vram_4bit']} VRAM. You have ~{available_vram:.1f}GB available.</div>""", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 2])
     with col1:
         uploaded_files = render_document_uploader()
-        if uploaded_files and st.button("🔄 Process Documents", type="primary", use_container_width=True):
-            process_documents(uploaded_files)
+        if uploaded_files and st.button("🔄 Process Documents", type="primary", use_container_width=True): process_documents(uploaded_files)
         if st.session_state.processing_complete:
             st.success("✅ Knowledge base ready")
-            if st.session_state.vectorstore and hasattr(st.session_state.vectorstore, 'metadata'):
-                meta = st.session_state.vectorstore.metadata
-                st.caption(f"📦 {meta.get('total_chunks', '?')} laser-focused chunks")
-                topics = meta.get('laser_topics', [])
-                if topics:
-                    st.caption(f"🔬 Topics: {', '.join(topics[:5])}" + ("..." if len(topics)>5 else ""))
-            if st.session_state.all_chunks:
-                sample_chunk = st.session_state.all_chunks[0]
-                citation = sample_chunk.metadata.get("citation_display")
-                if citation:
-                    st.markdown(f'<span class="citation-badge">📝 Sample citation: {citation}</span>', unsafe_allow_html=True)
-        elif uploaded_files:
-            st.warning("⏳ Click 'Process Documents' to begin")
-        else:
-            st.info("📁 Upload PDF/TXT files to start")
+            if st.session_state.knowledge_graph:
+                summary = st.session_state.knowledge_graph.get_knowledge_summary()
+                st.caption(f"📦 {len(st.session_state.all_chunks)} chunks | {summary['unique_entities']} entities | {summary['total_claims']} claims")
+                if summary['top_entities']:
+                    st.markdown("**Top entities:**")
+                    for ent, count in summary['top_entities'][:5]: st.markdown(f'<span class="reasoning-badge">{ent} ({count})</span>', unsafe_allow_html=True)
+        elif uploaded_files: st.warning("⏳ Click 'Process Documents' to begin")
+        else: st.info("📁 Upload PDF/TXT files to start")
         if st.session_state.processed_files:
-            if st.button("🗑️ Clear All", use_container_width=True):
-                st.session_state.clear()
-                st.rerun()
+            if st.button("🗑️ Clear All", use_container_width=True): st.session_state.clear(); st.rerun()
     with col2:
-        if st.session_state.processing_complete and st.session_state.vectorstore:
-            render_chat_interface()
+        if st.session_state.processing_complete and st.session_state.vectorstore: render_chat_interface()
         else:
-            st.markdown("""<div class="info-card"><h3>👋 Welcome to Laser Heat Source RAG!</h3>
-<p>This assistant helps you query documents about:</p>
-<ul>
-<li>🔥 Laser source types: CW, pulsed, femtosecond, fiber, CO2, diode</li>
-<li>⚡ Power & energy: average power, pulse energy, peak power</li>
-<li>⏱️ Pulse characteristics: duration, repetition rate, duty cycle</li>
-<li>🌈 Wavelength & beam: wavelength, spot size, beam quality (M²)</li>
-<li>💡 Fluence & intensity: energy density, power density, irradiance</li>
-<li>🔄 Processing parameters: scan speed, hatch distance, overlap, dwell time</li>
-<li>🔧 Power instruments: power meters, energy meters, beam profilers</li>
-<li>🔗 <strong>Multi-document fusion</strong> with efficiency metrics</li>
-<li>📈 <strong>Interactive visualizations</strong>: Scatter, Distribution, Comparison charts</li>
-<li>🧮 <strong>Physics validation</strong>: Energy consistency, parameter bounds</li>
-</ul>
-<p><strong>🎯 Enhanced Features:</strong></p>
-<ul>
-<li>Citations display as "Smith et al., Opt. Express, 2023" or DOI</li>
-<li>🔗 Cross-document laser parameter extraction focused on heat source ONLY</li>
-<li>📊 Fusion efficiency metrics per answer</li>
-<li>📋 Automatic comparison table generation</li>
-<li>🎨 Customizable visualizations with laser-type/processing-mode filters</li>
-<li>🐛 Debug mode for parameter extraction diagnosis</li>
-<li>🧮 Physics-aware validation for laser parameter consistency</li>
-<li>🚫 SCOPE: This system EXCLUDES material properties, microstructure, non-laser topics</li>
-</ul>
-<p><strong>Getting started:</strong></p>
-<ol>
-<li>Upload PDF/TXT files about laser sources and processing parameters in the left panel</li>
-<li>Click "Process Documents"</li>
-<li>Select your preferred local LLM in sidebar</li>
-<li>Enable "Laser Parameter Fusion" for comparative queries</li>
-<li>Use visualization panel for interactive parameter charts</li>
-<li>Start asking technical questions about laser heat sources!</li>
-</ol></div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="info-card"><h3>👋 Welcome to Cross-Document Scientific Reasoning!</h3><p>This assistant goes beyond simple retrieval:</p><ul><li><strong>Semantic Chunking:</strong> Preserves Abstract/Methods/Results/Discussion structure</li><li><strong>Entity Extraction:</strong> Identifies laser sources, heat source models, thermal parameters automatically</li><li><strong>Cross-Document Alignment:</strong> Links the same entity across different papers</li><li><strong>Consensus Detection:</strong> Statistically aggregates values reported in multiple papers</li><li><strong>Contradiction Flagging:</strong> Highlights when papers disagree significantly</li><li><strong>Multi-Hop Retrieval:</strong> Follows entity links to find related evidence</li><li><strong>Uncertainty Calibration:</strong> Explicit confidence levels in every answer</li></ul><p><strong>Getting started:</strong></p><ol><li>Upload 2+ PDF/TXT papers on laser processing or multicomponent alloys</li><li>Enable "Cross-document reasoning" in sidebar</li><li>Ask comparative or synthesizing questions</li><li>Expand "🧠 Reasoning Chain" to see the logical steps</li></ol></div>""", unsafe_allow_html=True)
             st.markdown("**Try asking:**")
-            demo_qs = [
-                "What is the typical pulse energy for femtosecond laser ablation of metals?",
-                "Compare fluence thresholds for CW vs pulsed laser processing",
-                "How does wavelength affect power density for a given spot size?",
-                "What scan speeds are used for laser marking with fiber lasers?",
-                "What power meter accuracy is required for low-power diode laser calibration?"
-            ]
+            demo_qs = ["What is the effect of laser power density on melt pool depth in multicomponent alloys?", "Do these papers agree on the optimal heat source model for SLM of Al-Cr-Fe-Ni alloys?", "Summarize the thermal boundary conditions used in finite element laser simulations.", "How does composition affect absorption coefficients during laser processing?"]
             for q in demo_qs:
-                if st.button(f"💬 {q}", use_container_width=True, key=f"demo_{q[:20]}"):
-                    st.session_state.demo_question = q
-                    st.rerun()
+                if st.button(f"💬 {q}", use_container_width=True, key=f"demo_{q[:20]}"): st.session_state.demo_question = q; st.rerun()
+
+    # ========================================================================
+    # GLOBAL VISUALIZATION DASHBOARD (Enhanced)
+    # ========================================================================
+    if st.session_state.knowledge_graph and st.session_state.processing_complete:
+        st.markdown("---"); st.markdown("## 🔬 Scientific Visualization Dashboard")
+        if st.session_state.visualization_engine is None: st.session_state.visualization_engine = VisualizationEngine(st.session_state.knowledge_graph)
+        viz = st.session_state.visualization_engine
+        if DGL_AVAILABLE and st.session_state.knowledge_graph.dgl_graph is None:
+            with st.spinner("Building heterogeneous graph for GNN retrieval..."):
+                emb_source = getattr(st.session_state.vectorstore, 'embedding_function', getattr(st.session_state.vectorstore, 'embeddings', st.session_state.vectorstore))
+                emb_fn = EmbeddingWrapper(emb_source); st.session_state.knowledge_graph.build_dgl_heterograph(embedding_fn=emb_fn)
+                if st.session_state.knowledge_graph.dgl_graph: st.success("✅ DGL HeteroGraph built")
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Top Entities & Consensus", "🕸️ Knowledge Graphs", "☀️ Hierarchical Sunbursts", "📡 Document Profiles", "⚡ Contradictions & Thermal Models"])
+        with tab1:
+            c1, c2 = st.columns(2)
+            with c1:
+                summary = st.session_state.knowledge_graph.get_knowledge_summary()
+                if summary['top_entities']:
+                    fig = px.bar(x=[x[0] for x in summary['top_entities']], y=[x[1] for x in summary['top_entities']], labels={'x': 'Entity', 'y': 'Occurrences'}, title="Top Entities by Frequency", color=[x[1] for x in summary['top_entities']], color_continuous_scale="Viridis"); st.plotly_chart(fig, use_container_width=True)
+            with c2: st.plotly_chart(viz.plot_consensus_waterfall(top_n=10), use_container_width=True)
+            st.plotly_chart(viz.plot_entity_treemap(), use_container_width=True)
+        with tab2:
+            c1, c2 = st.columns(2)
+            with c1: st.markdown("**Static Bipartite Network (Publication Quality)**"); fig_net = viz.plot_static_knowledge_network(top_n=30, layout="spring"); st.pyplot(fig_net)
+            with c2: st.markdown("**Chord-Style Co-occurrence**"); st.plotly_chart(viz.plot_chord_cooccurrence(top_n=16), use_container_width=True)
+            if SKLEARN_AVAILABLE:
+                st.markdown("**Entity Embedding Space (t-SNE)**")
+                emb_source = getattr(st.session_state.vectorstore, 'embedding_function', getattr(st.session_state.vectorstore, 'embeddings', st.session_state.vectorstore))
+                fig_tsne = viz.plot_entity_tsne(embedding_fn=EmbeddingWrapper(emb_source), top_n=60)
+                if fig_tsne: st.pyplot(fig_tsne)
+        with tab3:
+            c1, c2, c3 = st.columns(3)
+            with c1: st.plotly_chart(viz.plot_methods_sunburst(), use_container_width=True)
+            with c2: st.plotly_chart(viz.plot_materials_sunburst(), use_container_width=True)
+            with c3: st.plotly_chart(viz.plot_topics_sunburst(), use_container_width=True)
+        with tab4:
+            c1, c2 = st.columns(2)
+            with c1: st.plotly_chart(viz.plot_document_radar(), use_container_width=True)
+            with c2: st.plotly_chart(viz.plot_temporal_timeline(), use_container_width=True)
+        with tab5:
+            st.markdown("**Cross-Document Contradiction Matrix**"); st.plotly_chart(viz.plot_contradiction_matrix(), use_container_width=True)
+            contrs = st.session_state.knowledge_graph.find_all_contradictions(threshold_factor=1.5)
+            if contrs: df_contr = pd.DataFrame(contrs); st.dataframe(df_contr, use_container_width=True)
+            st.markdown("**Laser/Thermal Specific Analytics**")
+            c1, c2 = st.columns(2)
+            with c1: st.plotly_chart(viz.plot_energy_deposition_histogram(), use_container_width=True)
+            with c2: st.plotly_chart(viz.plot_heat_source_model_comparison(), use_container_width=True)
     render_footer()
-    # Handle demo question if set
     if hasattr(st.session_state, 'demo_question') and st.session_state.demo_question:
-        st.session_state.messages.append({"role": "user", "content": st.session_state.demo_question})
-        del st.session_state.demo_question
-        st.rerun()
+        st.session_state.messages.append({"role": "user", "content": st.session_state.demo_question}); del st.session_state.demo_question; st.rerun()
 
 if __name__ == "__main__":
     main()

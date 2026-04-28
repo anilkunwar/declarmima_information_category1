@@ -16,3 +16,4 @@ crossrefapi
 pdf2doi
 plotly
 matplotlib
+seaborn

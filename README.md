@@ -55,6 +55,8 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/reasoningragfusionmodelcloud-v14.0-blue)](https://information-retrieval-reasoning-visualization14.streamlit.app/) (Excellent Information Fusion, v7 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, DuplicateElementKey after two chat reponses)
 
+[![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v15.0-turquoise)](https://information-retrieval-reasoning-visualization15.streamlit.app/) (v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
+
 
 Multicomponent Alloy Microstructure Focus :
 

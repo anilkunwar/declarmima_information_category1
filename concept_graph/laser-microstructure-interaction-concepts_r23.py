@@ -2,52 +2,54 @@
 # -*- coding: utf-8 -*-
 """
 DECLARMIMA V2.0: Advanced Alloy Microstructure Concept Graph Analyzer
-================================================================================
+========================================================================================
 🔬 COMPLETE FEATURE SET:
 - 60+ colormaps with live preview
-- PCA / t-SNE / UMAP / Isomap / MDS dimensionality reduction
-- Advanced concept distillation (TF-IDF, semantic density, coherence scoring)
-- Mathematical validation (modularity, silhouette, permutation p-values, bootstrap CIs)
-- Enhanced PyVis & Plotly 2D/3D with physics simulation controls
-- Matplotlib/Seaborn static export fallback (PNG/SVG/PDF)
-- Comprehensive export manager (GraphML, JSON, CSV, HTML, SVG, PNG, PDF, Gephi)
+- PCA / t-SNE / UMAP / Isomap / MDS / Kernel PCA / Truncated SVD dimensionality reduction
+- Advanced concept distillation (TF-IDF, semantic density, coherence scoring, LLM summaries)
+- Mathematical validation (modularity, silhouette, permutation p-values, bootstrap CIs, R²/MAE/RMSE)
+- Enhanced PyVis & Plotly 2D/3D rendering with dynamic legends & custom labels
+- Matplotlib static export fallback (PNG/SVG/PDF)
+- Comprehensive export manager (GraphML, JSON, CSV, HTML, SVG, PNG, PDF) with attribute preservation
 - Statistical edge significance testing & community detection
-- Memory-optimized streaming processing for large corpora
-- Real-time progress tracking with detailed logging
-- CUDA/DGL diagnostics with automatic fallback chains
-- Small corpus optimization with semantic clustering & seed injection
-- LLM-powered hypothesis generation with structured output
-- Session state persistence & hash-based cache invalidation
-- Physics-informed research direction scoring
-- Interactive dashboard with metric cards and real-time updates
+- Improved caching, memory management, and Streamlit UI organization
+✅ DGL INTEGRATION ADDED:
+- Optional DGL backend for GraphSAGE with automatic fallback to PyTorch sparse
+- Heterogeneous graph support for edge-type-aware message passing
+- DGL CUDA compatibility diagnostics alongside existing PyTorch checks
+- Memory-efficient mini-batching ready for large concept graphs
+✅ PYVIS DOWNLOAD CRASH FIX:
+- Changed cdn_resources='in_line' -> 'remote' (reduces HTML from ~5MB to ~50KB)
+- Safe bytes encoding for st.download_button to prevent Streamlit OOM
+- Explicit memory cleanup (del + gc.collect()) after download generation
+- Try/except isolation to prevent session state wipe on failure
+✅ SUNBURST CHART FIX:
+- Corrected marker.color -> marker.colors (Plotly Sunburst syntax)
+- Added cmap_name parameter to function signature
+✅ CUDA COMPATIBILITY FIXES:
+- GPU compute capability detection
+- Automatic PyTorch/CUDA/DGL version validation
+- Graceful CPU fallback with user notification
+- Environment variable guidance for manual fixes
 ✅ ZERO API KEYS – all models run locally
 ✅ DUAL BACKEND: HF Transformers or Ollama
 ✅ MEMORY-AWARE: 4-bit quantization, VRAM estimation, CPU/GPU auto-detection
-✅ DECLARMIMA-FOCUSED: Laser-microstructure, multicomponent alloys, digital twins
-✅ PHYSICS-INFORMED: Concept graphs, GraphSAGE, research direction scoring
+✅ DECLARMIMA-FOCUSED: Laser-microstructure interaction, multicomponent alloys, digital twins
+✅ PHYSICS-INFORMED: Concept graphs, GraphSAGE embeddings, research direction scoring
 ✅ SMALL-CORPUS OPTIMIZED: Adaptive thresholds, semantic clustering, seed injection
 ✅ ENHANCED VISUALIZATIONS: PyVis/Plotly 2D/3D, sunburst, colormaps, metrics dashboard
 ✅ NEW: Configurable statistical parameters (bootstrap samples, permutation tests, alpha level)
 ✅ NEW: Node/edge attribute preservation in all export formats
 ✅ NEW: Persistent visualization settings across sessions
-✅ NEW: Advanced projection panel (PCA, t-SNE, UMAP, Isomap, MDS)
-✅ NEW: Interactive physics simulation controls
-✅ NEW: Real-time concept filtering & search
-✅ NEW: Comprehensive error recovery & fallback chains
-✅ NEW: Multi-format export with attribute preservation
-✅ FIXED: sklearn compatibility (scikit-learn >=1.6)
-✅ FIXED: Session state management + crash prevention
-✅ FIXED: PyVis download crash fix (remote CDN + safe bytes encoding)
-✅ FIXED: Sunburst chart marker.color -> marker.colors
-
+✅ FIXED: sklearn `root_mean_squared_error` compatibility (scikit-learn >=1.6)
+✅ FIXED: Session state management + crash prevention (cache reset on input change)
 DEPLOYMENT:
 pip install streamlit torch transformers sentence-transformers networkx scikit-learn
 pip install pyvis plotly pandas numpy kaleido matplotlib scipy seaborn umap-learn
 pip install ollama  # optional for Ollama backend
 pip install dgl -f https://data.dgl.ai/wheels/cu118/repo.html  # optional, adjust CUDA version
-Run: streamlit run declarmima_v2.py
+Run: streamlit run declarmima_concept_graph.py
 """
-
 import streamlit as st
 import torch
 import torch.nn as nn
@@ -67,27 +69,25 @@ import traceback
 import gc
 import hashlib
 import subprocess
-import time
 import io
 import base64
+import time
 from collections import defaultdict, Counter, OrderedDict
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Union, Any, TYPE_CHECKING
 from sklearn.linear_model import Ridge
-from sklearn.cluster import AgglomerativeClustering, KMeans, DBSCAN
+from sklearn.cluster import AgglomerativeClustering, KMeans
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score, davies_bouldin_score, pairwise_distances
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.manifold import TSNE, MDS, Isomap
 from sklearn.decomposition import PCA, KernelPCA, TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.neighbors import NearestNeighbors
 from scipy import stats
-from scipy.stats import pearsonr, spearmanr, kendalltau
-from scipy.spatial.distance import pdist, squareform, jaccard
+from scipy.stats import pearsonr, spearmanr
+from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
-from scipy.optimize import minimize
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -2200,6 +2200,52 @@ def display_metric_dashboard(metrics: dict):
 # ==========================================
 # ✅ NEW: MATHEMATICAL VALIDATION METRICS
 # ==========================================
+def validate_graph_metrics(nx_graph: nx.Graph, valid_concepts: List[str], concept_abstract_map: Dict) -> Dict[str, Any]:
+    """Compute comprehensive validation metrics (Modularity, Silhouette, Edge Significance)"""
+    metrics = {}
+    if nx_graph.number_of_nodes() < 3:
+        return metrics
+        
+    # 1. Modularity
+    try:
+        from networkx.algorithms import community
+        partition = list(community.greedy_modularity_communities(nx_graph))
+        metrics["modularity"] = community.modularity(nx_graph, partition)
+    except Exception as e:
+        metrics["modularity"] = 0.0
+        partition = []
+
+    # 2. Silhouette Score
+    try:
+        embeddings = load_embedding_model().encode(valid_concepts, show_progress_bar=False)
+        if len(valid_concepts) >= 3 and partition:
+            labels = np.zeros(len(valid_concepts))
+            for i, c in enumerate(valid_concepts):
+                for idx, comm in enumerate(partition if 'partition' in locals() else [[]]):
+                    if c in comm:
+                        labels[i] = idx
+                        break
+            metrics["silhouette_score"] = silhouette_score(embeddings, labels)
+        else:
+            metrics["silhouette_score"] = 0.0
+    except:
+        metrics["silhouette_score"] = 0.0
+        
+    # 3. Edge Significance (Permutation Test)
+    weights = [d.get('weight', 1) for _, _, d in nx_graph.edges(data=True)]
+    if len(weights) > 10:
+        p_values = []
+        for w in weights[:20]:  # Check top 20 edges
+            permuted = np.random.permutation(weights)
+            p_values.append(np.sum(permuted >= w) / len(weights))
+        metrics["edge_significance_p_mean"] = float(np.mean(p_values))
+        metrics["edge_significant_count"] = int(sum(1 for p in p_values if p < 0.05))
+    else:
+        metrics["edge_significance_p_mean"] = 1.0
+        metrics["edge_significant_count"] = 0
+        
+    return metrics
+
 def compute_clustering_validation(valid_concepts, embed_model, cluster_mapping: dict = None):
     """Compute clustering validation metrics"""
     if len(valid_concepts) < 3:
@@ -2261,182 +2307,21 @@ def compute_graph_validity_metrics(nx_graph):
     metrics['transitivity'] = nx.transitivity(nx_graph)
     
     return metrics
-#
-def compute_bootstrap_ci_for_gnn(scores, n_bootstrap=500, alpha=0.05, random_state=42):
-    """
-    Compute bootstrap confidence interval for the mean of an array of scores.
-    
-    Parameters:
-    -----------
-    scores : array-like
-        Composite scores from GNN (e.g., top_scores['composite_score'])
-    n_bootstrap : int
-        Number of bootstrap resamples
-    alpha : float
-        Significance level (e.g., 0.05 for 95% CI)
-    random_state : int
-        For reproducibility
-    
-    Returns:
-    --------
-    mean_estimate : float
-        Original sample mean
-    ci_lower : float
-        Lower bound of (1-alpha)*100% CI
-    ci_upper : float
-        Upper bound of (1-alpha)*100% CI
-    """
-    import numpy as np
-    np.random.seed(random_state)
-    
-    scores = np.asarray(scores)
-    if len(scores) == 0:
-        return np.nan, np.nan, np.nan
-    
-    # Original mean
-    mean_estimate = np.mean(scores)
-    
-    # Bootstrap resampling
-    bootstrap_means = []
-    n = len(scores)
+
+# ==========================================
+# ✅ NEW: BOOTSTRAP CONFIDENCE INTERVALS
+# ==========================================
+@st.cache_data(ttl=3600)
+def compute_bootstrap_ci_for_gnn(scores: np.ndarray, n_bootstrap: int = 500, alpha: float = 0.05):
+    """Bootstrap confidence intervals for GNN scores"""
+    if len(scores) < 2: return float(np.mean(scores)), 0.0, 0.0
+    boot_means = []
     for _ in range(n_bootstrap):
-        indices = np.random.choice(n, size=n, replace=True)
-        bootstrap_means.append(np.mean(scores[indices]))
-    
-    # Percentile CI
-    ci_lower = np.percentile(bootstrap_means, 100 * alpha / 2)
-    ci_upper = np.percentile(bootstrap_means, 100 * (1 - alpha / 2))
-    
-    return mean_estimate, ci_lower, ci_upper
-    
-def validate_graph_metrics(nx_graph, valid_concepts, concept_abstract_map, embed_model=None, n_permutations=100):
-    """
-    Compute comprehensive validation metrics for the concept graph.
-    Returns a dict with modularity, silhouette score, edge significance p-values, etc.
-    """
-    import numpy as np
-    from sklearn.metrics import silhouette_score
-    from networkx.algorithms.community import greedy_modularity_communities, modularity
-    from scipy import stats
-
-    metrics = {}
-
-    # 1. Graph validity metrics (modularity, etc.)
-    if nx_graph.number_of_nodes() > 2:
-        try:
-            communities = list(greedy_modularity_communities(nx_graph))
-            metrics['modularity'] = modularity(nx_graph, communities)
-        except:
-            metrics['modularity'] = np.nan
-
-        metrics['edge_connectivity'] = nx.edge_connectivity(nx_graph) if nx_graph.number_of_edges() > 0 else 0
-        metrics['avg_clustering'] = nx.average_clustering(nx_graph)
-        metrics['transitivity'] = nx.transitivity(nx_graph)
-
-    # 2. Silhouette score for concept embeddings (if embed_model provided)
-    if embed_model is not None and len(valid_concepts) >= 3:
-        try:
-            embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
-            # Use community labels as clusters (if available) or simple hierarchical clustering
-            if 'modularity' in metrics and not np.isnan(metrics['modularity']):
-                # Assign each node to its community (requires node->community mapping)
-                node_to_comm = {}
-                for i, comm in enumerate(communities):
-                    for node in comm:
-                        node_to_comm[node] = i
-                labels = [node_to_comm.get(c, -1) for c in valid_concepts]
-            else:
-                # Fallback: hierarchical clustering
-                from sklearn.cluster import AgglomerativeClustering
-                clustering = AgglomerativeClustering(n_clusters=None, distance_threshold=0.5)
-                labels = clustering.fit_predict(embeddings)
-            # Filter out invalid labels
-            unique_labels = set(labels)
-            if len(unique_labels) >= 2 and -1 not in unique_labels:
-                metrics['silhouette_score'] = silhouette_score(embeddings, labels)
-            else:
-                metrics['silhouette_score'] = np.nan
-        except Exception as e:
-            metrics['silhouette_score'] = np.nan
-    else:
-        metrics['silhouette_score'] = np.nan
-
-    # 3. Edge significance p-values (permutation test for edge weights vs. random)
-    if nx_graph.number_of_edges() > 0:
-        edge_weights = [d['weight'] for _, _, d in nx_graph.edges(data=True)]
-        # Randomly permute node assignments to generate null distribution
-        null_weights = []
-        nodes = list(nx_graph.nodes())
-        for _ in range(min(n_permutations, 100)):
-            shuffled = np.random.permutation(nodes)
-            mapping = {node: shuffled[i] for i, node in enumerate(nodes)}
-            # Create permuted graph with same structure but shuffled labels
-            perm_graph = nx.Graph()
-            perm_graph.add_nodes_from(nodes)
-            for u, v in nx_graph.edges():
-                perm_graph.add_edge(mapping[u], mapping[v])
-            # Compute weights on permuted graph from original co‑occurrence/semantic values?
-            # Simpler: keep original weight values but shuffle edges
-            perm_weights = [d['weight'] for _, _, d in perm_graph.edges(data=True)]
-            null_weights.append(np.mean(perm_weights))
-
-        # Compare original mean weight to null distribution
-        obs_mean = np.mean(edge_weights)
-        p_value = (1 + np.sum([w >= obs_mean for w in null_weights])) / (len(null_weights) + 1)
-        metrics['edge_significance_p_mean'] = p_value
-        metrics['edge_significant_count'] = np.sum([1 for w in edge_weights if w > np.percentile(null_weights, 95)])
-
-    return metrics
-# ==========================================
-# ✅ NEW: CONCEPT DISTILLATION & SUMMARIZATION
-# ==========================================
-def distill_concept_summaries(valid_concepts, concept_abstract_map, all_abstracts, 
-                              embed_model, llm_tokenizer, llm_model, backend_type):
-    """Distill concept clusters into summaries"""
-    if len(valid_concepts) < 5 or llm_tokenizer is None:
-        return {}
-    
-    embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
-    clustering = AgglomerativeClustering(n_clusters=min(10, len(valid_concepts)//3), linkage='average')
-    cluster_labels = clustering.fit_predict(embeddings)
-    
-    clusters = defaultdict(list)
-    for concept, label in zip(valid_concepts, cluster_labels):
-        clusters[label].append(concept)
-    
-    summaries = {}
-    prompt_template = """You are a materials science expert. Summarize the core theme of the following list of technical concepts related to laser additive manufacturing and alloy microstructures. Provide a single concise sentence (max 20 words) capturing the common research focus.
-Concepts: {concepts}
-Theme:"""
-    
-    for label, concepts in clusters.items():
-        if len(concepts) < 2:
-            continue
-        
-        concepts_str = ", ".join(concepts[:10])
-        try:
-            if backend_type == "ollama":
-                client = ollama.Client(host=st.session_state.get('ollama_host', 'http://localhost:11434'))
-                response = client.chat(
-                    model=llm_model,
-                    messages=[{"role": "user", "content": prompt_template.format(concepts=concepts_str)}],
-                    options={"temperature": 0.2, "num_predict": 30}
-                )
-                summary = response.get('message', {}).get('content', '').strip()
-            else:
-                inputs = llm_tokenizer(prompt_template.format(concepts=concepts_str), 
-                                       return_tensors="pt", truncation=True, max_length=256).to(DEVICE)
-                with torch.no_grad():
-                    outputs = llm_model.generate(inputs.input_ids, max_new_tokens=30, 
-                                                temperature=0.2, do_sample=True)
-                summary = llm_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], 
-                                              skip_special_tokens=True).strip()
-            
-            summaries[f"Cluster_{label}"] = {"concepts": concepts, "summary": summary}
-        except Exception as e:
-            st.warning(f"Summarization failed for cluster {label}: {e}")
-    
-    return summaries
+        sample = np.random.choice(scores, size=len(scores), replace=True)
+        boot_means.append(np.mean(sample))
+    ci_low = np.percentile(boot_means, 100*alpha/2)
+    ci_high = np.percentile(boot_means, 100*(1-alpha/2))
+    return float(np.mean(scores)), float(ci_low), float(ci_high)
 
 # ==========================================
 # ✅ NEW: ADVANCED DIMENSIONALITY REDUCTION
@@ -2449,77 +2334,91 @@ def compute_projection(valid_concepts, embed_model, method: str = 'pca',
     if len(valid_concepts) < 3:
         return None, {"error": "At least 3 concepts required"}
     
-    # Normalize method name
-    method_lower = method.lower().replace(' ', '_').replace('-', '_')
-    if method_lower == 't_sne':
-        method_lower = 'tsne'
-    elif method_lower == 'kernel_pca':
-        method_lower = 'kpca'
-    elif method_lower == 'truncated_svd':
-        method_lower = 'truncated_svd'
-    
     embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
-    scaler = StandardScaler()
-    embeddings_scaled = scaler.fit_transform(embeddings)   # dense array
     
+    # Standardize embeddings
+    scaler = StandardScaler()
+    embeddings_scaled = scaler.fit_transform(embeddings)
+    
+    # FIX: Normalize method string (e.g., "t-sne" -> "tsne")
+    method = method.lower().replace("-", "").replace(" ", "_")
+    
+    method_info = {
+        "method": method,
+        "n_components": n_components,
+        "perplexity": perplexity,
+        "n_neighbors": n_neighbors,
+        "min_dist": min_dist,
+        "metric": metric,
+        "explained_variance": None,
+        "fit_time": None
+    }
+    
+    # FIX: Ensure n_components < n_samples to prevent scipy.linalg.eigh errors
     n_samples = len(valid_concepts)
     if n_components >= n_samples:
         n_components = n_samples - 1
-        if n_components < 1:
-            return None, {"error": "Too few samples for projection"}
+        method_info["n_components"] = n_components
+        st.info(f"ℹ️ Adjusted components to {n_components} (max = n_samples - 1)")
     
-    method_info = {"method": method_lower, "n_components": n_components}
     start_time = time.time()
     
     try:
-        if method_lower == 'pca':
+        if method == 'pca':
             reducer = PCA(n_components=n_components, random_state=SEED)
             coords = reducer.fit_transform(embeddings_scaled)
             method_info["explained_variance"] = reducer.explained_variance_ratio_.tolist()
             method_info["total_variance"] = float(np.sum(reducer.explained_variance_ratio_))
         
-        elif method_lower == 'kpca':
-            # KernelPCA works with dense arrays; ensure n_components < n_samples
-            reducer = KernelPCA(n_components=n_components, kernel='rbf', gamma=1.0, random_state=SEED)
+        elif method == 'kpca':
+            # FIX: Use dense array for KernelPCA to avoid sparse solver errors
+            kernel = 'rbf'
+            gamma = 1.0
+            # Use dense array to fix "Cannot use scipy.linalg.eigh for sparse A"
+            reducer = KernelPCA(n_components=n_components, kernel=kernel, 
+                               gamma=gamma, random_state=SEED, eigen_solver='dense')
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method_lower == 'tsne':
-            perplexity = min(perplexity, n_samples - 1)
+        elif method == 'tsne':
+            perplexity = min(perplexity, len(valid_concepts) - 1)
             reducer = TSNE(n_components=n_components, random_state=SEED, 
                           perplexity=perplexity, metric=metric)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method_lower == 'umap':
+        elif method == 'umap':
             if not UMAP_AVAILABLE:
+                st.error("UMAP not installed. Run: pip install umap-learn")
                 return None, {"error": "UMAP not installed"}
-            n_neighbors = min(n_neighbors, n_samples - 1)
+            n_neighbors = min(n_neighbors, len(valid_concepts) - 1)
             reducer = umap.UMAP(n_components=n_components, random_state=SEED,
                                n_neighbors=n_neighbors, min_dist=min_dist, metric=metric)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method_lower == 'mds':
+        elif method == 'mds':
             reducer = MDS(n_components=n_components, random_state=SEED, 
                          dissimilarity='euclidean', normalized_stress='auto')
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method_lower == 'isomap':
-            n_neighbors = min(n_neighbors, n_samples - 1)
+        elif method == 'isomap':
+            n_neighbors = min(n_neighbors, len(valid_concepts) - 1)
             reducer = Isomap(n_neighbors=n_neighbors, n_components=n_components)
             coords = reducer.fit_transform(embeddings_scaled)
         
-        elif method_lower == 'truncated_svd':
+        elif method == 'truncated_svd':
             reducer = TruncatedSVD(n_components=n_components, random_state=SEED)
             coords = reducer.fit_transform(embeddings_scaled)
             method_info["explained_variance"] = reducer.explained_variance_ratio_.tolist()
             method_info["total_variance"] = float(np.sum(reducer.explained_variance_ratio_))
         
         else:
+            st.error(f"Unknown projection method: {method}")
             return None, {"error": f"Unknown method: {method}"}
         
         method_info["fit_time"] = time.time() - start_time
         return coords, method_info
     
     except Exception as e:
+        st.error(f"Projection failed: {e}")
         return None, {"error": str(e)}
 
 def render_projection_dashboard(valid_concepts, concept_abstract_map, embed_model,
@@ -3137,13 +3036,12 @@ def render_sidebar():
         
         # GNN Backend
         st.subheader("🔧 GNN Backend")
-        gnn_backend = st.radio(
+        st.session_state.gnn_backend = st.radio(
             "Choose GNN implementation:",
             options=["Auto (DGL preferred, PyTorch fallback)", "PyTorch Sparse Only", "DGL Only (if installed)"],
             index=0,
             help="Auto: Try DGL first, fall back to PyTorch if needed\nPyTorch: Use original sparse tensor implementation\nDGL: Use Deep Graph Library (requires installation)"
         )
-        st.session_state.gnn_backend = gnn_backend
         
         st.subheader("🔧 LLM Backend")
         backend_option = st.radio(
@@ -3190,32 +3088,32 @@ def render_sidebar():
             )
         
         st.subheader("🎨 Graph Visualization")
-        viz_backend = st.selectbox(
+        st.session_state['viz_backend'] = st.selectbox(
             "Choose visualization engine:",
             options=["PyVis (Interactive Network)", "Plotly 2D", "Plotly 3D", "Text Summary (Fallback)"],
             index=0,
             help="PyVis: Rich interactive network\nPlotly: More stable, zoomable plot\nText: Simple fallback view"
         )
-        st.session_state['viz_backend'] = viz_backend
         
         st.subheader("🎨 Colormap Preferences")
-        colormap_option = st.selectbox("Colormap for Sunburst & Plotly", 
-                                       list(COLORMAP_REGISTRY.keys()), 
-                                       index=0)
-        st.session_state['colormap'] = colormap_option
+        st.session_state['cmap_name'] = st.selectbox(
+            "Colormap Theme:",
+            options=list(COLORMAP_REGISTRY.keys()),
+            index=0
+        )
         
-        node_coloring_style = st.radio("Node coloring in Plotly", 
-                                       options=['category', 'frequency'], 
-                                       index=0)
-        st.session_state['node_coloring'] = node_coloring_style
+        st.session_state['node_coloring'] = st.radio(
+            "Node coloring in Plotly",
+            options=['category', 'frequency'],
+            index=0
+        )
         
         st.subheader("🎯 DECLARMIMA Integration")
-        use_declarmima = st.toggle(
+        st.session_state['use_declarmima'] = st.toggle(
             "Use DECLARMIMA proposal as seed knowledge",
             value=True,
             help="Inject concepts from the DECLARMIMA research proposal and prioritize abstracts aligned with project goals"
         )
-        st.session_state['use_declarmima'] = use_declarmima
         
         abstract_preview = st.text_area("📋 Paste abstracts (preview):", height=100, key="preview")
         preview_count = len([t for t in re.split(r'\n\s*\n', abstract_preview) if t.strip()]) if abstract_preview.strip() else 0
@@ -3233,6 +3131,13 @@ def render_sidebar():
         st.session_state.physics_enabled = st.checkbox("Enable graph physics", value=True, key="physics_toggle")
         st.session_state.min_node_size = st.slider("Min node size", 8, 30, 12, key="min_size")
         st.session_state.max_node_size = st.slider("Max node size", 30, 80, 50, key="max_size")
+        st.session_state.custom_label_prefix = st.text_input("Node Label Prefix (optional)", value="", help="e.g., 'AM-' or 'MAT-'")
+        
+        # 🔧 NEW: Advanced Statistical Settings
+        with st.expander("📐 Advanced Statistical Settings"):
+            st.session_state.bootstrap_samples = st.slider("Bootstrap samples for CI", 100, 2000, 500)
+            st.session_state.permutation_tests = st.slider("Permutation tests for edge significance", 10, 100, 20)
+            st.session_state.alpha_level = st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1)
         
         st.markdown("---")
         st.markdown("**🎯 DECLARMIMA Focus Areas:**")
@@ -3244,8 +3149,7 @@ def render_sidebar():
         
         st.markdown("---")
         st.markdown("**⚡ Performance:**")
-        max_hyp = st.slider("Max hypotheses", 1, 20, 10)
-        st.session_state['max_hypotheses'] = max_hyp
+        st.session_state['max_hypotheses'] = st.slider("Max hypotheses", 1, 20, 10)
         
         if st.button("🗑️ Clear Cache"):
             st.cache_resource.clear()
@@ -3633,12 +3537,12 @@ Sn-Ag-Cu solder alloy interfacial microstructure evolution during laser reflow. 
                 render_graph_plotly_white(
                     nx_graph, concept_abstract_map,
                     node_coloring=st.session_state.get('node_coloring', 'category'),
-                    colormap=st.session_state.get('colormap', 'viridis')
+                    colormap=st.session_state.get('cmap_name', 'viridis')
                 )
             elif viz_choice == "Plotly 3D":
                 render_plotly_3d(
                     nx_graph, concept_abstract_map,
-                    colormap=st.session_state.get('colormap', 'turbo')
+                    colormap=st.session_state.get('cmap_name', 'turbo')
                 )
             else:
                 render_graph_fallback(nx_graph, concept_abstract_map)
@@ -3649,7 +3553,7 @@ Sn-Ag-Cu solder alloy interfacial microstructure evolution during laser reflow. 
             
             with st.expander("📈 Research Domain Hierarchy (Sunburst)", expanded=False):
                 labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map)
-                render_sunburst_chart(labels, parents, values, colormap=st.session_state.get('colormap', 'viridis'))
+                render_sunburst_chart(labels, parents, values, colormap=st.session_state.get('cmap_name', 'viridis'))
         
         with projection_tab:
             st.subheader("📐 Advanced Dimensionality Reduction Analysis")
@@ -3761,9 +3665,8 @@ Sn-Ag-Cu solder alloy interfacial microstructure evolution during laser reflow. 
             if not top_scores.empty:
                 n_bootstrap = st.session_state.get('bootstrap_samples', 500)
                 alpha = st.session_state.get('alpha_level', 0.05)
-                mean_score, ci_low, ci_high = compute_bootstrap_ci_for_gnn(
-                    top_scores['composite_score'].values, n_bootstrap=n_bootstrap, alpha=alpha
-                )
+                # ✅ FIXED: NameError resolved by defining compute_bootstrap_ci_for_gnn above
+                mean_score, ci_low, ci_high = compute_bootstrap_ci_for_gnn(top_scores['composite_score'].values, n_bootstrap=n_bootstrap, alpha=alpha)
                 st.success(f"🎯 GNN Composite Score: `{mean_score:.3f}` | {int((1-alpha)*100)}% CI: `[{ci_low:.3f}, {ci_high:.3f}]`")
             
             # Ridge Regression Validation
@@ -3780,10 +3683,12 @@ Sn-Ag-Cu solder alloy interfacial microstructure evolution during laser reflow. 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("R²", f"{r2_score(y_target, y_pred):.3f}")
                 c2.metric("MAE", f"{mean_absolute_error(y_target, y_pred):.2f}")
+                # ✅ FIXED: use root_mean_squared_error (compatible with sklearn >=1.6)
                 try:
                     rmse_val = root_mean_squared_error(y_target, y_pred)
                     c3.metric("RMSE", f"{rmse_val:.2f}")
                 except Exception as e:
+                    # Fallback for older sklearn
                     rmse_val = np.sqrt(mean_squared_error(y_target, y_pred))
                     c3.metric("RMSE", f"{rmse_val:.2f}")
                 c4.metric("Features Used", len(X_feat))

@@ -30,35 +30,24 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 - Automatic PyTorch/CUDA/DGL version validation
 - Graceful CPU fallback with user notification
 - Environment variable guidance for manual fixes
-✅ Zero API keys - all models run locally (HuggingFace Transformers + Ollama)
-✅ Dual backend: Choose between HF Transformers (direct loading) or Ollama (server-based)
-✅ ALL models from LASER RAG codebase included (12 HF + 8 Ollama options)
-✅ Memory-aware: 4-bit quantization, VRAM estimation, CPU/GPU auto-detection
-✅ DECLARMIMA-focused: Laser-microstructure interaction, multicomponent alloys, digital twins
-✅ Physics-informed: Concept graphs, GraphSAGE embeddings (PyTorch or DGL), research direction scoring
-✅ Small-corpus optimized: Adaptive thresholds, semantic clustering, seed injection
-✅ ENHANCED: Publication-quality visualizations, metrics dashboard, user customization
-✅ ENHANCED: Interactive PyVis with physics toggle, category-based colors, size scaling
-✅ ENHANCED: Sunburst chart for research domain hierarchy, link prediction dashboard
+✅ ZERO API KEYS – all models run locally
+✅ DUAL BACKEND: HF Transformers or Ollama
+✅ MEMORY-AWARE: 4-bit quantization, VRAM estimation, CPU/GPU auto-detection
+✅ DECLARMIMA-FOCUSED: Laser-microstructure interaction, multicomponent alloys, digital twins
+✅ PHYSICS-INFORMED: Concept graphs, GraphSAGE embeddings, research direction scoring
+✅ SMALL-CORPUS OPTIMIZED: Adaptive thresholds, semantic clustering, seed injection
+✅ ENHANCED VISUALIZATIONS: PyVis/Plotly 2D/3D, sunburst, colormaps, metrics dashboard
 ✅ NEW: Configurable statistical parameters (bootstrap samples, permutation tests, alpha level)
 ✅ NEW: Node/edge attribute preservation in all export formats
 ✅ NEW: Persistent visualization settings across sessions
+✅ FIXED: sklearn `root_mean_squared_error` compatibility (scikit-learn >=1.6)
+✅ FIXED: Session state management + crash prevention (cache reset on input change)
 
 DEPLOYMENT:
 pip install streamlit torch transformers sentence-transformers networkx scikit-learn
 pip install pyvis plotly pandas numpy kaleido matplotlib scipy seaborn
 pip install ollama  # optional for Ollama backend
 pip install dgl -f https://data.dgl.ai/wheels/cu118/repo.html  # optional, adjust CUDA version
-
-# 🔧 CUDA FIX: If you get "no kernel image" error, run ONE of these:
-# For NEW GPUs (RTX 40xx/50xx, Blackwell):
-pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-# For DGL CUDA issues:
-pip uninstall dgl -y
-pip install dgl -f https://data.dgl.ai/wheels/cu128/repo.html  # Match your CUDA version
-# For OLD GPUs (compute capability < 3.7):
-# You must build PyTorch from source with TORCH_CUDA_ARCH_LIST=3.5
-# Or force CPU mode by setting: export CUDA_VISIBLE_DEVICES=""
 
 Run: streamlit run declarmima_concept_graph.py
 """
@@ -90,6 +79,15 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score, r2_score, mean_absolute_error, mean_squared_error
 from sklearn.metrics import davies_bouldin_score, pairwise_distances
+# ✅ FIX: add root_mean_squared_error for scikit-learn >=1.6
+try:
+    from sklearn.metrics import root_mean_squared_error
+    ROOT_MSE_AVAILABLE = True
+except ImportError:
+    ROOT_MSE_AVAILABLE = False
+    # fallback definition if older sklearn
+    def root_mean_squared_error(y_true, y_pred):
+        return np.sqrt(mean_squared_error(y_true, y_pred))
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from scipy import stats
@@ -118,7 +116,7 @@ except ImportError:
     UMAP_AVAILABLE = False
     umap = None
 
-# TYPE_CHECKING is True during static analysis (mypy, IDEs) but False at runtime
+# TYPE_CHECKING for static analysis
 if TYPE_CHECKING:
     import dgl
     import dgl.nn as dglnn
@@ -495,6 +493,10 @@ def compute_file_hash(filepath: str) -> str:
     try:
         with open(filepath, 'rb') as f: return hashlib.md5(f.read()).hexdigest()
     except: return ""
+
+def compute_text_hash(text: str) -> str:
+    """Compute a hash of the input text to detect changes."""
+    return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 def get_adaptive_config(num_abstracts: int) -> Dict[str, Any]:
     if num_abstracts <= 15:
@@ -1806,23 +1808,41 @@ def main():
     st.title("🔬 DECLARMIMA: Laser-Microstructure Interaction Analyzer")
     st.caption("Physics-informed digital twins for multicomponent alloys • Dual LLM backend: HF Transformers or Ollama • GNN: PyTorch or DGL • 50+ Colormaps • Advanced Validation")
     render_sidebar()
-    if st.session_state.get('llm_model_choice') and not is_ollama_model(st.session_state.get('llm_model_choice', '')):
-        mem_info = estimate_model_memory(st.session_state.llm_model_choice, st.session_state.get('use_4bit_quantization', True))
-        available_vram = get_available_gpu_memory()
-        if available_vram and not mem_info['cpu_ok']:
-            required = float(mem_info['vram_4bit'].replace('GB','').replace('~','').strip()) if 'GB' in mem_info['vram_4bit'] else 100
-            if available_vram < required:
-                st.markdown(f"""<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:0.75rem;border-radius:0 0.5rem 0.5rem 0;margin:0.5rem 0">
-⚠️ <strong>Memory Warning:</strong> {st.session_state.llm_model_choice} requires ~{mem_info['vram_4bit']} VRAM. You have ~{available_vram:.1f}GB available. Consider using 4-bit quantization or smaller models.</div>""", unsafe_allow_html=True)
+
+    # ==========================================
+    # SESSION STATE MANAGEMENT & CRASH PREVENTION
+    # ==========================================
+    # Initialize session state keys if not present
+    if "input_hash" not in st.session_state:
+        st.session_state.input_hash = None
+    if "last_run_hash" not in st.session_state:
+        st.session_state.last_run_hash = None
+    if "analysis_data" not in st.session_state:
+        st.session_state.analysis_data = None
+
     abstract_input = st.text_area("📋 Paste scientific abstracts (blank lines separate):", height=300, placeholder="""Example:
 "Laser powder bed fusion of AlSi10Mg reveals columnar-to-equiaxed transition at 85 J/mm³..."
 "High-entropy alloy CoCrFeNiMo via DED shows 420 HV microhardness from nanoscale precipitates..."
 """)
+    # Compute hash of input to detect changes
+    current_input_hash = compute_text_hash(abstract_input) if abstract_input.strip() else ""
+    
+    # Clear heavy caches if input changed significantly
+    if st.session_state.input_hash is not None and st.session_state.input_hash != current_input_hash and len(abstract_input) > 200:
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.warning("🔄 Input changed significantly – caches cleared to prevent crashes.")
+    st.session_state.input_hash = current_input_hash
+
     if st.button("🚀 Analyze Abstracts", type="primary", use_container_width=True):
-        if not abstract_input.strip(): st.error("⚠️ Please enter at least one abstract."); return
+        if not abstract_input.strip():
+            st.error("⚠️ Please enter at least one abstract.")
+            return
         abstracts = [t.strip() for t in re.split(r'\n\s*\n', abstract_input) if t.strip()]
-        if len(abstracts) < 10: st.info(f"💡 {len(abstracts)} abstracts: Maximum semantic enrichment mode")
-        elif len(abstracts) > 35: st.warning(f"⚠️ {len(abstracts)} abstracts may increase processing time")
+        if len(abstracts) < 10:
+            st.info(f"💡 {len(abstracts)} abstracts: Maximum semantic enrichment mode")
+        elif len(abstracts) > 35:
+            st.warning(f"⚠️ {len(abstracts)} abstracts may increase processing time")
         progress_bar = st.progress(0.0)
         status = st.status("🔄 Initializing...", expanded=True)
         try:
@@ -1888,6 +1908,29 @@ def main():
                     st.success("✅ Pipeline complete!")
                 progress_bar.progress(1.00)
                 status.update(label="✅ Analysis complete!", state="complete", expanded=False)
+                
+                # Store analysis results in session state to survive widget interactions
+                st.session_state.analysis_data = {
+                    "valid_concepts": valid_concepts,
+                    "concept_to_id": concept_to_id,
+                    "id_to_concept": id_to_concept,
+                    "concept_abstract_map": concept_abstract_map,
+                    "nx_graph": nx_graph,
+                    "concept_properties": concept_properties,
+                    "ridge": ridge,
+                    "top_scores": top_scores,
+                    "directions_df": directions_df,
+                    "gnn_model": gnn_model,
+                    "node_features": node_features,
+                    "final_emb": final_emb,
+                    "embed_model": embed_model,
+                    "d_prev_dict": d_prev_dict,
+                    "adj_indices": adj_indices,
+                    "adj_values": adj_values,
+                    "config": config,
+                    "all_metrics": all_metrics,
+                    "abstracts": abstracts,
+                }
         except Exception as e:
             st.error(f"❌ Pipeline Error: {e}")
             with st.expander("🔍 Traceback"): st.code(traceback.format_exc())
@@ -1895,11 +1938,34 @@ def main():
         finally:
             gc.collect()
             if DEVICE.type == 'cuda': torch.cuda.empty_cache()
+    
+    # If analysis has been run, display results from session state
+    if st.session_state.analysis_data is not None:
+        data = st.session_state.analysis_data
+        valid_concepts = data["valid_concepts"]
+        concept_abstract_map = data["concept_abstract_map"]
+        nx_graph = data["nx_graph"]
+        concept_properties = data["concept_properties"]
+        ridge = data["ridge"]
+        top_scores = data["top_scores"]
+        directions_df = data["directions_df"]
+        gnn_model = data["gnn_model"]
+        node_features = data["node_features"]
+        final_emb = data["final_emb"]
+        embed_model = data["embed_model"]
+        d_prev_dict = data["d_prev_dict"]
+        adj_indices = data["adj_indices"]
+        adj_values = data["adj_values"]
+        config = data["config"]
+        all_metrics = data["all_metrics"]
+        abstracts = data["abstracts"]
+        
         # Prepare custom labels
         custom_labels = {}
         prefix = st.session_state.get('custom_label_prefix', '')
         for c in valid_concepts: custom_labels[c] = f"{prefix}{c}" if prefix else c
         cmap = st.session_state.get('cmap_name', 'viridis')
+        
         # TABS FOR POST-PROCESSING & VISUALIZATION
         viz_tab, distill_tab, valid_tab, export_tab = st.tabs(["🎨 Visualization", "📊 Distillation Metrics", "📐 Mathematical Validation", "📥 Export"])
         with viz_tab:
@@ -1956,7 +2022,14 @@ def main():
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("R²", f"{r2_score(y_target, y_pred):.3f}")
                     c2.metric("MAE", f"{mean_absolute_error(y_target, y_pred):.2f}")
-                    c3.metric("RMSE", f"{mean_squared_error(y_target, y_pred, squared=False):.2f}")
+                    # ✅ FIXED: use root_mean_squared_error (compatible with sklearn >=1.6)
+                    try:
+                        rmse_val = root_mean_squared_error(y_target, y_pred)
+                        c3.metric("RMSE", f"{rmse_val:.2f}")
+                    except Exception as e:
+                        # Fallback for older sklearn
+                        rmse_val = np.sqrt(mean_squared_error(y_target, y_pred))
+                        c3.metric("RMSE", f"{rmse_val:.2f}")
                     c4.metric("Features Used", len(X_feat))
                     st.info("💡 *Validates the reliability of expected property gain predictions.*")
         with export_tab:

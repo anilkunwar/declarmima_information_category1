@@ -385,13 +385,37 @@ ENTITY_TAXONOMY = {
 
 
 def classify_entity(normalized: str) -> Tuple[str, str, str]:
-    """Return (domain, category, subcategory) for an entity string."""
+    """Return (domain, category, subcategory) for an entity string.
+
+    Handles mixed taxonomy structure where some nodes are dicts (nested)
+    and some are lists (terminal aliases).
+    """
     norm = normalized.lower().strip()
+
+    def _search_level(node, path):
+        """Recursively search taxonomy node. path tracks [domain, category, subcategory]."""
+        if isinstance(node, list):
+            # Terminal list of aliases
+            if any(alias in norm for alias in node):
+                # Pad path to length 3
+                while len(path) < 3:
+                    path.append("General")
+                return tuple(path[:3])
+            return None
+        elif isinstance(node, dict):
+            for key, child in node.items():
+                result = _search_level(child, path + [key])
+                if result is not None:
+                    return result
+            return None
+        else:
+            return None
+
     for domain, categories in ENTITY_TAXONOMY.items():
-        for category, subcategories in categories.items():
-            for subcategory, aliases in subcategories.items():
-                if any(alias in norm for alias in aliases):
-                    return domain, category, subcategory
+        result = _search_level(categories, [domain])
+        if result is not None:
+            return result
+
     return "UNKNOWN", "UNKNOWN", "UNKNOWN"
 
 

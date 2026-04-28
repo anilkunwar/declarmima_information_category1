@@ -1454,21 +1454,33 @@ def retrieve_and_answer(
 # =============================================
 # NEW: VISUALIZATION HELPERS
 # =============================================
-
+#
 def build_network_html(graph: CrossDocumentKnowledgeGraph) -> str:
     if not PYVIS_AVAILABLE:
         return "<p>Install pyvis to see network graph: pip install pyvis</p>"
+    
     net = Network(height="500px", width="100%", directed=False)
+    
+    # Add document nodes
     for doc_id in graph.documents:
         net.add_node(doc_id, label=Path(doc_id).stem, shape="box", color="#97C2FC")
+    
+    # Add entity nodes (top 15 only to keep graph readable)
     entity_counts = Counter([e.normalized for ents in graph.entities.values() for e in ents])
+    added_entities = set()
     for ent, cnt in entity_counts.most_common(15):
         net.add_node(ent, label=f"{ent} ({cnt})", shape="ellipse", color="#FFA500")
+        added_entities.add(ent)
+    
+    # Add edges ONLY for entities that have nodes AND appear in ≥2 documents
     for ent_norm, doc_names in graph.entity_index.items():
-        if entity_counts[ent_norm] >= 2:
+        if ent_norm in added_entities and entity_counts[ent_norm] >= 2:
             for doc in doc_names:
-                net.add_edge(ent_norm, doc)
+                if doc in graph.documents:  # extra safety
+                    net.add_edge(ent_norm, doc)
+    
     return net.generate_html()
+   
 
 def plot_consensus_chart(consensus_data: List[Dict]) -> go.Figure:
     if not consensus_data:

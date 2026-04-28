@@ -1443,10 +1443,8 @@ def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict, t
     for parent in list(hierarchy.keys()):
         children = hierarchy[parent]["children"]
         if top_n_per_category > 0 and len(children) > top_n_per_category:
-            # Keep only top_n_per_category highest-frequency children
             children.sort(key=lambda x: x[1], reverse=True)
             children = children[:top_n_per_category]
-            # Update total count for parent to reflect truncated children
             hierarchy[parent]["count"] = sum(cnt for _, cnt in children)
             hierarchy[parent]["children"] = children
 
@@ -1917,34 +1915,35 @@ def render_sidebar():
             st.toggle("Inject domain seeds", value=False, key="inject_seeds")
             st.toggle("Use embedding edges", value=False, key="semantic_edges")
         st.subheader("🎨 Visual Customization")
-        st.session_state.physics_enabled = st.checkbox("Enable graph physics", value=True, key="physics_toggle")
-        st.session_state.min_node_size = st.slider("Min node size", 8, 30, 12, key="min_size")
-        st.session_state.max_node_size = st.slider("Max node size", 30, 80, 50, key="max_size")
-        st.session_state.custom_label_prefix = st.text_input("Node Label Prefix (optional)", value="", help="e.g., 'AM-' or 'MAT-'")
+        # DO NOT assign widget return values to session state when key is provided
+        st.checkbox("Enable graph physics", value=True, key="physics_toggle")
+        st.slider("Min node size", 8, 30, 12, key="min_size")
+        st.slider("Max node size", 30, 80, 50, key="max_size")
+        st.text_input("Node Label Prefix (optional)", value="", key="custom_label_prefix", help="e.g., 'AM-' or 'MAT-'")
         # Extended PyVis customization
-        st.session_state.node_label_size = st.slider("Node label size (PyVis/Plotly)", 8, 20, 14, key="node_label_size")
-        st.session_state.edge_label_visible = st.checkbox("Show edge weights as labels", value=False, key="edge_label")
-        st.session_state.node_shape = st.selectbox("Node shape (PyVis)", options=["dot", "circle", "square", "triangle", "star"], index=0)
+        st.slider("Node label size (PyVis/Plotly)", 8, 20, 14, key="node_label_size")
+        st.checkbox("Show edge weights as labels", value=False, key="edge_label_visible")
+        st.selectbox("Node shape (PyVis)", options=["dot", "circle", "square", "triangle", "star"], index=0, key="node_shape")
         with st.expander("🔧 Advanced Physics Parameters"):
-            st.session_state.gravity = st.slider("Gravity", -5000, -500, -2000, step=100, key="gravity")
-            st.session_state.spring_length = st.slider("Spring length", 50, 300, 150, key="spring_len")
-            st.session_state.spring_strength = st.slider("Spring strength", 0.01, 0.2, 0.05, step=0.01, key="spring_str")
-            st.session_state.damping = st.slider("Damping", 0.05, 0.5, 0.09, step=0.01, key="damping")
-            st.session_state.overlap = st.slider("Overlap", 0.0, 1.0, 0.5, step=0.1, key="overlap")
+            st.slider("Gravity", -5000, -500, -2000, step=100, key="gravity")
+            st.slider("Spring length", 50, 300, 150, key="spring_length")
+            st.slider("Spring strength", 0.01, 0.2, 0.05, step=0.01, key="spring_strength")
+            st.slider("Damping", 0.05, 0.5, 0.09, step=0.01, key="damping")
+            st.slider("Overlap", 0.0, 1.0, 0.5, step=0.1, key="overlap")
 
         st.subheader("🌞 Sunburst & Radar Customization")
-        st.session_state.top_n_sunburst = st.slider("Max children per category (sunburst)", 5, 100, 30, key="top_sunburst")
-        st.session_state.sunburst_label_size = st.slider("Sunburst label size", 8, 20, 12, key="sun_label_size")
-        st.session_state.sunburst_cmap = st.selectbox("Sunburst colormap", options=list(SUPPORTED_COLORMAPS.keys()), index=0, key="sun_cmap")
-        st.session_state.radar_enabled = st.checkbox("Show radar chart", value=True, key="radar_enable")
-        st.session_state.radar_top_k = st.slider("Top K concepts for radar", 5, 30, 15, key="radar_top")
+        st.slider("Max children per category (sunburst)", 5, 100, 30, key="top_n_sunburst")
+        st.slider("Sunburst label size", 8, 20, 12, key="sunburst_label_size")
+        st.selectbox("Sunburst colormap", options=list(SUPPORTED_COLORMAPS.keys()), index=0, key="sunburst_cmap")
+        st.checkbox("Show radar chart", value=True, key="radar_enabled")
+        st.slider("Top K concepts for radar", 5, 30, 15, key="radar_top_k")
         # Graph node limit
-        st.session_state.graph_top_n_nodes = st.slider("Limit graph to top N nodes (0 = all)", 0, 200, 100, key="graph_top_n")
+        st.slider("Limit graph to top N nodes (0 = all)", 0, 200, 100, key="graph_top_n_nodes")
 
         st.subheader("📐 Advanced Statistical Settings")
-        st.session_state.bootstrap_samples = st.slider("Bootstrap samples for CI", 100, 2000, 500)
-        st.session_state.permutation_tests = st.slider("Permutation tests for edge significance", 10, 100, 20)
-        st.session_state.alpha_level = st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1)
+        st.slider("Bootstrap samples for CI", 100, 2000, 500, key="bootstrap_samples")
+        st.slider("Permutation tests for edge significance", 10, 100, 20, key="permutation_tests")
+        st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1, key="alpha_level")
 
         st.markdown("---")
         st.markdown("**🎯 DECLARMIMA Focus Areas:**")
@@ -1955,7 +1954,7 @@ def render_sidebar():
         st.markdown("- 🔍 Uncertainty quantification & validation")
         st.markdown("---")
         st.markdown("**⚡ Performance:**")
-        st.session_state['max_hypotheses'] = st.slider("Max hypotheses", 1, 20, 10)
+        st.slider("Max hypotheses", 1, 20, 10, key="max_hypotheses")
         if st.button("🗑️ Clear Cache"): st.cache_resource.clear(); gc.collect(); torch.cuda.empty_cache(); st.success("✅ Cache cleared!")
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
@@ -2137,9 +2136,9 @@ def main():
             if viz_choice == "PyVis (Interactive Network)":
                 render_graph_pyvis_custom(
                     nx_graph, concept_abstract_map,
-                    physics_enabled=st.session_state.get('physics_enabled', True),
-                    min_node_size=st.session_state.get('min_node_size', 12),
-                    max_node_size=st.session_state.get('max_node_size', 50),
+                    physics_enabled=st.session_state.get('physics_toggle', True),
+                    min_node_size=st.session_state.get('min_size', 12),
+                    max_node_size=st.session_state.get('max_size', 50),
                     cmap_name=cmap, custom_labels=custom_labels,
                     node_label_size=st.session_state.get('node_label_size', 14),
                     edge_label_visible=st.session_state.get('edge_label_visible', False),

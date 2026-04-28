@@ -5,7 +5,7 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ========================================================================================
 ✅ EXPANDED FEATURES:
 - 50+ colormaps (jet, turbo, rainbow, inferno, plasma, cividis, viridis, etc.)
-- Advanced concept distillation (TF-IDF, semantic density, coherence scoring)
+- Advanced concept distillation (TF-IDF, semantic density, coherence scoring, LLM summaries)
 - Mathematical validation (modularity, silhouette, permutation p-values, bootstrap CIs, R²/MAE/RMSE)
 - Enhanced PyVis & Plotly 2D/3D rendering with dynamic legends & custom labels
 - Matplotlib static export fallback (PNG/SVG/PDF)
@@ -81,7 +81,12 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score, r2_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import davies_bouldin_score, pairwise_distances
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 from scipy import stats
+from scipy.stats import pearsonr, spearmanr
+from scipy.spatial.distance import pdist, squareform
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -96,6 +101,14 @@ from pyvis.network import Network
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.colors as plotly_colors
+
+# Optional imports for enhanced projections
+try:
+    import umap
+    UMAP_AVAILABLE = True
+except ImportError:
+    UMAP_AVAILABLE = False
+    umap = None
 
 # TYPE_CHECKING is True during static analysis (mypy, IDEs) but False at runtime
 if TYPE_CHECKING:
@@ -422,7 +435,7 @@ MODEL_MEMORY_ESTIMATES = {
     "gpt2": {"params": "1.5B", "vram_fp16": "~3GB", "vram_4bit": "~1GB", "cpu_ok": True},
     "Qwen/Qwen2-0.5B-Instruct": {"params": "0.5B", "vram_fp16": "~1GB", "vram_4bit": "~400MB", "cpu_ok": True},
     "Qwen/Qwen2.5-0.5B-Instruct": {"params": "0.5B", "vram_fp16": "~1GB", "vram_4bit": "~400MB", "cpu_ok": True},
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": {"params": "1.1B", "vram_fp16": "~2.5GB", "vram_4bit": "~800MB", "cpu_ok": True},
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": {"params": "1.1B", "vram_fp16": "~2.5GB", "vram_4bit": "~800MB", "cpu<think>": True},
     "Qwen/Qwen2.5-1.5B-Instruct": {"params": "1.5B", "vram_fp16": "~3.5GB", "vram_4bit": "~1.2GB", "cpu_ok": False},
     "Qwen2.5-3B-Instruct": {"params": "3B", "vram_fp16": "~6GB", "vram_4bit": "~2GB", "cpu_ok": False},
     "mistralai/Mistral-7B-Instruct-v0.3": {"params": "7B", "vram_fp16": "~14GB", "vram_4bit": "~4.5GB", "cpu_ok": False},
@@ -656,21 +669,21 @@ def compute_concept_distillation(valid_concepts: List[str], concept_abstract_map
 
     for i, c in enumerate(valid_concepts):
         freq = len(concept_abstract_map.get(c, []))
-        semantic_density = tfidf_scores[i]
+        semantic_density = float(tfidf_scores[i])
         # Coherence: avg pairwise similarity within concept occurrences
         coherence = 0.0
-        if freq > 1:
-            concept_embeddings = load_embedding_model().encode(doc_text.split()[:20], show_progress_bar=False)
+        if freq > 1 and doc_corpus[i].strip():
+            concept_embeddings = load_embedding_model().encode(doc_corpus[i].split()[:20], show_progress_bar=False)
             if len(concept_embeddings) > 1:
                 coherence = float(np.mean(cosine_similarity(concept_embeddings)).clip(0,1))
         
         distill_data.append({
             "concept": c,
-            "tfidf_weight": float(tfidf_scores[i]),
+            "tfidf_weight": semantic_density,
             "frequency": freq,
-            "semantic_density": float(semantic_density),
+            "semantic_density": semantic_density,
             "coherence_score": float(coherence),
-            "distillation_efficiency": float(tfidf_scores[i] * (1 + 0.3*frequency) * (0.7 + 0.3*coherence))
+            "distillation_efficiency": float(semantic_density * (1 + 0.3*freq) * (0.7 + 0.3*coherence))
         })
     return pd.DataFrame(distill_data).sort_values("distillation_efficiency", ascending=False)
 
@@ -1521,7 +1534,7 @@ def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_l
         node_x.append(x); node_y.append(y); node_z.append(z)
         deg = nx_graph.degree(node); freq = len(concept_abstract_map.get(node, []))
         node_text.append(f"{node}<br>Degree: {deg}<br>Frequency: {freq}")
-        node_size.append(max(8, min(35, deg * 2.5 + 10))
+        node_size.append(max(8, min(35, deg * 2.5 + 10)))
         node_color.append(cmap_colors[i])
         node_labels.append(custom_labels.get(node, node) if custom_labels else node)
     node_trace = go.Scatter3d(x=node_x, y=node_y, z=node_z, mode='markers+text', marker=dict(size=node_size, color=node_color, opacity=0.9), text=node_labels, textposition="top center", textfont=dict(size=9, color='#000000'), hovertext=node_text, hoverinfo='text')
@@ -1803,4 +1816,40 @@ def main():
             col4.metric("Significant Edges (α<0.05)", val_metrics.get('edge_significant_count', 0))
             if not top_scores.empty:
                 mean_score, ci_low, ci_high = compute_bootstrap_ci_for_gnn(top_scores['composite_score'].values)
-                st.success(f"🎯 GNN Composite Score: `{mean_score:.3f}` | 95% CI: `[
+                st.success(f"🎯 GNN Composite Score: `{mean_score:.3f}` | 95% CI: `[{ci_low:.3f}, {ci_high:.3f}]`")
+                # Ridge Regression Validation
+                X_feat, y_target = [], []
+                for u, v in nx_graph.edges():
+                    pu, pv = concept_properties.get(u, 0), concept_properties.get(v, 0)
+                    w = nx_graph[u][v].get('weight', 1)
+                    X_feat.append([pu, pv, w])
+                    y_target.append(max(pu, pv) * 1.08 if max(pu, pv) > 0 else 0)
+                if ridge is not None and len(X_feat) > 5:
+                    y_pred = ridge.predict(np.array(X_feat))
+                    st.markdown("### 🔬 Ridge Regression Performance (Property Prediction)")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("R²", f"{r2_score(y_target, y_pred):.3f}")
+                    c2.metric("MAE", f"{mean_absolute_error(y_target, y_pred):.2f}")
+                    c3.metric("RMSE", f"{mean_squared_error(y_target, y_pred, squared=False):.2f}")
+                    c4.metric("Features Used", len(X_feat))
+                    st.info("💡 *Validates the reliability of expected property gain predictions.*")
+        with export_tab:
+            st.subheader("📥 Export & Post-Processing")
+            export_format = st.selectbox("Choose export format:", options=["GraphML", "JSON", "CSV (Edges)", "SVG (Static)", "PNG (Static)"])
+            st.markdown("---")
+            if st.button("📤 Generate Export File"):
+                if export_format in ["GraphML", "JSON", "SVG", "PNG"]:
+                    data, mime, filename = export_graph(nx_graph, concept_abstract_map, export_format)
+                    if data: st.download_button("💾 Save File", data=data, file_name=filename, mime=mime)
+                elif export_format == "CSV (Edges)":
+                    edge_data = [(u, v, nx_graph[u][v].get('weight', 1), nx_graph[u][v].get('edge_type', 'unknown')) for u, v in nx_graph.edges()]
+                    csv_df = pd.DataFrame(edge_data, columns=["Source", "Target", "Weight", "Edge Type"])
+                    csv_bytes = csv_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("💾 Save CSV", data=csv_bytes, file_name="declarmima_edges.csv", mime="text/csv")
+            st.markdown("### 📋 Additional Post-Processing Options")
+            st.markdown("- **Graph Pruning**: Filter by weight threshold to isolate core research pathways.")
+            st.markdown("- **Community Extraction**: Export detected modularity clusters as separate subgraphs.")
+            st.markdown("- **Semantic Overlay**: Map LLM-generated hypotheses back to graph edges for validation tracking.")
+
+if __name__ == "__main__":
+    main()

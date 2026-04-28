@@ -1634,41 +1634,41 @@ def _generate_pyvis_html(_nx_graph, _concept_abstract_map, _physics_enabled, _mi
     
     return net.generate_html()
 
-
-def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, min_node_size=12, max_node_size=50):
-    """✅ ENHANCED: PyVis rendering with session state preservation on download"""
-    # Display the graph
-    try:
-        html_content = _generate_pyvis_html(nx_graph, concept_abstract_map, physics_enabled, min_node_size, max_node_size)
-        st.components.v1.html(html_content, height=750, scrolling=True)
-    except Exception as e:
-        st.error(f"⚠️ PyVis rendering failed: {e}")
-        render_graph_fallback(nx_graph, concept_abstract_map)
-        return
+#
+def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
+                              min_node_size=12, max_node_size=50):
+    """Render interactive PyVis graph with safe download handling"""
+    if len(nx_graph.nodes()) > 100:
+        degrees = dict(nx_graph.degree())
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
+        nx_graph = nx_graph.subgraph(top_nodes).copy()
     
-    # ✅ SAFE DOWNLOAD WITH SESSION STATE PRESERVATION
+    # ✅ Generate HTML directly (no caching needed)
+    html_content = _generate_pyvis_html(
+        nx_graph, concept_abstract_map, physics_enabled, min_node_size, max_node_size
+    )
+    
+    st.components.v1.html(html_content, height=750, scrolling=True)
+    
+    # ✅ Safe download with memory management
     try:
-        # Use cached HTML to avoid regenerating on every download click
         html_bytes = html_content.encode('utf-8')
-        
-        # Unique key prevents Streamlit from re-running on download
         st.download_button(
             "📥 Download Interactive Graph (HTML)",
             data=html_bytes,
             file_name="declarmima_graph.html",
             mime="text/html",
-            key=f"pyvis_download_{hash(str(nx_graph.number_of_nodes()) + str(nx_graph.number_of_edges()))}"
+            key=f"pyvis_download_{hash(str(len(nx_graph.nodes())) + str(len(nx_graph.edges())))}"
         )
-        
-        # ✅ CRITICAL: Immediate cleanup to prevent memory buildup
+        # 🔧 Critical cleanup
         del html_content, html_bytes
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            
     except Exception as e:
         st.error(f"⚠️ Download preparation failed: {e}")
         st.info("💡 Try reducing graph size or using Plotly visualization instead")
+
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map):
     if len(nx_graph.nodes()) > 100:

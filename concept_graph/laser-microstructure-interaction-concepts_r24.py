@@ -1845,7 +1845,6 @@ def render_chord_diagram_holoviews(nx_graph: nx.Graph, valid_concepts: List[str]
     """
     HoloViews + Bokeh chord diagram for top N concepts.
     Requires: pip install holoviews bokeh
-    Uses hv.Dataset with proper kdims/vdims to avoid 'ndims' errors.
     """
     if not HOLOVIEWS_AVAILABLE:
         st.warning("⚠️ HoloViews not installed. Falling back to Plotly chord.")
@@ -1859,14 +1858,13 @@ def render_chord_diagram_holoviews(nx_graph: nx.Graph, valid_concepts: List[str]
         st.info("Chord diagram requires at least 3 concepts.")
         return
 
-    # Build links data for HoloViews Chord
-    # HoloViews Chord expects: source, target, value as kdims
+    # Build links DataFrame for HoloViews Chord
     links_data = []
     node_set = set()
     for u, v, data in subgraph.edges(data=True):
         w = data.get('weight', 1)
         if w >= edge_threshold:
-            links_data.append([u, v, w])
+            links_data.append({'source': u, 'target': v, 'value': w})
             node_set.add(u)
             node_set.add(v)
 
@@ -1874,33 +1872,16 @@ def render_chord_diagram_holoviews(nx_graph: nx.Graph, valid_concepts: List[str]
         st.info("No edges above threshold for chord diagram.")
         return
 
-    # Create nodes dataframe with index as node_id
-    nodes_list = sorted(list(node_set))
-    node_to_idx = {name: i for i, name in enumerate(nodes_list)}
-    cmap_colors = get_colormap_colors(cmap_name, len(nodes_list))
+    links_df = pd.DataFrame(links_data)
+    nodes_df = pd.DataFrame({'name': list(node_set)})
 
-    nodes_df = pd.DataFrame({
-        'index': range(len(nodes_list)),
-        'name': nodes_list,
-        'color': cmap_colors
-    })
-
-    # Convert links to use integer indices (required by HoloViews Chord)
-    links_indexed = []
-    for u, v, w in links_data:
-        links_indexed.append([node_to_idx[u], node_to_idx[v], w])
-
-    links_df = pd.DataFrame(links_indexed, columns=['source', 'target', 'value'])
+    # Assign colors based on category
+    cmap_colors = get_colormap_colors(cmap_name, len(nodes_df))
+    color_map = {row['name']: cmap_colors[i] for i, row in nodes_df.iterrows()}
+    nodes_df['color'] = nodes_df['name'].map(color_map)
 
     try:
-        # Create HoloViews Dataset with explicit dimensions
-        links_dataset = hv.Dataset(links_df, kdims=['source', 'target'], vdims=['value'])
-        nodes_dataset = hv.Dataset(nodes_df, kdims=['index'], vdims=['name', 'color'])
-
-        # Build Chord from the dataset
-        chord = hv.Chord((links_dataset, nodes_dataset))
-
-        chord = chord.opts(
+        chord = hv.Chord((links_df, nodes_df)).opts(
             opts.Chord(
                 cmap=cmap_name,
                 edge_cmap=cmap_name,
@@ -1912,16 +1893,11 @@ def render_chord_diagram_holoviews(nx_graph: nx.Graph, valid_concepts: List[str]
                 height=height,
                 title=f"Chord Diagram (Top {len(top_nodes)} Concepts)",
                 tools=['hover'],
-                inspection_policy='edges',
-                node_line_color='white',
-                node_line_width=1,
-                edge_line_color='white',
-                edge_line_width=0.5,
-                edge_alpha=0.6
+                inspection_policy='edges'
             )
         )
-
         # Render to Bokeh and display in Streamlit
+        from bokeh.plotting import figure
         from bokeh.embed import file_html
         from bokeh.resources import CDN
         renderer = hv.renderer('bokeh')

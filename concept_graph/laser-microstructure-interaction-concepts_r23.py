@@ -2261,7 +2261,85 @@ def compute_graph_validity_metrics(nx_graph):
     metrics['transitivity'] = nx.transitivity(nx_graph)
     
     return metrics
+    
+def validate_graph_metrics(nx_graph, valid_concepts, concept_abstract_map, embed_model=None, n_permutations=100):
+    """
+    Compute comprehensive validation metrics for the concept graph.
+    Returns a dict with modularity, silhouette score, edge significance p-values, etc.
+    """
+    import numpy as np
+    from sklearn.metrics import silhouette_score
+    from networkx.algorithms.community import greedy_modularity_communities, modularity
+    from scipy import stats
 
+    metrics = {}
+
+    # 1. Graph validity metrics (modularity, etc.)
+    if nx_graph.number_of_nodes() > 2:
+        try:
+            communities = list(greedy_modularity_communities(nx_graph))
+            metrics['modularity'] = modularity(nx_graph, communities)
+        except:
+            metrics['modularity'] = np.nan
+
+        metrics['edge_connectivity'] = nx.edge_connectivity(nx_graph) if nx_graph.number_of_edges() > 0 else 0
+        metrics['avg_clustering'] = nx.average_clustering(nx_graph)
+        metrics['transitivity'] = nx.transitivity(nx_graph)
+
+    # 2. Silhouette score for concept embeddings (if embed_model provided)
+    if embed_model is not None and len(valid_concepts) >= 3:
+        try:
+            embeddings = embed_model.encode(valid_concepts, show_progress_bar=False)
+            # Use community labels as clusters (if available) or simple hierarchical clustering
+            if 'modularity' in metrics and not np.isnan(metrics['modularity']):
+                # Assign each node to its community (requires node->community mapping)
+                node_to_comm = {}
+                for i, comm in enumerate(communities):
+                    for node in comm:
+                        node_to_comm[node] = i
+                labels = [node_to_comm.get(c, -1) for c in valid_concepts]
+            else:
+                # Fallback: hierarchical clustering
+                from sklearn.cluster import AgglomerativeClustering
+                clustering = AgglomerativeClustering(n_clusters=None, distance_threshold=0.5)
+                labels = clustering.fit_predict(embeddings)
+            # Filter out invalid labels
+            unique_labels = set(labels)
+            if len(unique_labels) >= 2 and -1 not in unique_labels:
+                metrics['silhouette_score'] = silhouette_score(embeddings, labels)
+            else:
+                metrics['silhouette_score'] = np.nan
+        except Exception as e:
+            metrics['silhouette_score'] = np.nan
+    else:
+        metrics['silhouette_score'] = np.nan
+
+    # 3. Edge significance p-values (permutation test for edge weights vs. random)
+    if nx_graph.number_of_edges() > 0:
+        edge_weights = [d['weight'] for _, _, d in nx_graph.edges(data=True)]
+        # Randomly permute node assignments to generate null distribution
+        null_weights = []
+        nodes = list(nx_graph.nodes())
+        for _ in range(min(n_permutations, 100)):
+            shuffled = np.random.permutation(nodes)
+            mapping = {node: shuffled[i] for i, node in enumerate(nodes)}
+            # Create permuted graph with same structure but shuffled labels
+            perm_graph = nx.Graph()
+            perm_graph.add_nodes_from(nodes)
+            for u, v in nx_graph.edges():
+                perm_graph.add_edge(mapping[u], mapping[v])
+            # Compute weights on permuted graph from original co‑occurrence/semantic values?
+            # Simpler: keep original weight values but shuffle edges
+            perm_weights = [d['weight'] for _, _, d in perm_graph.edges(data=True)]
+            null_weights.append(np.mean(perm_weights))
+
+        # Compare original mean weight to null distribution
+        obs_mean = np.mean(edge_weights)
+        p_value = (1 + np.sum([w >= obs_mean for w in null_weights])) / (len(null_weights) + 1)
+        metrics['edge_significance_p_mean'] = p_value
+        metrics['edge_significant_count'] = np.sum([1 for w in edge_weights if w > np.percentile(null_weights, 95)])
+
+    return metrics
 # ==========================================
 # ✅ NEW: CONCEPT DISTILLATION & SUMMARIZATION
 # ==========================================

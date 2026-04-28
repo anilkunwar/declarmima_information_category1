@@ -137,6 +137,8 @@ customization enhancements from v22)
 
 [![meaningtowords](https://img.shields.io/badge/conceptgraph-v26.0-green)](https://laser-microstructure-interaction-concepts26.streamlit.app/)  (v22 with advancements, download possible without simulation rerun, OLLAMA run also possible, improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, pyVis visualization, html download, concept graph screen visualization enabled, research summary and roadmap as seed knowledge,  CUDA compatible with hybrid approach, dgl yes, stability yes, visualization customization, radar chart works for dynamic nodes, chord diagram)
 
+[![meaningtowords](https://img.shields.io/badge/conceptgraph-v27.0-green)](https://laser-microstructure-interaction-concepts27.streamlit.app/)  (v26 with advancements, download possible without simulation rerun, OLLAMA run also possible, improvement on v5, a robust GUI concept graph using LLM+pure pytorch SparseGraphSAGE, no DGL; not applicable for N_abstract < 30, semantic clustering, domain seed concepts, embedding-edge images, code works mathematically but needs improvment, code runs even beyond generate hypothesis stage, pyVis visualization, html download, concept graph screen visualization enabled, research summary and roadmap as seed knowledge,  CUDA compatible with hybrid approach, dgl yes, stability yes, visualization customization, radar chart works for dynamic nodes, chord diagram, Sunburst chart works for higher number of concepts)
+
 
 
 

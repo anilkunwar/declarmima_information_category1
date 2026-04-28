@@ -19,3 +19,5 @@ scikit-image
 dgl
 ollama
 kaleido
+holoviews
+bokeh

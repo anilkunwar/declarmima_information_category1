@@ -1600,33 +1600,87 @@ def _generate_pyvis_html(nx_graph, concept_abstract_map, physics_enabled, min_no
         net.add_edge(u, v, value=float(np.clip(w, 0.5, 5)), width=float(np.clip(w * 0.8, 1, 4)), color=color, smooth={'type': 'curvedCW', 'roundness': 0.2})
     
     return net.generate_html()
-
-def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, min_node_size=12, max_node_size=50):
-    """✅ ENHANCED: PyVis rendering with session state preservation on download"""
-    # Display the graph
-    try:
-        html_content = _generate_pyvis_html(nx_graph, concept_abstract_map, physics_enabled, min_node_size, max_node_size)
-        st.components.v1.html(html_content, height=750, scrolling=True)
-    except Exception as e:
-        st.error(f"⚠️ PyVis rendering failed: {e}")
-        render_graph_fallback(nx_graph, concept_abstract_map)
-        return
+#
+def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True,
+                              min_node_size=12, max_node_size=50):
+    """✅ FIXED: PyVis rendering with safe download handling - NO CACHING to avoid hash errors"""
     
-    # ✅ SAFE DOWNLOAD WITH SESSION STATE PRESERVATION
+    # Downsample large graphs for performance
+    if len(nx_graph.nodes()) > 100:
+        degrees = dict(nx_graph.degree())
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
+        nx_graph = nx_graph.subgraph(top_nodes).copy()
+    
+    # ✅ CRITICAL FIX: Use 'remote' CDN to prevent massive inline HTML (~5MB → ~50KB)
+    net = Network(
+        height="700px", width="100%", bgcolor="#ffffff", font_color="#000000",
+        select_menu=True, notebook=False, cdn_resources='remote'
+    )
+    
+    if physics_enabled:
+        net.barnes_hut(
+            gravity=-2000, spring_length=150, spring_strength=0.05,
+            damping=0.09, overlap=0.5
+        )
+    else:
+        net.set_options("""
+        var options = {
+            physics: { enabled: false },
+            layout: { improvedLayout: false }
+        }
+        """)
+    
+    # Add nodes with category-based colors
+    for node in nx_graph.nodes():
+        freq = len(concept_abstract_map.get(node, []))
+        size = int(np.clip(min_node_size + freq * 2, min_node_size, max_node_size))
+        color = get_category_color(node)
+        degree = int(nx_graph.degree(node))
+        net.add_node(
+            node, label=node, size=size, color=color,
+            font={'color': '#000000', 'size': 14},
+            title=f"{node}\nDegree: {degree}\nFrequency: {freq}"
+        )
+    
+    # Add edges with type-based colors
+    color_map = {
+        'cooccurrence': "#4CAF50", 'semantic': "#2196F3",
+        'bridge': "#FFC107", 'declarmina_aligned': "#E91E63"
+    }
+    for u, v in nx_graph.edges():
+        w = nx_graph[u][v].get('weight', 1)
+        edge_type = nx_graph[u][v].get('edge_type', 'unknown')
+        color = color_map.get(edge_type, "#607D8B")
+        net.add_edge(
+            u, v,
+            value=float(np.clip(w, 0.5, 5)),
+            width=float(np.clip(w * 0.8, 1, 4)),
+            color=color,
+            smooth={'type': 'curvedCW', 'roundness': 0.2}
+        )
+    
+    # Generate and display HTML
+    html_content = net.generate_html()
+    st.components.v1.html(html_content, height=750, scrolling=True)
+    
+    # ✅ CRITICAL FIX: Safe download with memory management (prevents session reset)
     try:
-        # Use cached HTML to avoid regenerating on every download click
+        # Convert to bytes to avoid Streamlit string serialization issues
         html_bytes = html_content.encode('utf-8')
         
-        # Unique key prevents Streamlit from re-running on download
+        # Unique key prevents Streamlit from re-running on download click
+        # Hash based on graph structure (not the mutable graph object itself)
+        graph_hash = hash((nx_graph.number_of_nodes(), nx_graph.number_of_edges(), physics_enabled))
+        
         st.download_button(
             "📥 Download Interactive Graph (HTML)",
             data=html_bytes,
             file_name="declarmima_graph.html",
             mime="text/html",
-            key=f"pyvis_download_{hash(str(nx_graph.number_of_nodes()) + str(nx_graph.number_of_edges()))}"
+            key=f"pyvis_download_{graph_hash}"
         )
         
-        # ✅ CRITICAL: Immediate cleanup to prevent memory buildup
+        # ✅ Aggressive cleanup to prevent memory buildup
         del html_content, html_bytes
         gc.collect()
         if torch.cuda.is_available():
@@ -1635,6 +1689,7 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
     except Exception as e:
         st.error(f"⚠️ Download preparation failed: {e}")
         st.info("💡 Try reducing graph size or using Plotly visualization instead")
+
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map):
     if len(nx_graph.nodes()) > 100:

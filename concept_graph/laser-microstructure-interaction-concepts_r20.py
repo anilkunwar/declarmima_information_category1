@@ -1567,26 +1567,9 @@ def get_category_color(concept: str) -> str:
     else:
         return "#009688"
 #
-@st.cache_data(ttl=3600, show_spinner=False, experimental_allow_widgets=True)
-def _generate_pyvis_html(_nx_graph, _concept_abstract_map, _physics_enabled, _min_node_size, _max_node_size):
-    """
-    Cached HTML generation for PyVis graph.
-    
-    🔧 FIX: Underscore prefix on arguments tells Streamlit NOT to hash them,
-    preventing "Cannot hash argument 'nx_graph'" errors.
-    
-    Note: Since NetworkX graphs aren't hashable, caching provides limited benefit.
-    The function is kept for API consistency, but consider removing @st.cache_data
-    if performance is not a concern.
-    """
-    # Work with local copies to avoid side effects
-    nx_graph = _nx_graph
-    concept_abstract_map = _concept_abstract_map
-    physics_enabled = _physics_enabled
-    min_node_size = _min_node_size
-    max_node_size = _max_node_size
-    
-    # Downsample large graphs for performance
+def _generate_pyvis_html(nx_graph, concept_abstract_map, physics_enabled, min_node_size, max_node_size):
+    """Generate PyVis HTML (uncached to avoid NetworkX hashing errors)"""
+    # Downsample large graphs for browser performance
     if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
@@ -1594,14 +1577,11 @@ def _generate_pyvis_html(_nx_graph, _concept_abstract_map, _physics_enabled, _mi
     
     net = Network(
         height="700px", width="100%", bgcolor="#ffffff", font_color="#000000",
-        select_menu=True, notebook=False, cdn_resources='remote'
+        select_menu=True, notebook=False, cdn_resources='remote'  # ✅ Critical for small file size
     )
     
     if physics_enabled:
-        net.barnes_hut(
-            gravity=-2000, spring_length=150, spring_strength=0.05,
-            damping=0.09, overlap=0.5
-        )
+        net.barnes_hut(gravity=-2000, spring_length=150, spring_strength=0.05, damping=0.09, overlap=0.5)
     else:
         net.set_options("var options = { physics: { enabled: false }, layout: { improvedLayout: false } }")
     
@@ -1638,19 +1618,11 @@ def _generate_pyvis_html(_nx_graph, _concept_abstract_map, _physics_enabled, _mi
 def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
                               min_node_size=12, max_node_size=50):
     """Render interactive PyVis graph with safe download handling"""
-    if len(nx_graph.nodes()) > 100:
-        degrees = dict(nx_graph.degree())
-        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
-        nx_graph = nx_graph.subgraph(top_nodes).copy()
-    
-    # ✅ Generate HTML directly (no caching needed)
-    html_content = _generate_pyvis_html(
-        nx_graph, concept_abstract_map, physics_enabled, min_node_size, max_node_size
-    )
-    
+    # ✅ Generate HTML directly (no cache decorator needed)
+    html_content = _generate_pyvis_html(nx_graph, concept_abstract_map, physics_enabled, min_node_size, max_node_size)
     st.components.v1.html(html_content, height=750, scrolling=True)
     
-    # ✅ Safe download with memory management
+    # ✅ Safe download with memory management & session preservation
     try:
         html_bytes = html_content.encode('utf-8')
         st.download_button(
@@ -1658,9 +1630,9 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
             data=html_bytes,
             file_name="declarmima_graph.html",
             mime="text/html",
-            key=f"pyvis_download_{hash(str(len(nx_graph.nodes())) + str(len(nx_graph.edges())))}"
+            key=f"pyvis_dl_{hash(str(len(nx_graph.nodes())) + str(len(nx_graph.edges())))}"
         )
-        # 🔧 Critical cleanup
+        # 🔧 Immediate cleanup prevents Streamlit OOM & session resets
         del html_content, html_bytes
         gc.collect()
         if torch.cuda.is_available():

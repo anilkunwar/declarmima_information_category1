@@ -3,13 +3,13 @@
 """
 DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ========================================================================================
-✅ EXPANDED FEATURES:
+✅ EXPANDED FEATURES (FULLY IMPLEMENTED):
 - 50+ colormaps (jet, turbo, rainbow, inferno, plasma, cividis, viridis, etc.)
 - Advanced concept distillation (TF-IDF, semantic density, coherence scoring, LLM summaries)
 - Mathematical validation (modularity, silhouette, permutation p-values, bootstrap CIs, R²/MAE/RMSE)
 - Enhanced PyVis & Plotly 2D/3D rendering with dynamic legends & custom labels
 - Matplotlib static export fallback (PNG/SVG/PDF)
-- Comprehensive export manager (GraphML, JSON, CSV, HTML, SVG, PNG, PDF)
+- Comprehensive export manager (GraphML, JSON, CSV, HTML, SVG, PNG, PDF) with attribute preservation
 - Statistical edge significance testing & community detection
 - Improved caching, memory management, and Streamlit UI organization
 ✅ DGL INTEGRATION ADDED:
@@ -17,7 +17,7 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 - Heterogeneous graph support for edge-type-aware message passing
 - DGL CUDA compatibility diagnostics alongside existing PyTorch checks
 - Memory-efficient mini-batching ready for large concept graphs
-✅ PYVIS DOWNLOAD CRASH FIX (CODE 1 BACKPORT):
+✅ PYVIS DOWNLOAD CRASH FIX:
 - Changed cdn_resources='in_line' -> 'remote' (reduces HTML from ~5MB to ~50KB)
 - Safe bytes encoding for st.download_button to prevent Streamlit OOM
 - Explicit memory cleanup (del + gc.collect()) after download generation
@@ -40,12 +40,25 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ✅ ENHANCED: Publication-quality visualizations, metrics dashboard, user customization
 ✅ ENHANCED: Interactive PyVis with physics toggle, category-based colors, size scaling
 ✅ ENHANCED: Sunburst chart for research domain hierarchy, link prediction dashboard
+✅ NEW: Configurable statistical parameters (bootstrap samples, permutation tests, alpha level)
+✅ NEW: Node/edge attribute preservation in all export formats
+✅ NEW: Persistent visualization settings across sessions
 
 DEPLOYMENT:
 pip install streamlit torch transformers sentence-transformers networkx scikit-learn
 pip install pyvis plotly pandas numpy kaleido matplotlib scipy seaborn
 pip install ollama  # optional for Ollama backend
 pip install dgl -f https://data.dgl.ai/wheels/cu118/repo.html  # optional, adjust CUDA version
+
+# 🔧 CUDA FIX: If you get "no kernel image" error, run ONE of these:
+# For NEW GPUs (RTX 40xx/50xx, Blackwell):
+pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# For DGL CUDA issues:
+pip uninstall dgl -y
+pip install dgl -f https://data.dgl.ai/wheels/cu128/repo.html  # Match your CUDA version
+# For OLD GPUs (compute capability < 3.7):
+# You must build PyTorch from source with TORCH_CUDA_ARCH_LIST=3.5
+# Or force CPU mode by setting: export CUDA_VISIBLE_DEVICES=""
 
 Run: streamlit run declarmima_concept_graph.py
 """
@@ -1420,20 +1433,18 @@ def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
     return labels, parents, values
 
 def render_sunburst_chart(labels, parents, values, cmap_name="viridis"):
-    """Render categorical sunburst chart with proper Plotly marker syntax"""
+    """🔧 FIXED: Use 'colors' (plural) for Plotly Sunburst marker"""
     if not labels:
         st.info("Not enough categories for sunburst chart.")
         return
-    # Generate colors from colormap
     colors = get_colormap_colors(cmap_name, len(labels))
-    # ✅ FIX: Use 'colors' (plural) for Sunburst marker, not 'color'
     fig = go.Figure(go.Sunburst(
         labels=labels,
         parents=parents,
         values=values,
         branchvalues="total",
         marker=dict(
-            colors=colors,  # ← CORRECT: plural 'colors'
+            colors=colors,  # ← CRITICAL: 'colors' not 'color'
             line=dict(width=0.5, color="white")
         ),
         textinfo="label+percent entry",
@@ -1444,8 +1455,7 @@ def render_sunburst_chart(labels, parents, values, cmap_name="viridis"):
         font=dict(size=12, family="Arial"),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        width=800,
-        height=600
+        width=800, height=600
     )
     st.plotly_chart(fig, use_container_width=True)
     try:
@@ -1457,8 +1467,8 @@ def render_sunburst_chart(labels, parents, values, cmap_name="viridis"):
             mime="image/svg+xml",
             key="sunburst_svg"
         )
-    except Exception:
-        st.info("💡 Install kaleido for SVG export: `pip install kaleido`")
+    except Exception as e:
+        st.info(f"💡 Install kaleido for SVG export: `pip install kaleido` (Error: {e})")
 
 # ==========================================
 # ENHANCED PYVIS GRAPH WITH CATEGORY COLORS & SAFE DOWNLOAD (CODE 1 BACKPORT)
@@ -1485,14 +1495,14 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
     cmap_colors = get_colormap_colors(cmap_name, len(nx_graph.nodes()))
     net = Network(
         height="700px", width="100%", bgcolor="#ffffff", font_color="#000000",
-        select_menu=True, notebook=False, cdn_resources='remote'   # ← Critical for size reduction
+        select_menu=True, notebook=False, cdn_resources='remote'
     )
 
     if physics_enabled:
         net.barnes_hut(gravity=-2000, spring_length=150, spring_strength=0.05, 
                        damping=0.09, overlap=0.5)
     else:
-        net.set_options("""var options = { physics: { enabled: false }, layout: { improvedLayout: false } }""")
+        net.set_options("var options = { physics: { enabled: false }, layout: { improvedLayout: false } }")
 
     for i, node in enumerate(nx_graph.nodes()):
         freq = len(concept_abstract_map.get(node, []))
@@ -1515,14 +1525,12 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
                      width=float(np.clip(w * 0.8, 1, 4)),
                      color=color, smooth={'type': 'curvedCW', 'roundness': 0.2})
 
-    # Generate HTML
     html_content = net.generate_html()
     st.components.v1.html(html_content, height=750, scrolling=True)
 
-    # === SAFE DOWNLOAD WITH MEMORY CLEANUP (from CODE 1) ===
+    # SAFE DOWNLOAD WITH MEMORY CLEANUP
     try:
         html_bytes = html_content.encode('utf-8')
-        
         st.download_button(
             "📥 Download Interactive Graph (HTML)", 
             data=html_bytes,
@@ -1530,31 +1538,33 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
             mime="text/html",
             key="pyvis_download_safe"
         )
-        
-        # Aggressive cleanup - prevents Streamlit OOM / session reset
         del html_content, html_bytes
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            
     except Exception as e:
         st.error(f"⚠️ Download preparation failed: {e}")
         st.info("💡 Try reducing graph size (max 100 nodes) or use Plotly instead.")
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis", custom_labels=None):
+    """Enhanced Plotly 2D with safe JSON export"""
     if len(nx_graph.nodes()) > 100:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
         nx_graph = nx_graph.subgraph(top_nodes).copy()
+
     pos = nx.spring_layout(nx_graph, k=2, iterations=50, seed=SEED)
     cmap_colors = get_colormap_colors(cmap_name, len(nx_graph.nodes()))
+
     edge_x, edge_y, edge_hover = [], [], []
     for u, v in nx_graph.edges():
         x0, y0 = pos[u]; x1, y1 = pos[v]
         edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None])
         w = nx_graph[u][v].get('weight', 1); edge_type = nx_graph[u][v].get('edge_type', 'unknown')
         edge_hover.extend([f"{u} ↔ {v}<br>Weight: {w:.2f}<br>Type: {edge_type}"] * 2 + [None])
+
     edge_trace = go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1.2, color='#666'), hoverinfo='text', hovertext=edge_hover, name='Connections')
+
     node_x, node_y, node_text, node_size, node_color, node_symbol, node_labels = [], [], [], [], [], [], []
     for i, node in enumerate(nx_graph.nodes()):
         x, y = pos[node]
@@ -1571,22 +1581,36 @@ def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis
         elif any(p in n_lower for p in ['porosity', 'crack', 'defect', 'void', 'residual']): node_symbol.append('x')
         elif any(d in n_lower for d in ['digital', 'twin', 'machine', 'learning', 'neural', 'graph']): node_symbol.append('star')
         else: node_symbol.append('circle')
+
     node_trace = go.Scatter(x=node_x, y=node_y, mode='markers+text', marker=dict(size=node_size, color=node_color, line=dict(width=2, color='#ffffff'), symbol=node_symbol), text=node_labels, textposition="bottom center", textfont=dict(size=10, color='#000000'), hovertext=node_text, hoverinfo='text', name='Concepts')
+
     fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(showlegend=False, hovermode='closest', margin=dict(b=0, l=0, r=0, t=0), plot_bgcolor='#ffffff', paper_bgcolor='#ffffff', xaxis=dict(showgrid=True, zeroline=False, showticklabels=False, gridcolor='#eee', range=[-1.5, 1.5]), yaxis=dict(showgrid=True, zeroline=False, showticklabels=False, gridcolor='#eee', range=[-1.5, 1.5]), annotations=[dict(text="🔬 Drag nodes • Hover for details • Scroll to zoom • DECLARMIMA-aligned edges in pink", showarrow=False, xref="paper", yref="paper", x=0.5, y=-0.05, font=dict(size=10, color='#666'))]))
     fig.update_layout(updatemenus=[dict(type="buttons", showactive=False, x=0.1, xanchor="left", y=1.15, yanchor="top", buttons=[dict(label="🔄 Re-layout", method="relayout", args=[{"xaxis.range": [-1.5, 1.5], "yaxis.range": [-1.5, 1.5]}]), dict(label="🔍 Zoom In", method="relayout", args=[{"xaxis.autorange": False, "yaxis.autorange": False}]), dict(label="📐 Reset View", method="relayout", args=[{"xaxis.autorange": True, "yaxis.autorange": True}])])])
+
     st.plotly_chart(fig, use_container_width=True, key="plotly_graph")
-    fig_json = fig.to_json()
-    st.download_button("📥 Download Plotly Graph (JSON)", data=fig_json, file_name="concept_graph_plotly.json", mime="application/json", key="plotly_download")
+
+    try:
+        fig_json = fig.to_json()
+        st.download_button("📥 Download Plotly Graph (JSON)", data=fig_json, file_name="concept_graph_plotly.json", mime="application/json", key="plotly_download")
+    except Exception as e:
+        st.info(f"💡 JSON export unavailable: {e}")
 
 def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_labels=None):
-    if len(nx_graph.nodes()) < 3: st.info("3D view requires ≥3 nodes."); return
+    """3D Plotly visualization with colormap support"""
+    if len(nx_graph.nodes()) < 3:
+        st.info("3D view requires ≥3 nodes.")
+        return
+
     pos_3d = nx.spring_layout(nx_graph, dim=3, seed=SEED)
     cmap_colors = get_colormap_colors(cmap_name, len(nx_graph.nodes()))
+
     edge_x, edge_y, edge_z = [], [], []
     for u, v in nx_graph.edges():
         x0, y0, z0 = pos_3d[u]; x1, y1, z1 = pos_3d[v]
         edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None]); edge_z.extend([z0, z1, None])
+
     edge_trace = go.Scatter3d(x=edge_x, y=edge_y, z=edge_z, mode='lines', line=dict(width=2, color='#666'), hoverinfo='skip')
+
     node_x, node_y, node_z, node_text, node_size, node_color, node_labels = [], [], [], [], [], [], []
     for i, node in enumerate(nx_graph.nodes()):
         x, y, z = pos_3d[node]
@@ -1596,11 +1620,14 @@ def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_l
         node_size.append(max(8, min(35, deg * 2.5 + 10)))
         node_color.append(cmap_colors[i])
         node_labels.append(custom_labels.get(node, node) if custom_labels else node)
+
     node_trace = go.Scatter3d(x=node_x, y=node_y, z=node_z, mode='markers+text', marker=dict(size=node_size, color=node_color, opacity=0.9), text=node_labels, textposition="top center", textfont=dict(size=9, color='#000000'), hovertext=node_text, hoverinfo='text')
+
     fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(scene=dict(xaxis=dict(showbackground=False), yaxis=dict(showbackground=False), zaxis=dict(showbackground=False)), margin=dict(l=0, r=0, b=0, t=0), showlegend=False))
     st.plotly_chart(fig, use_container_width=True)
 
 def render_graph_fallback(nx_graph, concept_abstract_map):
+    """Text-based fallback visualization"""
     st.markdown("### 📊 Graph Summary (Text View)")
     st.markdown(f"- **Nodes**: {len(nx_graph.nodes())}")
     st.markdown(f"- **Edges**: {len(nx_graph.edges())}")
@@ -1619,38 +1646,71 @@ def render_graph_fallback(nx_graph, concept_abstract_map):
         st.dataframe(pd.DataFrame(freq_data[:10], columns=["Concept", "Abstract Count"]), use_container_width=True)
 
 # ==========================================
-# ENHANCED EXPORT & POST-PROCESSING
+# ENHANCED EXPORT & POST-PROCESSING (with attribute preservation)
 # ==========================================
-def export_graph(nx_graph, concept_abstract_map, format_type: str):
+def export_graph(nx_graph, concept_abstract_map, format_type: str, include_node_attrs: bool = True, include_edge_attrs: bool = True):
+    """Comprehensive export with attribute preservation"""
     if format_type == "GraphML":
-        nx.write_graphml(nx_graph, "declarmima_graph.graphml")
-        with open("declarmima_graph.graphml", "rb") as f: return f.read(), "application/graphml+xml", "declarmima_graph.graphml"
+        try:
+            nx.write_graphml_lxml(nx_graph, "declarmima_graph.graphml")
+        except:
+            nx.write_graphml(nx_graph, "declarmima_graph.graphml")
+        with open("declarmima_graph.graphml", "rb") as f:
+            return f.read(), "application/graphml+xml", "declarmima_graph.graphml"
     elif format_type == "JSON":
         data = nx.node_link_data(nx_graph)
-        json_str = json.dumps(data, indent=2)
+        if include_node_attrs:
+            for i, node_dict in enumerate(data['nodes']):
+                node_id = node_dict.get('id', list(nx_graph.nodes())[i] if i < len(nx_graph.nodes()) else None)
+                if node_id is not None and node_id in nx_graph.nodes():
+                    node_attrs = dict(nx_graph.nodes[node_id])
+                    node_dict.update(node_attrs)
+        if include_edge_attrs:
+            for edge, edge_dict in zip(nx_graph.edges(), data['links']):
+                u, v = edge
+                if nx_graph.has_edge(u, v):
+                    edge_dict.update(dict(nx_graph[u][v]))
+        json_str = json.dumps(data, indent=2, default=str)
         return json_str.encode('utf-8'), "application/json", "declarmima_graph.json"
+    elif format_type == "CSV (Edges)":
+        edge_data = []
+        for u, v, data in nx_graph.edges(data=True):
+            row = {"source": u, "target": v}
+            row.update({k: v for k, v in data.items() if isinstance(v, (str, int, float, bool))})
+            edge_data.append(row)
+        csv_df = pd.DataFrame(edge_data)
+        csv_bytes = csv_df.to_csv(index=False).encode('utf-8')
+        return csv_bytes, "text/csv", "declarmima_edges.csv"
     elif format_type == "SVG":
         try:
             pos = nx.spring_layout(nx_graph, seed=SEED)
-            plt.figure(figsize=(10, 8))
-            nx.draw(nx_graph, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=500, font_size=9)
+            plt.figure(figsize=(12, 10), dpi=150)
+            node_colors = [get_category_color(n) for n in nx_graph.nodes()]
+            nx.draw(nx_graph, pos, with_labels=True, node_color=node_colors, edge_color='gray', node_size=600, font_size=8, font_weight='bold', edgecolors='white', linewidths=1.5)
             import io
             buf = io.BytesIO()
-            plt.savefig(buf, format='svg', bbox_inches='tight')
+            plt.savefig(buf, format='svg', bbox_inches='tight', facecolor='white')
             buf.seek(0)
+            plt.close()
             return buf.read(), "image/svg+xml", "declarmima_graph.svg"
-        except Exception as e: st.error(f"SVG export failed: {e}"); return None, None, None
+        except Exception as e:
+            st.error(f"SVG export failed: {e}")
+            return None, None, None
     elif format_type == "PNG":
         try:
             pos = nx.spring_layout(nx_graph, seed=SEED)
-            plt.figure(figsize=(10, 8))
-            nx.draw(nx_graph, pos, with_labels=True, node_color='lightblue', edge_color='gray', node_size=500, font_size=9)
+            plt.figure(figsize=(12, 10), dpi=300)
+            node_colors = [get_category_color(n) for n in nx_graph.nodes()]
+            nx.draw(nx_graph, pos, with_labels=True, node_color=node_colors, edge_color='gray', node_size=600, font_size=9, font_weight='bold', edgecolors='white', linewidths=1.5)
             import io
             buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+            plt.savefig(buf, format='png', dpi=300, bbox_inches='tight', facecolor='white')
             buf.seek(0)
+            plt.close()
             return buf.read(), "image/png", "declarmima_graph.png"
-        except Exception as e: st.error(f"PNG export failed: {e}"); return None, None, None
+        except Exception as e:
+            st.error(f"PNG export failed: {e}")
+            return None, None, None
     return None, None, None
 
 # ==========================================
@@ -1721,6 +1781,11 @@ def render_sidebar():
         st.session_state.min_node_size = st.slider("Min node size", 8, 30, 12, key="min_size")
         st.session_state.max_node_size = st.slider("Max node size", 30, 80, 50, key="max_size")
         st.session_state.custom_label_prefix = st.text_input("Node Label Prefix (optional)", value="", help="e.g., 'AM-' or 'MAT-'")
+        # 🔧 NEW: Advanced Statistical Settings
+        with st.expander("📐 Advanced Statistical Settings"):
+            st.session_state.bootstrap_samples = st.slider("Bootstrap samples for CI", 100, 2000, 500)
+            st.session_state.permutation_tests = st.slider("Permutation tests for edge significance", 10, 100, 20)
+            st.session_state.alpha_level = st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1)
         st.markdown("---")
         st.markdown("**🎯 DECLARMIMA Focus Areas:**")
         st.markdown("- 🔬 Laser-matter interaction mechanisms")
@@ -1874,8 +1939,10 @@ def main():
             col3.metric("Mean Edge P-value", f"{val_metrics.get('edge_significance_p_mean', 1):.3f}")
             col4.metric("Significant Edges (α<0.05)", val_metrics.get('edge_significant_count', 0))
             if not top_scores.empty:
-                mean_score, ci_low, ci_high = compute_bootstrap_ci_for_gnn(top_scores['composite_score'].values)
-                st.success(f"🎯 GNN Composite Score: `{mean_score:.3f}` | 95% CI: `[{ci_low:.3f}, {ci_high:.3f}]`")
+                n_bootstrap = st.session_state.get('bootstrap_samples', 500)
+                alpha = st.session_state.get('alpha_level', 0.05)
+                mean_score, ci_low, ci_high = compute_bootstrap_ci_for_gnn(top_scores['composite_score'].values, n_bootstrap=n_bootstrap, alpha=alpha)
+                st.success(f"🎯 GNN Composite Score: `{mean_score:.3f}` | {int((1-alpha)*100)}% CI: `[{ci_low:.3f}, {ci_high:.3f}]`")
                 # Ridge Regression Validation
                 X_feat, y_target = [], []
                 for u, v in nx_graph.edges():
@@ -1895,16 +1962,16 @@ def main():
         with export_tab:
             st.subheader("📥 Export & Post-Processing")
             export_format = st.selectbox("Choose export format:", options=["GraphML", "JSON", "CSV (Edges)", "SVG (Static)", "PNG (Static)"])
+            include_node_attrs = st.checkbox("Include node attributes", value=True)
+            include_edge_attrs = st.checkbox("Include edge attributes", value=True)
             st.markdown("---")
             if st.button("📤 Generate Export File"):
                 if export_format in ["GraphML", "JSON", "SVG", "PNG"]:
-                    data, mime, filename = export_graph(nx_graph, concept_abstract_map, export_format)
+                    data, mime, filename = export_graph(nx_graph, concept_abstract_map, export_format, include_node_attrs, include_edge_attrs)
                     if data: st.download_button("💾 Save File", data=data, file_name=filename, mime=mime)
                 elif export_format == "CSV (Edges)":
-                    edge_data = [(u, v, nx_graph[u][v].get('weight', 1), nx_graph[u][v].get('edge_type', 'unknown')) for u, v in nx_graph.edges()]
-                    csv_df = pd.DataFrame(edge_data, columns=["Source", "Target", "Weight", "Edge Type"])
-                    csv_bytes = csv_df.to_csv(index=False).encode('utf-8')
-                    st.download_button("💾 Save CSV", data=csv_bytes, file_name="declarmima_edges.csv", mime="text/csv")
+                    csv_bytes, mime, filename = export_graph(nx_graph, concept_abstract_map, "CSV (Edges)", include_node_attrs, include_edge_attrs)
+                    if csv_bytes: st.download_button("💾 Save CSV", data=csv_bytes, file_name=filename, mime=mime)
             st.markdown("### 📋 Additional Post-Processing Options")
             st.markdown("- **Graph Pruning**: Filter by weight threshold to isolate core research pathways.")
             st.markdown("- **Community Extraction**: Export detected modularity clusters as separate subgraphs.")

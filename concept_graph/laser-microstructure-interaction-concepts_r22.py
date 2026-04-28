@@ -17,26 +17,29 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 - Heterogeneous graph support for edge-type-aware message passing
 - DGL CUDA compatibility diagnostics alongside existing PyTorch checks
 - Memory-efficient mini-batching ready for large concept graphs
+✅ SUNBURST & RADAR CHARTS (EXPANDED):
+- Sunburst handles large concept sets by limiting to top N nodes (configurable)
+- Custom label sizes, color schemes, chart dimensions
+- New radar chart for multi-dimensional concept comparison (frequency, semantic density, coherence, property gain)
+- Ability to choose top N nodes for radar, toggle metrics
 ✅ PYVIS DOWNLOAD CRASH FIX:
 - Changed cdn_resources='in_line' -> 'remote' (reduces HTML from ~5MB to ~50KB)
 - Safe bytes encoding for st.download_button to prevent Streamlit OOM
 - Explicit memory cleanup (del + gc.collect()) after download generation
-- Try/except isolation to prevent session state wipe on failure
-✅ SUNBURST CHART FIX:
-- Corrected marker.color -> marker.colors (Plotly Sunburst syntax)
-- Added cmap_name parameter to function signature
+✅ ENHANCED PYVIS CUSTOMIZATION:
+- Exposed node label size, edge width scaling, node shapes, physics parameters (gravity, spring strength)
+- Option to limit graph to top N nodes by degree or frequency
 ✅ CUDA COMPATIBILITY FIXES:
 - GPU compute capability detection
 - Automatic PyTorch/CUDA/DGL version validation
 - Graceful CPU fallback with user notification
-- Environment variable guidance for manual fixes
 ✅ ZERO API KEYS – all models run locally
 ✅ DUAL BACKEND: HF Transformers or Ollama
 ✅ MEMORY-AWARE: 4-bit quantization, VRAM estimation, CPU/GPU auto-detection
 ✅ DECLARMIMA-FOCUSED: Laser-microstructure interaction, multicomponent alloys, digital twins
 ✅ PHYSICS-INFORMED: Concept graphs, GraphSAGE embeddings, research direction scoring
 ✅ SMALL-CORPUS OPTIMIZED: Adaptive thresholds, semantic clustering, seed injection
-✅ ENHANCED VISUALIZATIONS: PyVis/Plotly 2D/3D, sunburst, colormaps, metrics dashboard
+✅ ENHANCED VISUALIZATIONS: PyVis/Plotly 2D/3D, sunburst, radar, colormaps, metrics dashboard
 ✅ NEW: Configurable statistical parameters (bootstrap samples, permutation tests, alpha level)
 ✅ NEW: Node/edge attribute preservation in all export formats
 ✅ NEW: Persistent visualization settings across sessions
@@ -1415,49 +1418,80 @@ def display_metric_dashboard(metrics: dict):
         st.dataframe(bridge_df, use_container_width=True)
 
 # ==========================================
-# CATEGORICAL SUNBURST CHART (FIXED: marker.colors)
+# CATEGORICAL SUNBURST CHART (FIXED: marker.colors) + TOP N + CUSTOM LABELS
 # ==========================================
-def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict):
+def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict, top_n_per_category: int = 30):
+    """
+    Build hierarchy for sunburst, optionally limiting children per category to top_n_per_category
+    based on frequency.
+    """
     hierarchy = defaultdict(lambda: {"children": [], "count": 0})
     for concept in valid_concepts:
         matched = False
         for pattern, category in CATEGORY_MAPPING.items():
-            if re.search(pattern, concept, re.I): parent = category; matched = True; break
-        if not matched: parent = "other_domain" if any(kw in concept.lower() for kw in DOMAIN_KEYWORDS) else "misc"
+            if re.search(pattern, concept, re.I):
+                parent = category
+                matched = True
+                break
+        if not matched:
+            parent = "other_domain" if any(kw in concept.lower() for kw in DOMAIN_KEYWORDS) else "misc"
         freq = len(concept_abstract_map.get(concept, []))
         hierarchy[parent]["children"].append((concept, freq))
         hierarchy[parent]["count"] += freq
+
+    # Sort children within each category by frequency descending and truncate
+    for parent in list(hierarchy.keys()):
+        children = hierarchy[parent]["children"]
+        if top_n_per_category > 0 and len(children) > top_n_per_category:
+            # Keep only top_n_per_category highest-frequency children
+            children.sort(key=lambda x: x[1], reverse=True)
+            children = children[:top_n_per_category]
+            # Update total count for parent to reflect truncated children
+            hierarchy[parent]["count"] = sum(cnt for _, cnt in children)
+            hierarchy[parent]["children"] = children
+
     labels, parents, values = [], [], []
     for parent, data in hierarchy.items():
-        labels.append(parent); parents.append(""); values.append(data["count"])
+        labels.append(parent)
+        parents.append("")
+        values.append(data["count"])
         for child, cnt in data["children"]:
-            labels.append(child); parents.append(parent); values.append(cnt)
+            labels.append(child)
+            parents.append(parent)
+            values.append(cnt)
     return labels, parents, values
 
-def render_sunburst_chart(labels, parents, values, cmap_name="viridis"):
-    """🔧 FIXED: Use 'colors' (plural) for Plotly Sunburst marker"""
+def render_sunburst_chart(labels, parents, values, cmap_name="viridis",
+                          label_size=12, width=800, height=600,
+                          max_label_length=30):
+    """Enhanced sunburst with customizable label size, truncation, colors, and dimensions."""
     if not labels:
         st.info("Not enough categories for sunburst chart.")
         return
+
+    # Truncate long labels for readability
+    display_labels = [lab[:max_label_length] + "…" if len(lab) > max_label_length else lab for lab in labels]
+
     colors = get_colormap_colors(cmap_name, len(labels))
     fig = go.Figure(go.Sunburst(
-        labels=labels,
+        labels=display_labels,
         parents=parents,
         values=values,
         branchvalues="total",
         marker=dict(
-            colors=colors,  # ← CRITICAL: 'colors' not 'color'
+            colors=colors,
             line=dict(width=0.5, color="white")
         ),
         textinfo="label+percent entry",
-        insidetextorientation="radial"
+        insidetextorientation="radial",
+        textfont=dict(size=label_size)
     ))
     fig.update_layout(
         title="<b>DECLARMIMA Research Domain Hierarchy</b><br><i>Size = concept frequency</i>",
-        font=dict(size=12, family="Arial"),
+        font=dict(size=label_size, family="Arial"),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        width=800, height=600
+        width=width, height=height
     )
     st.plotly_chart(fig, use_container_width=True)
     try:
@@ -1473,7 +1507,75 @@ def render_sunburst_chart(labels, parents, values, cmap_name="viridis"):
         st.info(f"💡 Install kaleido for SVG export: `pip install kaleido` (Error: {e})")
 
 # ==========================================
-# ENHANCED PYVIS GRAPH WITH CATEGORY COLORS & SAFE DOWNLOAD (CODE 1 BACKPORT)
+# NEW: RADAR CHART FOR MULTI-DIMENSIONAL CONCEPT COMPARISON
+# ==========================================
+def render_radar_chart(concept_scores_df: pd.DataFrame, top_k: int = 15,
+                       metrics: List[str] = None, title: str = "Concept Radar (Multi-Dimensional)"):
+    """
+    Render a radar chart comparing top_k concepts across selected metrics.
+    concept_scores_df should contain columns: 'concept' and any numeric metric columns.
+    """
+    if concept_scores_df.empty or len(concept_scores_df) < 2:
+        st.info("Not enough concepts for radar chart.")
+        return
+    if metrics is None:
+        # Default metrics if not specified
+        possible = ['frequency', 'distillation_efficiency', 'semantic_density', 'coherence_score', 'expected_property_gain']
+        metrics = [m for m in possible if m in concept_scores_df.columns]
+        if not metrics:
+            st.warning("No numeric metrics available for radar chart.")
+            return
+
+    # Take top_k concepts by distillation_efficiency if available, else by frequency
+    if 'distillation_efficiency' in concept_scores_df.columns:
+        top_concepts = concept_scores_df.nlargest(top_k, 'distillation_efficiency')
+    elif 'frequency' in concept_scores_df.columns:
+        top_concepts = concept_scores_df.nlargest(top_k, 'frequency')
+    else:
+        top_concepts = concept_scores_df.head(top_k)
+
+    # Normalize each metric to [0,1] for radar
+    normalized = top_concepts.copy()
+    for m in metrics:
+        if m in normalized.columns:
+            col = normalized[m]
+            if col.max() > col.min():
+                normalized[m] = (col - col.min()) / (col.max() - col.min())
+            else:
+                normalized[m] = 0.5
+
+    categories = metrics
+    fig = go.Figure()
+    for idx, row in normalized.iterrows():
+        concept = row['concept']
+        values = [row[m] for m in metrics]
+        # Close the loop
+        values += values[:1]
+        angles = [n / len(categories) * 2 * np.pi for n in range(len(categories))]
+        angles += angles[:1]
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=categories,
+            fill='toself',
+            name=concept[:20],  # truncate long names
+            line=dict(width=1),
+            opacity=0.7
+        ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 1], tickfont=dict(size=8)),
+            angularaxis=dict(tickfont=dict(size=10))
+        ),
+        title=title,
+        showlegend=True,
+        width=750, height=600,
+        legend=dict(font=dict(size=9))
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# ENHANCED PYVIS GRAPH WITH CATEGORY COLORS & SAFE DOWNLOAD
 # ==========================================
 def get_category_color(concept: str, cmap_colors: Optional[List[str]] = None) -> str:
     if cmap_colors: return cmap_colors[hash(concept) % len(cmap_colors)]
@@ -1487,11 +1589,17 @@ def get_category_color(concept: str, cmap_colors: Optional[List[str]] = None) ->
 
 def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=True, 
                               min_node_size=12, max_node_size=50, cmap_name="viridis", 
-                              custom_labels=None):
-    """Safe PyVis rendering with robust download handling (backport from CODE 1)"""
-    if len(nx_graph.nodes()) > 100:
+                              custom_labels=None,
+                              # New customization parameters
+                              node_label_size=14, edge_label_visible=False,
+                              node_shape="dot", gravity=-2000, spring_length=150,
+                              spring_strength=0.05, damping=0.09, overlap=0.5,
+                              top_n_nodes=0):  # if >0, limit to top N nodes by degree
+    """Safe PyVis rendering with robust download handling and extended customization."""
+    # Optional node limit
+    if top_n_nodes > 0 and len(nx_graph.nodes()) > top_n_nodes:
         degrees = dict(nx_graph.degree())
-        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:top_n_nodes]
         nx_graph = nx_graph.subgraph(top_nodes).copy()
 
     cmap_colors = get_colormap_colors(cmap_name, len(nx_graph.nodes()))
@@ -1501,8 +1609,8 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
     )
 
     if physics_enabled:
-        net.barnes_hut(gravity=-2000, spring_length=150, spring_strength=0.05, 
-                       damping=0.09, overlap=0.5)
+        net.barnes_hut(gravity=gravity, spring_length=spring_length, spring_strength=spring_strength, 
+                       damping=damping, overlap=overlap)
     else:
         net.set_options("var options = { physics: { enabled: false }, layout: { improvedLayout: false } }")
 
@@ -1512,8 +1620,10 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         color = get_category_color(node, cmap_colors)
         degree = int(nx_graph.degree(node))
         label = custom_labels.get(node, node) if custom_labels else node
-        net.add_node(node, label=label, size=size, color=color,
-                     font={'color': '#000000', 'size': 14},
+        # Apply node shape (only a subset of shapes supported by PyVis)
+        shape = node_shape if node_shape in ["dot", "circle", "square", "triangle", "star"] else "dot"
+        net.add_node(node, label=label, size=size, color=color, shape=shape,
+                     font={'color': '#000000', 'size': node_label_size},
                      title=f"{node}\nDegree: {degree}\nFrequency: {freq}")
 
     color_map = {'cooccurrence': "#4CAF50", 'semantic': "#2196F3", 
@@ -1523,9 +1633,12 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         w = nx_graph[u][v].get('weight', 1)
         edge_type = nx_graph[u][v].get('edge_type', 'unknown')
         color = color_map.get(edge_type, "#607D8B")
+        # Edge label (optional)
+        label = f"{w:.2f}" if edge_label_visible else ""
         net.add_edge(u, v, value=float(np.clip(w, 0.5, 5)), 
                      width=float(np.clip(w * 0.8, 1, 4)),
-                     color=color, smooth={'type': 'curvedCW', 'roundness': 0.2})
+                     color=color, smooth={'type': 'curvedCW', 'roundness': 0.2},
+                     label=label, title=f"weight: {w:.2f}<br>type: {edge_type}")
 
     html_content = net.generate_html()
     st.components.v1.html(html_content, height=750, scrolling=True)
@@ -1548,24 +1661,32 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         st.error(f"⚠️ Download preparation failed: {e}")
         st.info("💡 Try reducing graph size (max 100 nodes) or use Plotly instead.")
 
-def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis", custom_labels=None):
-    """Enhanced Plotly 2D with safe JSON export"""
-    if len(nx_graph.nodes()) > 100:
+def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis", custom_labels=None,
+                              top_n_nodes=0, node_label_size=12, edge_label_visible=False):
+    """Enhanced Plotly 2D with safe JSON export and node/edge customization."""
+    if top_n_nodes > 0 and len(nx_graph.nodes()) > top_n_nodes:
         degrees = dict(nx_graph.degree())
-        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:100]
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:top_n_nodes]
         nx_graph = nx_graph.subgraph(top_nodes).copy()
 
     pos = nx.spring_layout(nx_graph, k=2, iterations=50, seed=SEED)
     cmap_colors = get_colormap_colors(cmap_name, len(nx_graph.nodes()))
 
-    edge_x, edge_y, edge_hover = [], [], []
+    edge_x, edge_y, edge_hover, edge_text = [], [], [], []
     for u, v in nx_graph.edges():
         x0, y0 = pos[u]; x1, y1 = pos[v]
         edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None])
         w = nx_graph[u][v].get('weight', 1); edge_type = nx_graph[u][v].get('edge_type', 'unknown')
-        edge_hover.extend([f"{u} ↔ {v}<br>Weight: {w:.2f}<br>Type: {edge_type}"] * 2 + [None])
-
-    edge_trace = go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1.2, color='#666'), hoverinfo='text', hovertext=edge_hover, name='Connections')
+        hover_info = f"{u} ↔ {v}<br>Weight: {w:.2f}<br>Type: {edge_type}"
+        edge_hover.extend([hover_info] * 2 + [None])
+        if edge_label_visible:
+            edge_text.extend([f"{w:.1f}", f"{w:.1f}", None])
+        else:
+            edge_text.extend(["", "", None])
+    edge_trace = go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=1.2, color='#666'),
+                            hoverinfo='text', hovertext=edge_hover, text=edge_text,
+                            textposition="middle center", textfont=dict(size=8),
+                            name='Connections')
 
     node_x, node_y, node_text, node_size, node_color, node_symbol, node_labels = [], [], [], [], [], [], []
     for i, node in enumerate(nx_graph.nodes()):
@@ -1584,11 +1705,22 @@ def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis
         elif any(d in n_lower for d in ['digital', 'twin', 'machine', 'learning', 'neural', 'graph']): node_symbol.append('star')
         else: node_symbol.append('circle')
 
-    node_trace = go.Scatter(x=node_x, y=node_y, mode='markers+text', marker=dict(size=node_size, color=node_color, line=dict(width=2, color='#ffffff'), symbol=node_symbol), text=node_labels, textposition="bottom center", textfont=dict(size=10, color='#000000'), hovertext=node_text, hoverinfo='text', name='Concepts')
+    node_trace = go.Scatter(x=node_x, y=node_y, mode='markers+text', 
+                            marker=dict(size=node_size, color=node_color, line=dict(width=2, color='#ffffff'), symbol=node_symbol),
+                            text=node_labels, textposition="bottom center", textfont=dict(size=node_label_size, color='#000000'),
+                            hovertext=node_text, hoverinfo='text', name='Concepts')
 
-    fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(showlegend=False, hovermode='closest', margin=dict(b=0, l=0, r=0, t=0), plot_bgcolor='#ffffff', paper_bgcolor='#ffffff', xaxis=dict(showgrid=True, zeroline=False, showticklabels=False, gridcolor='#eee', range=[-1.5, 1.5]), yaxis=dict(showgrid=True, zeroline=False, showticklabels=False, gridcolor='#eee', range=[-1.5, 1.5]), annotations=[dict(text="🔬 Drag nodes • Hover for details • Scroll to zoom • DECLARMIMA-aligned edges in pink", showarrow=False, xref="paper", yref="paper", x=0.5, y=-0.05, font=dict(size=10, color='#666'))]))
-    fig.update_layout(updatemenus=[dict(type="buttons", showactive=False, x=0.1, xanchor="left", y=1.15, yanchor="top", buttons=[dict(label="🔄 Re-layout", method="relayout", args=[{"xaxis.range": [-1.5, 1.5], "yaxis.range": [-1.5, 1.5]}]), dict(label="🔍 Zoom In", method="relayout", args=[{"xaxis.autorange": False, "yaxis.autorange": False}]), dict(label="📐 Reset View", method="relayout", args=[{"xaxis.autorange": True, "yaxis.autorange": True}])])])
-
+    fig = go.Figure(data=[edge_trace, node_trace],
+                    layout=go.Layout(showlegend=False, hovermode='closest', margin=dict(b=0, l=0, r=0, t=0),
+                                     plot_bgcolor='#ffffff', paper_bgcolor='#ffffff',
+                                     xaxis=dict(showgrid=True, zeroline=False, showticklabels=False, gridcolor='#eee', range=[-1.5, 1.5]),
+                                     yaxis=dict(showgrid=True, zeroline=False, showticklabels=False, gridcolor='#eee', range=[-1.5, 1.5]),
+                                     annotations=[dict(text="🔬 Drag nodes • Hover for details • Scroll to zoom • DECLARMIMA-aligned edges in pink",
+                                                       showarrow=False, xref="paper", yref="paper", x=0.5, y=-0.05, font=dict(size=10, color='#666'))]))
+    fig.update_layout(updatemenus=[dict(type="buttons", showactive=False, x=0.1, xanchor="left", y=1.15, yanchor="top",
+                                        buttons=[dict(label="🔄 Re-layout", method="relayout", args=[{"xaxis.range": [-1.5, 1.5], "yaxis.range": [-1.5, 1.5]}]),
+                                                 dict(label="🔍 Zoom In", method="relayout", args=[{"xaxis.autorange": False, "yaxis.autorange": False}]),
+                                                 dict(label="📐 Reset View", method="relayout", args=[{"xaxis.autorange": True, "yaxis.autorange": True}])])])
     st.plotly_chart(fig, use_container_width=True, key="plotly_graph")
 
     try:
@@ -1597,11 +1729,15 @@ def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis
     except Exception as e:
         st.info(f"💡 JSON export unavailable: {e}")
 
-def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_labels=None):
-    """3D Plotly visualization with colormap support"""
+def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_labels=None, top_n_nodes=0, node_label_size=10):
+    """3D Plotly visualization with colormap support and node limit."""
     if len(nx_graph.nodes()) < 3:
         st.info("3D view requires ≥3 nodes.")
         return
+    if top_n_nodes > 0 and len(nx_graph.nodes()) > top_n_nodes:
+        degrees = dict(nx_graph.degree())
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:top_n_nodes]
+        nx_graph = nx_graph.subgraph(top_nodes).copy()
 
     pos_3d = nx.spring_layout(nx_graph, dim=3, seed=SEED)
     cmap_colors = get_colormap_colors(cmap_name, len(nx_graph.nodes()))
@@ -1610,7 +1746,6 @@ def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_l
     for u, v in nx_graph.edges():
         x0, y0, z0 = pos_3d[u]; x1, y1, z1 = pos_3d[v]
         edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None]); edge_z.extend([z0, z1, None])
-
     edge_trace = go.Scatter3d(x=edge_x, y=edge_y, z=edge_z, mode='lines', line=dict(width=2, color='#666'), hoverinfo='skip')
 
     node_x, node_y, node_z, node_text, node_size, node_color, node_labels = [], [], [], [], [], [], []
@@ -1622,10 +1757,13 @@ def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_l
         node_size.append(max(8, min(35, deg * 2.5 + 10)))
         node_color.append(cmap_colors[i])
         node_labels.append(custom_labels.get(node, node) if custom_labels else node)
-
-    node_trace = go.Scatter3d(x=node_x, y=node_y, z=node_z, mode='markers+text', marker=dict(size=node_size, color=node_color, opacity=0.9), text=node_labels, textposition="top center", textfont=dict(size=9, color='#000000'), hovertext=node_text, hoverinfo='text')
-
-    fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(scene=dict(xaxis=dict(showbackground=False), yaxis=dict(showbackground=False), zaxis=dict(showbackground=False)), margin=dict(l=0, r=0, b=0, t=0), showlegend=False))
+    node_trace = go.Scatter3d(x=node_x, y=node_y, z=node_z, mode='markers+text',
+                              marker=dict(size=node_size, color=node_color, opacity=0.9),
+                              text=node_labels, textposition="top center", textfont=dict(size=node_label_size, color='#000000'),
+                              hovertext=node_text, hoverinfo='text')
+    fig = go.Figure(data=[edge_trace, node_trace],
+                    layout=go.Layout(scene=dict(xaxis=dict(showbackground=False), yaxis=dict(showbackground=False), zaxis=dict(showbackground=False)),
+                                     margin=dict(l=0, r=0, b=0, t=0), showlegend=False))
     st.plotly_chart(fig, use_container_width=True)
 
 def render_graph_fallback(nx_graph, concept_abstract_map):
@@ -1783,11 +1921,31 @@ def render_sidebar():
         st.session_state.min_node_size = st.slider("Min node size", 8, 30, 12, key="min_size")
         st.session_state.max_node_size = st.slider("Max node size", 30, 80, 50, key="max_size")
         st.session_state.custom_label_prefix = st.text_input("Node Label Prefix (optional)", value="", help="e.g., 'AM-' or 'MAT-'")
-        # 🔧 NEW: Advanced Statistical Settings
-        with st.expander("📐 Advanced Statistical Settings"):
-            st.session_state.bootstrap_samples = st.slider("Bootstrap samples for CI", 100, 2000, 500)
-            st.session_state.permutation_tests = st.slider("Permutation tests for edge significance", 10, 100, 20)
-            st.session_state.alpha_level = st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1)
+        # Extended PyVis customization
+        st.session_state.node_label_size = st.slider("Node label size (PyVis/Plotly)", 8, 20, 14, key="node_label_size")
+        st.session_state.edge_label_visible = st.checkbox("Show edge weights as labels", value=False, key="edge_label")
+        st.session_state.node_shape = st.selectbox("Node shape (PyVis)", options=["dot", "circle", "square", "triangle", "star"], index=0)
+        with st.expander("🔧 Advanced Physics Parameters"):
+            st.session_state.gravity = st.slider("Gravity", -5000, -500, -2000, step=100, key="gravity")
+            st.session_state.spring_length = st.slider("Spring length", 50, 300, 150, key="spring_len")
+            st.session_state.spring_strength = st.slider("Spring strength", 0.01, 0.2, 0.05, step=0.01, key="spring_str")
+            st.session_state.damping = st.slider("Damping", 0.05, 0.5, 0.09, step=0.01, key="damping")
+            st.session_state.overlap = st.slider("Overlap", 0.0, 1.0, 0.5, step=0.1, key="overlap")
+
+        st.subheader("🌞 Sunburst & Radar Customization")
+        st.session_state.top_n_sunburst = st.slider("Max children per category (sunburst)", 5, 100, 30, key="top_sunburst")
+        st.session_state.sunburst_label_size = st.slider("Sunburst label size", 8, 20, 12, key="sun_label_size")
+        st.session_state.sunburst_cmap = st.selectbox("Sunburst colormap", options=list(SUPPORTED_COLORMAPS.keys()), index=0, key="sun_cmap")
+        st.session_state.radar_enabled = st.checkbox("Show radar chart", value=True, key="radar_enable")
+        st.session_state.radar_top_k = st.slider("Top K concepts for radar", 5, 30, 15, key="radar_top")
+        # Graph node limit
+        st.session_state.graph_top_n_nodes = st.slider("Limit graph to top N nodes (0 = all)", 0, 200, 100, key="graph_top_n")
+
+        st.subheader("📐 Advanced Statistical Settings")
+        st.session_state.bootstrap_samples = st.slider("Bootstrap samples for CI", 100, 2000, 500)
+        st.session_state.permutation_tests = st.slider("Permutation tests for edge significance", 10, 100, 20)
+        st.session_state.alpha_level = st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1)
+
         st.markdown("---")
         st.markdown("**🎯 DECLARMIMA Focus Areas:**")
         st.markdown("- 🔬 Laser-matter interaction mechanisms")
@@ -1975,20 +2133,68 @@ def main():
                 st.warning("⚠️ No edges — building semantic fallback")
                 nx_graph = build_semantic_only_graph(list(nx_graph.nodes()), embed_model, similarity_threshold=0.65)
             viz_choice = st.session_state.get('viz_backend', 'PyVis (Interactive Network)')
+            top_n_graph = st.session_state.get('graph_top_n_nodes', 0)
             if viz_choice == "PyVis (Interactive Network)":
-                render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=st.session_state.get('physics_enabled', True), min_node_size=st.session_state.get('min_node_size', 12), max_node_size=st.session_state.get('max_node_size', 50), cmap_name=cmap, custom_labels=custom_labels)
+                render_graph_pyvis_custom(
+                    nx_graph, concept_abstract_map,
+                    physics_enabled=st.session_state.get('physics_enabled', True),
+                    min_node_size=st.session_state.get('min_node_size', 12),
+                    max_node_size=st.session_state.get('max_node_size', 50),
+                    cmap_name=cmap, custom_labels=custom_labels,
+                    node_label_size=st.session_state.get('node_label_size', 14),
+                    edge_label_visible=st.session_state.get('edge_label_visible', False),
+                    node_shape=st.session_state.get('node_shape', 'dot'),
+                    gravity=st.session_state.get('gravity', -2000),
+                    spring_length=st.session_state.get('spring_length', 150),
+                    spring_strength=st.session_state.get('spring_strength', 0.05),
+                    damping=st.session_state.get('damping', 0.09),
+                    overlap=st.session_state.get('overlap', 0.5),
+                    top_n_nodes=top_n_graph
+                )
             elif viz_choice == "Plotly 2D":
-                render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name=cmap, custom_labels=custom_labels)
+                render_graph_plotly_white(
+                    nx_graph, concept_abstract_map, cmap_name=cmap, custom_labels=custom_labels,
+                    top_n_nodes=top_n_graph, node_label_size=st.session_state.get('node_label_size', 12),
+                    edge_label_visible=st.session_state.get('edge_label_visible', False)
+                )
             elif viz_choice == "Plotly 3D":
-                render_plotly_3d(nx_graph, concept_abstract_map, cmap_name=cmap, custom_labels=custom_labels)
+                render_plotly_3d(
+                    nx_graph, concept_abstract_map, cmap_name=cmap, custom_labels=custom_labels,
+                    top_n_nodes=top_n_graph, node_label_size=st.session_state.get('node_label_size', 10)
+                )
             else:
                 render_graph_fallback(nx_graph, concept_abstract_map)
+
             with st.expander("📊 Graph Structural Metrics", expanded=False):
                 metrics = compute_graph_metrics(nx_graph)
                 display_metric_dashboard(metrics)
+
             with st.expander("📈 Research Domain Hierarchy (Sunburst)", expanded=False):
-                labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map)
-                render_sunburst_chart(labels, parents, values, cmap_name=cmap)
+                top_n_sun = st.session_state.get('top_n_sunburst', 30)
+                labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map, top_n_per_category=top_n_sun)
+                render_sunburst_chart(
+                    labels, parents, values,
+                    cmap_name=st.session_state.get('sunburst_cmap', cmap),
+                    label_size=st.session_state.get('sunburst_label_size', 12),
+                    width=800, height=600, max_label_length=30
+                )
+
+            # New Radar Chart
+            if st.session_state.get('radar_enabled', True):
+                with st.expander("📡 Concept Radar Chart (Multi-Dimensional Comparison)", expanded=False):
+                    # Build a dataframe with metrics for each concept
+                    distill_df = compute_concept_distillation(valid_concepts, concept_abstract_map, abstracts)
+                    # Add expected property gain if available
+                    prop_gain_df = top_scores[['concept_u', 'expected_property_gain']].rename(columns={'concept_u': 'concept'})
+                    prop_gain_df2 = top_scores[['concept_v', 'expected_property_gain']].rename(columns={'concept_v': 'concept'})
+                    prop_gain_combined = pd.concat([prop_gain_df, prop_gain_df2], ignore_index=True).groupby('concept')['expected_property_gain'].mean().reset_index()
+                    radar_df = distill_df.merge(prop_gain_combined, on='concept', how='left')
+                    radar_df.fillna(0, inplace=True)
+                    radar_top_k = st.session_state.get('radar_top_k', 15)
+                    render_radar_chart(radar_df, top_k=radar_top_k,
+                                       metrics=['frequency', 'distillation_efficiency', 'coherence_score', 'expected_property_gain'],
+                                       title="Top Concepts: Frequency, Efficiency, Coherence, Expected Property Gain")
+
         with distill_tab:
             st.subheader("🔍 Concept Distillation Efficiency")
             distill_df = compute_concept_distillation(valid_concepts, concept_abstract_map, abstracts)
@@ -2022,12 +2228,10 @@ def main():
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("R²", f"{r2_score(y_target, y_pred):.3f}")
                     c2.metric("MAE", f"{mean_absolute_error(y_target, y_pred):.2f}")
-                    # ✅ FIXED: use root_mean_squared_error (compatible with sklearn >=1.6)
                     try:
                         rmse_val = root_mean_squared_error(y_target, y_pred)
                         c3.metric("RMSE", f"{rmse_val:.2f}")
-                    except Exception as e:
-                        # Fallback for older sklearn
+                    except:
                         rmse_val = np.sqrt(mean_squared_error(y_target, y_pred))
                         c3.metric("RMSE", f"{rmse_val:.2f}")
                     c4.metric("Features Used", len(X_feat))

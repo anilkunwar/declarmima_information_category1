@@ -4008,7 +4008,7 @@ def render_sidebar():
         # Advanced Settings
         with st.expander("📐 Advanced Settings"):
             st.slider("Bootstrap samples", 100, 2000, 500, key="bootstrap_samples")
-            st.slider("Permutation tests", 10, 100, 20, key="permutation_tests")
+            st.slider("Permutation tests", 10, 2000, 1000, key="permutation_tests")
             st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1, key="alpha_level")
             st.slider("Graph node limit", 0, 200, 100, key="graph_top_n_nodes")
         

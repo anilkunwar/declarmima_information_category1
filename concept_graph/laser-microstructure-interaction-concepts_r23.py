@@ -2261,6 +2261,53 @@ def compute_graph_validity_metrics(nx_graph):
     metrics['transitivity'] = nx.transitivity(nx_graph)
     
     return metrics
+#
+def compute_bootstrap_ci_for_gnn(scores, n_bootstrap=500, alpha=0.05, random_state=42):
+    """
+    Compute bootstrap confidence interval for the mean of an array of scores.
+    
+    Parameters:
+    -----------
+    scores : array-like
+        Composite scores from GNN (e.g., top_scores['composite_score'])
+    n_bootstrap : int
+        Number of bootstrap resamples
+    alpha : float
+        Significance level (e.g., 0.05 for 95% CI)
+    random_state : int
+        For reproducibility
+    
+    Returns:
+    --------
+    mean_estimate : float
+        Original sample mean
+    ci_lower : float
+        Lower bound of (1-alpha)*100% CI
+    ci_upper : float
+        Upper bound of (1-alpha)*100% CI
+    """
+    import numpy as np
+    np.random.seed(random_state)
+    
+    scores = np.asarray(scores)
+    if len(scores) == 0:
+        return np.nan, np.nan, np.nan
+    
+    # Original mean
+    mean_estimate = np.mean(scores)
+    
+    # Bootstrap resampling
+    bootstrap_means = []
+    n = len(scores)
+    for _ in range(n_bootstrap):
+        indices = np.random.choice(n, size=n, replace=True)
+        bootstrap_means.append(np.mean(scores[indices]))
+    
+    # Percentile CI
+    ci_lower = np.percentile(bootstrap_means, 100 * alpha / 2)
+    ci_upper = np.percentile(bootstrap_means, 100 * (1 - alpha / 2))
+    
+    return mean_estimate, ci_lower, ci_upper
     
 def validate_graph_metrics(nx_graph, valid_concepts, concept_abstract_map, embed_model=None, n_permutations=100):
     """

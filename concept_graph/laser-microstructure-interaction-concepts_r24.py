@@ -46,11 +46,23 @@ DECLARMIMA: Alloy Microstructure Concept Graph with Dual LLM Backend Support
 ✅ FIXED: sklearn `root_mean_squared_error` compatibility (scikit-learn >=1.6)
 ✅ FIXED: Session state management + crash prevention (cache reset on input change)
 
+✨ V2 ENHANCEMENTS (EDGE EXPLANATIONS + CHORD + CUSTOM RADAR/SUNBURST):
+- LLM-generated edge explanations stored as edge attributes and shown in tooltips/hovertext
+- Adjustable Top-N filtering for distillation metrics with live controls
+- Fully customizable radar charts: font size, line width, colormap, fill opacity, metric selection
+- Fully customizable sunburst charts: font size, dimensions, colormap, label truncation, value display
+- NEW Chord Diagram for Top-N concepts with three backends:
+    • Plotly (custom polar-based implementation, no extra deps)
+    • HoloViews + Bokeh (rich interactivity, optional install)
+    • Matplotlib (static fallback, always available)
+- Chord customization: top N slider, colormap, edge opacity/threshold, label font size, sort order
+
 DEPLOYMENT:
 pip install streamlit torch transformers sentence-transformers networkx scikit-learn
 pip install pyvis plotly pandas numpy kaleido matplotlib scipy seaborn
 pip install ollama  # optional for Ollama backend
 pip install dgl -f https://data.dgl.ai/wheels/cu118/repo.html  # optional, adjust CUDA version
+pip install holoviews bokeh  # optional for HoloViews chord diagram
 
 Run: streamlit run declarmima_concept_graph.py
 """
@@ -100,6 +112,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.colors
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyArrowPatch, Arc
 import seaborn as sns
 from sentence_transformers import SentenceTransformer
 from transformers import (
@@ -141,6 +156,16 @@ try:
 except ImportError:
     OLLAMA_AVAILABLE = False
     ollama = None
+
+# Optional HoloViews + Bokeh for chord diagram
+try:
+    import holoviews as hv
+    from holoviews import opts
+    hv.extension('bokeh')
+    HOLOVIEWS_AVAILABLE = True
+except ImportError:
+    HOLOVIEWS_AVAILABLE = False
+    hv = None
 
 warnings.filterwarnings('ignore')
 
@@ -672,7 +697,7 @@ def compute_concept_distillation(valid_concepts: List[str], concept_abstract_map
     for c in valid_concepts:
         doc_text = " ".join([all_abstracts[i] for i in concept_abstract_map.get(c, [])])
         doc_corpus.append(doc_text)
-    
+
     tfidf = TfidfVectorizer(analyzer='word', ngram_range=(1,2), stop_words='english')
     try:
         tfidf_matrix = tfidf.fit_transform(doc_corpus)
@@ -689,7 +714,7 @@ def compute_concept_distillation(valid_concepts: List[str], concept_abstract_map
             concept_embeddings = load_embedding_model().encode(doc_corpus[i].split()[:20], show_progress_bar=False)
             if len(concept_embeddings) > 1:
                 coherence = float(np.mean(cosine_similarity(concept_embeddings)).clip(0,1))
-        
+
         distill_data.append({
             "concept": c,
             "tfidf_weight": semantic_density,
@@ -1418,6 +1443,63 @@ def display_metric_dashboard(metrics: dict):
         st.dataframe(bridge_df, use_container_width=True)
 
 # ==========================================
+# ✨ EDGE EXPLANATION GENERATION (NEW V2)
+# ==========================================
+def generate_edge_explanations(nx_graph: nx.Graph, tokenizer, model, backend_type: str, 
+                                max_edges: int = 20, progress_callback=None) -> nx.Graph:
+    """
+    Generate LLM-based explanations for the top-weighted edges in the graph.
+    Stores explanation in edge attribute 'explanation'.
+    """
+    if nx_graph.number_of_edges() == 0:
+        return nx_graph
+
+    # Sort edges by weight and pick top N
+    edges_sorted = sorted(nx_graph.edges(data=True), key=lambda x: x[2].get('weight', 0), reverse=True)
+    edges_to_process = edges_sorted[:max_edges]
+
+    prompt_template = """Explain in 1-2 short sentences why the concepts "{u}" and "{v}" are scientifically related in the context of laser-microstructure interaction in multicomponent alloys. Focus on physical mechanisms, process-structure-property links, or DECLARMIMA goals. Be concise."""
+
+    for idx, (u, v, data) in enumerate(edges_to_process):
+        if 'explanation' in data and data['explanation']:
+            continue  # skip if already explained
+        prompt = prompt_template.format(u=u, v=v)
+        explanation = ""
+        try:
+            if backend_type == "ollama":
+                try:
+                    client = ollama.Client(host=st.session_state.get('ollama_host', 'http://localhost:11434'))
+                    response = client.chat(model=model, messages=[{"role": "user", "content": prompt}], 
+                                           options={"temperature": 0.3, "num_predict": 80})
+                    explanation = response.get('message', {}).get('content', '') if isinstance(response, dict) else getattr(response, 'message', {}).get('content', '')
+                except Exception as e:
+                    explanation = f"Related via {data.get('edge_type', 'unknown')} edge (weight: {data.get('weight', 1):.2f})."
+            else:
+                try:
+                    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=256).to(DEVICE)
+                    with torch.no_grad():
+                        outputs = model.generate(inputs.input_ids, max_new_tokens=80, temperature=0.3, 
+                                                 do_sample=True, pad_token_id=tokenizer.eos_token_id)
+                    explanation = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+                    del inputs, outputs
+                    if DEVICE.type == 'cuda': torch.cuda.empty_cache()
+                except Exception as e:
+                    explanation = f"Related via {data.get('edge_type', 'unknown')} edge (weight: {data.get('weight', 1):.2f})."
+        except Exception as e:
+            explanation = f"Related via {data.get('edge_type', 'unknown')} edge (weight: {data.get('weight', 1):.2f})."
+
+        # Clean and store
+        explanation = explanation.replace('"', '').replace("'", "").strip()
+        if len(explanation) < 5:
+            explanation = f"{u.title()} and {v.title()} are linked through {data.get('edge_type', 'co-occurrence')} patterns in the corpus."
+        nx_graph[u][v]['explanation'] = explanation
+
+        if progress_callback:
+            progress_callback(idx + 1, len(edges_to_process))
+
+    return nx_graph
+
+# ==========================================
 # CATEGORICAL SUNBURST CHART (FIXED: marker.colors) + TOP N + CUSTOM LABELS
 # ==========================================
 def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict, top_n_per_category: int = 30):
@@ -1461,8 +1543,8 @@ def build_category_hierarchy(valid_concepts: list, concept_abstract_map: dict, t
 
 def render_sunburst_chart(labels, parents, values, cmap_name="viridis",
                           label_size=12, width=800, height=600,
-                          max_label_length=30):
-    """Enhanced sunburst with customizable label size, truncation, colors, and dimensions."""
+                          max_label_length=30, show_values=True, show_percent=True):
+    """Enhanced sunburst with customizable label size, truncation, colors, dimensions, and value display."""
     if not labels:
         st.info("Not enough categories for sunburst chart.")
         return
@@ -1471,6 +1553,14 @@ def render_sunburst_chart(labels, parents, values, cmap_name="viridis",
     display_labels = [lab[:max_label_length] + "…" if len(lab) > max_label_length else lab for lab in labels]
 
     colors = get_colormap_colors(cmap_name, len(labels))
+    textinfo = "label"
+    if show_values and show_percent:
+        textinfo = "label+percent entry+value"
+    elif show_percent:
+        textinfo = "label+percent entry"
+    elif show_values:
+        textinfo = "label+value"
+
     fig = go.Figure(go.Sunburst(
         labels=display_labels,
         parents=parents,
@@ -1480,7 +1570,7 @@ def render_sunburst_chart(labels, parents, values, cmap_name="viridis",
             colors=colors,
             line=dict(width=0.5, color="white")
         ),
-        textinfo="label+percent entry",
+        textinfo=textinfo,
         insidetextorientation="radial",
         textfont=dict(size=label_size)
     ))
@@ -1505,12 +1595,14 @@ def render_sunburst_chart(labels, parents, values, cmap_name="viridis",
         st.info(f"💡 Install kaleido for SVG export: `pip install kaleido` (Error: {e})")
 
 # ==========================================
-# NEW: RADAR CHART FOR MULTI-DIMENSIONAL CONCEPT COMPARISON
+# NEW: RADAR CHART FOR MULTI-DIMENSIONAL CONCEPT COMPARISON (ENHANCED V2)
 # ==========================================
 def render_radar_chart(concept_scores_df: pd.DataFrame, top_k: int = 15,
-                       metrics: List[str] = None, title: str = "Concept Radar (Multi-Dimensional)"):
+                       metrics: List[str] = None, title: str = "Concept Radar (Multi-Dimensional)",
+                       cmap_name: str = "viridis", font_size: int = 12, line_width: int = 2,
+                       fill_opacity: float = 0.6, show_legend: bool = True, height: int = 600):
     """
-    Render a radar chart comparing top_k concepts across selected metrics.
+    Render a radar chart comparing top_k concepts across selected metrics with full customization.
     concept_scores_df should contain columns: 'concept' and any numeric metric columns.
     """
     if concept_scores_df.empty or len(concept_scores_df) < 2:
@@ -1544,7 +1636,9 @@ def render_radar_chart(concept_scores_df: pd.DataFrame, top_k: int = 15,
 
     categories = metrics
     fig = go.Figure()
-    for idx, row in normalized.iterrows():
+    colors = get_colormap_colors(cmap_name, len(normalized))
+
+    for idx, (_, row) in enumerate(normalized.iterrows()):
         concept = row['concept']
         values = [row[m] for m in metrics]
         # Close the loop
@@ -1555,25 +1649,347 @@ def render_radar_chart(concept_scores_df: pd.DataFrame, top_k: int = 15,
             r=values,
             theta=categories,
             fill='toself',
-            name=concept[:20],  # truncate long names
-            line=dict(width=1),
-            opacity=0.7
+            name=concept[:25],  # truncate long names
+            line=dict(width=line_width, color=colors[idx]),
+            fillcolor=colors[idx],
+            opacity=fill_opacity,
+            marker=dict(size=4)
         ))
 
     fig.update_layout(
         polar=dict(
-            radialaxis=dict(visible=True, range=[0, 1], tickfont=dict(size=8)),
-            angularaxis=dict(tickfont=dict(size=10))
+            radialaxis=dict(visible=True, range=[0, 1], tickfont=dict(size=max(8, font_size-4))),
+            angularaxis=dict(tickfont=dict(size=font_size))
         ),
         title=title,
-        showlegend=True,
-        width=750, height=600,
-        legend=dict(font=dict(size=9))
+        showlegend=show_legend,
+        width=750, height=height,
+        legend=dict(font=dict(size=max(8, font_size-2)), orientation="h", yanchor="bottom", y=-0.2),
+        font=dict(size=font_size)
     )
     st.plotly_chart(fig, use_container_width=True)
+    try:
+        svg_bytes = fig.to_image(format="svg", scale=2)
+        st.download_button("📸 Download Radar as SVG", data=svg_bytes, file_name="radar.svg", mime="image/svg+xml", key="radar_svg")
+    except Exception as e:
+        st.info(f"💡 Install kaleido for SVG export: `pip install kaleido` (Error: {e})")
 
 # ==========================================
-# ENHANCED PYVIS GRAPH WITH CATEGORY COLORS & SAFE DOWNLOAD
+# ✨ CHORD DIAGRAM IMPLEMENTATIONS (NEW V2)
+# ==========================================
+def _get_top_n_subgraph(nx_graph: nx.Graph, valid_concepts: List[str], concept_abstract_map: Dict,
+                        top_n: int = 15, sort_by: str = "degree") -> Tuple[nx.Graph, List[str]]:
+    """Extract a subgraph of the top N concepts by degree or frequency."""
+    if sort_by == "degree":
+        degrees = dict(nx_graph.degree(weight='weight'))
+        top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:top_n]
+    elif sort_by == "frequency":
+        freqs = {c: len(concept_abstract_map.get(c, [])) for c in valid_concepts}
+        top_nodes = sorted(freqs.keys(), key=lambda x: freqs[x], reverse=True)[:top_n]
+    elif sort_by == "distillation":
+        # Will be handled externally by passing pre-sorted nodes
+        top_nodes = valid_concepts[:top_n]
+    else:
+        top_nodes = valid_concepts[:top_n]
+
+    subgraph = nx_graph.subgraph(top_nodes).copy()
+    return subgraph, top_nodes
+
+def render_chord_diagram_plotly(nx_graph: nx.Graph, valid_concepts: List[str], 
+                                concept_abstract_map: Dict, top_n: int = 15,
+                                cmap_name: str = "viridis", edge_opacity: float = 0.6,
+                                edge_threshold: float = 0.0, label_font_size: int = 10,
+                                sort_by: str = "degree", height: int = 700):
+    """
+    Custom Plotly-based chord diagram for top N concepts.
+    Uses polar layout with arc sectors and quadratic Bezier curves for ribbons.
+    """
+    subgraph, top_nodes = _get_top_n_subgraph(nx_graph, valid_concepts, concept_abstract_map, top_n, sort_by)
+    if len(top_nodes) < 3:
+        st.info("Chord diagram requires at least 3 concepts. Try increasing Top N.")
+        return
+
+    n = len(top_nodes)
+    node_to_idx = {node: i for i, node in enumerate(top_nodes)}
+    colors = get_colormap_colors(cmap_name, n)
+
+    # Build adjacency matrix
+    adj = np.zeros((n, n))
+    max_weight = 0
+    for u, v, data in subgraph.edges(data=True):
+        if u in node_to_idx and v in node_to_idx:
+            w = data.get('weight', 1)
+            if w >= edge_threshold:
+                i, j = node_to_idx[u], node_to_idx[v]
+                adj[i][j] += w
+                adj[j][i] += w
+                max_weight = max(max_weight, w)
+
+    if max_weight == 0:
+        st.info("No edges above threshold for chord diagram.")
+        return
+
+    # Angular positions
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    # Sort by adjacency sum for better visual grouping
+    sort_order = np.argsort(-adj.sum(axis=1))
+    angles_sorted = np.zeros(n)
+    for new_pos, old_pos in enumerate(sort_order):
+        angles_sorted[old_pos] = angles[new_pos]
+
+    # Node arc parameters
+    arc_width = 0.08  # radians
+    node_radius = 1.0
+    inner_radius = 0.92
+
+    fig = go.Figure()
+
+    # Draw node arcs
+    for i, node in enumerate(top_nodes):
+        theta = angles_sorted[i]
+        theta_start = theta - arc_width / 2
+        theta_end = theta + arc_width / 2
+        theta_arc = np.linspace(theta_start, theta_end, 30)
+        x_arc = np.cos(theta_arc) * node_radius
+        y_arc = np.sin(theta_arc) * node_radius
+
+        # Add arc trace
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([[0], x_arc, [0]]),
+            y=np.concatenate([[0], y_arc, [0]]),
+            fill='toself',
+            fillcolor=colors[i],
+            line=dict(color='white', width=1),
+            hoverinfo='text',
+            hovertext=f"{node}<br>Degree: {subgraph.degree(node)}<br>Freq: {len(concept_abstract_map.get(node, []))}",
+            name=node,
+            showlegend=False
+        ))
+
+        # Label position
+        label_radius = 1.15
+        lx = np.cos(theta) * label_radius
+        ly = np.sin(theta) * label_radius
+        fig.add_trace(go.Scatter(
+            x=[lx], y=[ly],
+            mode='text',
+            text=[node[:20]],
+            textposition='middle center',
+            textfont=dict(size=label_font_size, color='#333'),
+            hoverinfo='skip',
+            showlegend=False
+        ))
+
+    # Draw chords (ribbons)
+    for i in range(n):
+        for j in range(i+1, n):
+            w = adj[i][j]
+            if w <= 0 or w < edge_threshold:
+                continue
+
+            t1 = angles_sorted[i]
+            t2 = angles_sorted[j]
+
+            # Control point for quadratic Bezier (pull toward center)
+            cp_x = 0.0
+            cp_y = 0.0
+
+            # Parametric quadratic Bezier
+            t_vals = np.linspace(0, 1, 50)
+            # Start and end on inner radius
+            x1, y1 = np.cos(t1) * inner_radius, np.sin(t1) * inner_radius
+            x2, y2 = np.cos(t2) * inner_radius, np.sin(t2) * inner_radius
+
+            x_curve = (1 - t_vals)**2 * x1 + 2 * (1 - t_vals) * t_vals * cp_x + t_vals**2 * x2
+            y_curve = (1 - t_vals)**2 * y1 + 2 * (1 - t_vals) * t_vals * cp_y + t_vals**2 * y2
+
+            # Thickness based on weight
+            line_width = max(0.5, min(6, (w / max_weight) * 5))
+
+            # Color blending
+            color_i = colors[i]
+            color_j = colors[j]
+
+            fig.add_trace(go.Scatter(
+                x=x_curve, y=y_curve,
+                mode='lines',
+                line=dict(width=line_width, color=color_i),
+                opacity=edge_opacity,
+                hoverinfo='text',
+                hovertext=f"{top_nodes[i]} ↔ {top_nodes[j]}<br>Weight: {w:.2f}",
+                showlegend=False
+            ))
+
+    fig.update_layout(
+        title=f"<b>Chord Diagram (Top {n} Concepts)</b><br><i>Interconnection strength among key concepts</i>",
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.4, 1.4]),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.4, 1.4], scaleanchor='x', scaleratio=1),
+        width=height, height=height,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(l=20, r=20, t=60, b=20),
+        showlegend=False
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    try:
+        svg_bytes = fig.to_image(format="svg", scale=2)
+        st.download_button("📸 Download Chord as SVG", data=svg_bytes, file_name="chord.svg", mime="image/svg+xml", key="chord_svg")
+    except Exception as e:
+        st.info(f"💡 Install kaleido for SVG export: `pip install kaleido` (Error: {e})")
+
+def render_chord_diagram_holoviews(nx_graph: nx.Graph, valid_concepts: List[str],
+                                   concept_abstract_map: Dict, top_n: int = 15,
+                                   cmap_name: str = "viridis", edge_threshold: float = 0.0,
+                                   label_font_size: int = 10, sort_by: str = "degree",
+                                   height: int = 700):
+    """
+    HoloViews + Bokeh chord diagram for top N concepts.
+    Requires: pip install holoviews bokeh
+    """
+    if not HOLOVIEWS_AVAILABLE:
+        st.warning("⚠️ HoloViews not installed. Falling back to Plotly chord.")
+        st.code("pip install holoviews bokeh")
+        render_chord_diagram_plotly(nx_graph, valid_concepts, concept_abstract_map, 
+                                     top_n, cmap_name, 0.6, edge_threshold, label_font_size, sort_by, height)
+        return
+
+    subgraph, top_nodes = _get_top_n_subgraph(nx_graph, valid_concepts, concept_abstract_map, top_n, sort_by)
+    if len(top_nodes) < 3:
+        st.info("Chord diagram requires at least 3 concepts.")
+        return
+
+    # Build links DataFrame for HoloViews Chord
+    links_data = []
+    node_set = set()
+    for u, v, data in subgraph.edges(data=True):
+        w = data.get('weight', 1)
+        if w >= edge_threshold:
+            links_data.append({'source': u, 'target': v, 'value': w})
+            node_set.add(u)
+            node_set.add(v)
+
+    if not links_data:
+        st.info("No edges above threshold for chord diagram.")
+        return
+
+    links_df = pd.DataFrame(links_data)
+    nodes_df = pd.DataFrame({'name': list(node_set)})
+
+    # Assign colors based on category
+    cmap_colors = get_colormap_colors(cmap_name, len(nodes_df))
+    color_map = {row['name']: cmap_colors[i] for i, row in nodes_df.iterrows()}
+    nodes_df['color'] = nodes_df['name'].map(color_map)
+
+    try:
+        chord = hv.Chord((links_df, nodes_df)).opts(
+            opts.Chord(
+                cmap=cmap_name,
+                edge_cmap=cmap_name,
+                edge_color='source',
+                node_color='color',
+                labels='name',
+                label_text_font_size=str(label_font_size) + 'pt',
+                width=height,
+                height=height,
+                title=f"Chord Diagram (Top {len(top_nodes)} Concepts)",
+                tools=['hover'],
+                inspection_policy='edges'
+            )
+        )
+        # Render to Bokeh and display in Streamlit
+        from bokeh.plotting import figure
+        from bokeh.embed import file_html
+        from bokeh.resources import CDN
+        renderer = hv.renderer('bokeh')
+        plot = renderer.get_plot(chord).state
+        html = file_html(plot, CDN, "Chord Diagram")
+        st.components.v1.html(html, height=height+50)
+    except Exception as e:
+        st.error(f"HoloViews chord rendering failed: {e}")
+        st.info("Falling back to Plotly chord...")
+        render_chord_diagram_plotly(nx_graph, valid_concepts, concept_abstract_map,
+                                     top_n, cmap_name, 0.6, edge_threshold, label_font_size, sort_by, height)
+
+def render_chord_diagram_matplotlib(nx_graph: nx.Graph, valid_concepts: List[str],
+                                    concept_abstract_map: Dict, top_n: int = 15,
+                                    cmap_name: str = "viridis", edge_threshold: float = 0.0,
+                                    label_font_size: int = 10, sort_by: str = "degree",
+                                    figsize: int = 8):
+    """
+    Matplotlib-based chord diagram fallback (static).
+    """
+    subgraph, top_nodes = _get_top_n_subgraph(nx_graph, valid_concepts, concept_abstract_map, top_n, sort_by)
+    if len(top_nodes) < 3:
+        st.info("Chord diagram requires at least 3 concepts.")
+        return
+
+    n = len(top_nodes)
+    node_to_idx = {node: i for i, node in enumerate(top_nodes)}
+    colors = get_colormap_colors(cmap_name, n)
+
+    fig, ax = plt.subplots(figsize=(figsize, figsize))
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    sort_order = np.argsort([-subgraph.degree(n, weight='weight') for n in top_nodes])
+    angles_sorted = np.zeros(n)
+    for new_pos, old_pos in enumerate(sort_order):
+        angles_sorted[old_pos] = angles[new_pos]
+
+    # Draw chords first (so they appear behind nodes)
+    for u, v, data in subgraph.edges(data=True):
+        if u not in node_to_idx or v not in node_to_idx:
+            continue
+        w = data.get('weight', 1)
+        if w < edge_threshold:
+            continue
+        i, j = node_to_idx[u], node_to_idx[v]
+        t1, t2 = angles_sorted[i], angles_sorted[j]
+
+        # Simple quadratic curve
+        x1, y1 = np.cos(t1) * 0.95, np.sin(t1) * 0.95
+        x2, y2 = np.cos(t2) * 0.95, np.sin(t2) * 0.95
+        t_vals = np.linspace(0, 1, 50)
+        x_curve = (1-t_vals)**2 * x1 + 2*(1-t_vals)*t_vals * 0 + t_vals**2 * x2
+        y_curve = (1-t_vals)**2 * y1 + 2*(1-t_vals)*t_vals * 0 + t_vals**2 * y2
+
+        lw = max(0.3, min(4, w * 0.8))
+        ax.plot(x_curve, y_curve, color=colors[i], alpha=0.5, linewidth=lw)
+
+    # Draw nodes
+    for i, node in enumerate(top_nodes):
+        t = angles_sorted[i]
+        x, y = np.cos(t), np.sin(t)
+        ax.scatter([x], [y], s=300, c=[colors[i]], zorder=5, edgecolors='white', linewidths=2)
+        # Label
+        lx, ly = np.cos(t) * 1.15, np.sin(t) * 1.15
+        ax.text(lx, ly, node[:15], ha='center', va='center', fontsize=label_font_size, 
+                fontweight='bold', color='#333')
+
+    ax.set_title(f"Chord Diagram (Top {n} Concepts)", fontsize=14, fontweight='bold', pad=20)
+    st.pyplot(fig)
+    plt.close(fig)
+
+def render_chord_diagram(nx_graph: nx.Graph, valid_concepts: List[str], concept_abstract_map: Dict,
+                         backend: str = "Plotly", top_n: int = 15, cmap_name: str = "viridis",
+                         edge_opacity: float = 0.6, edge_threshold: float = 0.0,
+                         label_font_size: int = 10, sort_by: str = "degree", height: int = 700):
+    """Unified chord diagram dispatcher."""
+    if backend == "HoloViews + Bokeh":
+        render_chord_diagram_holoviews(nx_graph, valid_concepts, concept_abstract_map,
+                                       top_n, cmap_name, edge_threshold, label_font_size, sort_by, height)
+    elif backend == "Matplotlib":
+        render_chord_diagram_matplotlib(nx_graph, valid_concepts, concept_abstract_map,
+                                         top_n, cmap_name, edge_threshold, label_font_size, sort_by, height//80)
+    else:
+        render_chord_diagram_plotly(nx_graph, valid_concepts, concept_abstract_map,
+                                     top_n, cmap_name, edge_opacity, edge_threshold, label_font_size, sort_by, height)
+
+# ==========================================
+# ENHANCED PYVIS GRAPH WITH CATEGORY COLORS & SAFE DOWNLOAD + EDGE EXPLANATIONS
 # ==========================================
 def get_category_color(concept: str, cmap_colors: Optional[List[str]] = None) -> str:
     if cmap_colors: return cmap_colors[hash(concept) % len(cmap_colors)]
@@ -1593,7 +2009,7 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
                               node_shape="dot", gravity=-2000, spring_length=150,
                               spring_strength=0.05, damping=0.09, overlap=0.5,
                               top_n_nodes=0):  # if >0, limit to top N nodes by degree
-    """Safe PyVis rendering with robust download handling and extended customization."""
+    """Safe PyVis rendering with robust download handling, extended customization, and edge explanations."""
     # Optional node limit
     if top_n_nodes > 0 and len(nx_graph.nodes()) > top_n_nodes:
         degrees = dict(nx_graph.degree())
@@ -1633,10 +2049,15 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
         color = color_map.get(edge_type, "#607D8B")
         # Edge label (optional)
         label = f"{w:.2f}" if edge_label_visible else ""
+        # Edge explanation tooltip
+        explanation = nx_graph[u][v].get('explanation', '')
+        title_text = f"weight: {w:.2f}<br>type: {edge_type}"
+        if explanation:
+            title_text += f"<br><b>Explanation:</b> {explanation}"
         net.add_edge(u, v, value=float(np.clip(w, 0.5, 5)), 
                      width=float(np.clip(w * 0.8, 1, 4)),
                      color=color, smooth={'type': 'curvedCW', 'roundness': 0.2},
-                     label=label, title=f"weight: {w:.2f}<br>type: {edge_type}")
+                     label=label, title=title_text)
 
     html_content = net.generate_html()
     st.components.v1.html(html_content, height=750, scrolling=True)
@@ -1661,7 +2082,7 @@ def render_graph_pyvis_custom(nx_graph, concept_abstract_map, physics_enabled=Tr
 
 def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis", custom_labels=None,
                               top_n_nodes=0, node_label_size=12, edge_label_visible=False):
-    """Enhanced Plotly 2D with safe JSON export and node/edge customization."""
+    """Enhanced Plotly 2D with safe JSON export, node/edge customization, and edge explanations."""
     if top_n_nodes > 0 and len(nx_graph.nodes()) > top_n_nodes:
         degrees = dict(nx_graph.degree())
         top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:top_n_nodes]
@@ -1675,7 +2096,10 @@ def render_graph_plotly_white(nx_graph, concept_abstract_map, cmap_name="viridis
         x0, y0 = pos[u]; x1, y1 = pos[v]
         edge_x.extend([x0, x1, None]); edge_y.extend([y0, y1, None])
         w = nx_graph[u][v].get('weight', 1); edge_type = nx_graph[u][v].get('edge_type', 'unknown')
+        explanation = nx_graph[u][v].get('explanation', '')
         hover_info = f"{u} ↔ {v}<br>Weight: {w:.2f}<br>Type: {edge_type}"
+        if explanation:
+            hover_info += f"<br><b>Explanation:</b> {explanation}"
         edge_hover.extend([hover_info] * 2 + [None])
         if edge_label_visible:
             edge_text.extend([f"{w:.1f}", f"{w:.1f}", None])
@@ -1765,7 +2189,7 @@ def render_plotly_3d(nx_graph, concept_abstract_map, cmap_name="turbo", custom_l
     st.plotly_chart(fig, use_container_width=True)
 
 def render_graph_fallback(nx_graph, concept_abstract_map):
-    """Text-based fallback visualization"""
+    """Text-based fallback visualization with edge explanations."""
     st.markdown("### 📊 Graph Summary (Text View)")
     st.markdown(f"- **Nodes**: {len(nx_graph.nodes())}")
     st.markdown(f"- **Edges**: {len(nx_graph.edges())}")
@@ -1775,8 +2199,11 @@ def render_graph_fallback(nx_graph, concept_abstract_map):
         st.markdown("**🔗 Top 15 Strongest Connections:**")
         for i, (u, v, w) in enumerate(edge_list[:15], 1):
             edge_type = nx_graph[u][v].get('edge_type', 'unknown')
+            explanation = nx_graph[u][v].get('explanation', '')
             declarmima_tag = " 🎯 DECLARMIMA" if edge_type == 'declarmina_aligned' else ""
             st.markdown(f"{i}. `{u}` ↔ `{v}` (weight: {w:.2f}, type: {edge_type}){declarmima_tag}")
+            if explanation:
+                st.caption(f"&nbsp;&nbsp;&nbsp;&nbsp;💡 *{explanation}*")
     if len(concept_abstract_map) > 0:
         freq_data = [(c, len(concept_abstract_map.get(c, []))) for c in nx_graph.nodes()]
         freq_data.sort(key=lambda x: x[1], reverse=True)
@@ -1945,6 +2372,22 @@ def render_sidebar():
         st.slider("Permutation tests for edge significance", 10, 100, 20, key="permutation_tests")
         st.selectbox("Significance level (α)", [0.01, 0.05, 0.10], index=1, key="alpha_level")
 
+        # ✨ NEW V2: Edge Explanation Settings
+        st.subheader("💡 Edge Explanation Settings")
+        st.checkbox("Generate LLM edge explanations", value=False, key="generate_edge_explanations")
+        st.slider("Max edges to explain", 5, 50, 20, key="max_edges_explain")
+
+        # ✨ NEW V2: Chord Diagram Settings
+        st.subheader("🎻 Chord Diagram Settings")
+        st.selectbox("Chord backend", options=["Plotly", "HoloViews + Bokeh", "Matplotlib"], index=0, key="chord_backend")
+        st.slider("Chord Top N", 3, 30, 15, key="chord_top_n")
+        st.selectbox("Chord colormap", options=list(SUPPORTED_COLORMAPS.keys()), index=0, key="chord_cmap")
+        st.slider("Chord edge opacity", 0.1, 1.0, 0.6, step=0.1, key="chord_opacity")
+        st.slider("Chord edge threshold", 0.0, 5.0, 0.0, step=0.5, key="chord_threshold")
+        st.slider("Chord label size", 6, 16, 10, key="chord_label_size")
+        st.selectbox("Chord sort by", options=["degree", "frequency", "alphabetical"], index=0, key="chord_sort_by")
+        st.slider("Chord height", 400, 900, 700, step=50, key="chord_height")
+
         st.markdown("---")
         st.markdown("**🎯 DECLARMIMA Focus Areas:**")
         st.markdown("- 🔬 Laser-matter interaction mechanisms")
@@ -1959,11 +2402,12 @@ def render_sidebar():
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
         dgl_status = "✅ DGL" if DGL_AVAILABLE else "❌ DGL"
-        st.caption(f"🖥️ Device: {gpu_info} | 💾 VRAM: {vram_info} | 🔷 GNN: {dgl_status}")
+        hv_status = "✅ HV" if HOLOVIEWS_AVAILABLE else "❌ HV"
+        st.caption(f"🖥️ Device: {gpu_info} | 💾 VRAM: {vram_info} | 🔷 GNN: {dgl_status} | 🎻 Chord: {hv_status}")
 
 def main():
     st.title("🔬 DECLARMIMA: Laser-Microstructure Interaction Analyzer")
-    st.caption("Physics-informed digital twins for multicomponent alloys • Dual LLM backend: HF Transformers or Ollama • GNN: PyTorch or DGL • 50+ Colormaps • Advanced Validation")
+    st.caption("Physics-informed digital twins for multicomponent alloys • Dual LLM backend: HF Transformers or Ollama • GNN: PyTorch or DGL • 50+ Colormaps • Advanced Validation • Edge Explanations • Chord Diagrams")
     render_sidebar()
 
     # ==========================================
@@ -1983,7 +2427,7 @@ def main():
 """)
     # Compute hash of input to detect changes
     current_input_hash = compute_text_hash(abstract_input) if abstract_input.strip() else ""
-    
+
     # Clear heavy caches if input changed significantly
     if st.session_state.input_hash is not None and st.session_state.input_hash != current_input_hash and len(abstract_input) > 200:
         st.cache_resource.clear()
@@ -2040,6 +2484,16 @@ def main():
                     pos_pairs, neg_pairs = sample_edges_for_training(nx_graph, d_prev_dict, valid_concepts, concept_to_id, config)
                     st.write(f"✅ Graph: **{len(valid_concepts)}** nodes, **{nx_graph.number_of_edges()}** edges")
                 progress_bar.progress(0.40)
+
+                # ✨ NEW V2: Generate edge explanations if enabled
+                if st.session_state.get('generate_edge_explanations', False):
+                    with st.status("💡 Generating edge explanations..."):
+                        max_edges = st.session_state.get('max_edges_explain', 20)
+                        nx_graph = generate_edge_explanations(nx_graph, tokenizer, llm_model, backend_type, 
+                                                               max_edges=max_edges)
+                        explained_count = sum(1 for _, _, d in nx_graph.edges(data=True) if d.get('explanation'))
+                        st.write(f"✅ Explained **{explained_count}** edges")
+
                 with st.status("🧠 Generating embeddings..."):
                     embed_dim = get_embedding_dimension(embed_model)
                     node_features = generate_embeddings(valid_concepts, embed_model)
@@ -2065,7 +2519,7 @@ def main():
                     st.success("✅ Pipeline complete!")
                 progress_bar.progress(1.00)
                 status.update(label="✅ Analysis complete!", state="complete", expanded=False)
-                
+
                 # Store analysis results in session state to survive widget interactions
                 st.session_state.analysis_data = {
                     "valid_concepts": valid_concepts,
@@ -2095,7 +2549,7 @@ def main():
         finally:
             gc.collect()
             if DEVICE.type == 'cuda': torch.cuda.empty_cache()
-    
+
     # If analysis has been run, display results from session state
     if st.session_state.analysis_data is not None:
         data = st.session_state.analysis_data
@@ -2116,13 +2570,13 @@ def main():
         config = data["config"]
         all_metrics = data["all_metrics"]
         abstracts = data["abstracts"]
-        
+
         # Prepare custom labels
         custom_labels = {}
         prefix = st.session_state.get('custom_label_prefix', '')
         for c in valid_concepts: custom_labels[c] = f"{prefix}{c}" if prefix else c
         cmap = st.session_state.get('cmap_name', 'viridis')
-        
+
         # TABS FOR POST-PROCESSING & VISUALIZATION
         viz_tab, distill_tab, valid_tab, export_tab = st.tabs(["🎨 Visualization", "📊 Distillation Metrics", "📐 Mathematical Validation", "📥 Export"])
         with viz_tab:
@@ -2168,39 +2622,156 @@ def main():
                 metrics = compute_graph_metrics(nx_graph)
                 display_metric_dashboard(metrics)
 
+            # ✨ ENHANCED SUNBURST WITH LIVE CUSTOMIZATION
             with st.expander("📈 Research Domain Hierarchy (Sunburst)", expanded=False):
-                top_n_sun = st.session_state.get('top_n_sunburst', 30)
-                labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map, top_n_per_category=top_n_sun)
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    sun_top_n = st.slider("Top N per category", 5, 100, st.session_state.get('top_n_sunburst', 30), key="sun_top_n_live")
+                with col2:
+                    sun_label_size = st.slider("Label size", 8, 20, st.session_state.get('sunburst_label_size', 12), key="sun_label_live")
+                with col3:
+                    sun_cmap = st.selectbox("Colormap", options=list(SUPPORTED_COLORMAPS.keys()), 
+                                            index=list(SUPPORTED_COLORMAPS.keys()).index(st.session_state.get('sunburst_cmap', cmap)) 
+                                            if st.session_state.get('sunburst_cmap', cmap) in SUPPORTED_COLORMAPS else 0,
+                                            key="sun_cmap_live")
+                col4, col5, col6 = st.columns(3)
+                with col4:
+                    sun_width = st.slider("Width", 400, 1200, 800, key="sun_width_live")
+                with col5:
+                    sun_height = st.slider("Height", 400, 900, 600, key="sun_height_live")
+                with col6:
+                    sun_max_label = st.slider("Max label length", 10, 60, 30, key="sun_max_label_live")
+                col7, col8 = st.columns(2)
+                with col7:
+                    sun_show_vals = st.checkbox("Show values", value=True, key="sun_show_vals_live")
+                with col8:
+                    sun_show_pct = st.checkbox("Show percentages", value=True, key="sun_show_pct_live")
+
+                labels, parents, values = build_category_hierarchy(valid_concepts, concept_abstract_map, top_n_per_category=sun_top_n)
                 render_sunburst_chart(
                     labels, parents, values,
-                    cmap_name=st.session_state.get('sunburst_cmap', cmap),
-                    label_size=st.session_state.get('sunburst_label_size', 12),
-                    width=800, height=600, max_label_length=30
+                    cmap_name=sun_cmap,
+                    label_size=sun_label_size,
+                    width=sun_width, height=sun_height, 
+                    max_label_length=sun_max_label,
+                    show_values=sun_show_vals,
+                    show_percent=sun_show_pct
                 )
 
-            # New Radar Chart
+            # ✨ ENHANCED RADAR CHART WITH LIVE CUSTOMIZATION
             if st.session_state.get('radar_enabled', True):
                 with st.expander("📡 Concept Radar Chart (Multi-Dimensional Comparison)", expanded=False):
                     # Build a dataframe with metrics for each concept
                     distill_df = compute_concept_distillation(valid_concepts, concept_abstract_map, abstracts)
                     # Add expected property gain if available
-                    prop_gain_df = top_scores[['concept_u', 'expected_property_gain']].rename(columns={'concept_u': 'concept'})
-                    prop_gain_df2 = top_scores[['concept_v', 'expected_property_gain']].rename(columns={'concept_v': 'concept'})
-                    prop_gain_combined = pd.concat([prop_gain_df, prop_gain_df2], ignore_index=True).groupby('concept')['expected_property_gain'].mean().reset_index()
-                    radar_df = distill_df.merge(prop_gain_combined, on='concept', how='left')
-                    radar_df.fillna(0, inplace=True)
-                    radar_top_k = st.session_state.get('radar_top_k', 15)
-                    render_radar_chart(radar_df, top_k=radar_top_k,
-                                       metrics=['frequency', 'distillation_efficiency', 'coherence_score', 'expected_property_gain'],
-                                       title="Top Concepts: Frequency, Efficiency, Coherence, Expected Property Gain")
+                    if not top_scores.empty:
+                        prop_gain_df = top_scores[['concept_u', 'expected_property_gain']].rename(columns={'concept_u': 'concept'})
+                        prop_gain_df2 = top_scores[['concept_v', 'expected_property_gain']].rename(columns={'concept_v': 'concept'})
+                        prop_gain_combined = pd.concat([prop_gain_df, prop_gain_df2], ignore_index=True).groupby('concept')['expected_property_gain'].mean().reset_index()
+                        radar_df = distill_df.merge(prop_gain_combined, on='concept', how='left')
+                        radar_df.fillna(0, inplace=True)
+                    else:
+                        radar_df = distill_df.copy()
+                        radar_df['expected_property_gain'] = 0.0
+
+                    # Live customization controls
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        radar_top_k = st.slider("Top K concepts", 3, 30, st.session_state.get('radar_top_k', 15), key="radar_top_k_live")
+                    with col2:
+                        radar_font = st.slider("Font size", 8, 20, 12, key="radar_font_live")
+                    with col3:
+                        radar_linewidth = st.slider("Line width", 1, 5, 2, key="radar_lw_live")
+                    col4, col5, col6 = st.columns(3)
+                    with col4:
+                        radar_cmap = st.selectbox("Colormap", options=list(SUPPORTED_COLORMAPS.keys()), 
+                                                  index=list(SUPPORTED_COLORMAPS.keys()).index(cmap) if cmap in SUPPORTED_COLORMAPS else 0,
+                                                  key="radar_cmap_live")
+                    with col5:
+                        radar_opacity = st.slider("Fill opacity", 0.1, 1.0, 0.6, step=0.1, key="radar_opacity_live")
+                    with col6:
+                        radar_height = st.slider("Chart height", 400, 900, 600, step=50, key="radar_height_live")
+
+                    available_metrics = [m for m in ['frequency', 'distillation_efficiency', 'semantic_density', 'coherence_score', 'expected_property_gain'] 
+                                         if m in radar_df.columns]
+                    selected_metrics = st.multiselect("Metrics to display", options=available_metrics, 
+                                                       default=available_metrics[:4] if len(available_metrics) >= 4 else available_metrics,
+                                                       key="radar_metrics_live")
+
+                    if selected_metrics:
+                        render_radar_chart(radar_df, top_k=radar_top_k,
+                                           metrics=selected_metrics,
+                                           title="Top Concepts: Multi-Dimensional Comparison",
+                                           cmap_name=radar_cmap, font_size=radar_font,
+                                           line_width=radar_linewidth, fill_opacity=radar_opacity,
+                                           show_legend=True, height=radar_height)
+                    else:
+                        st.info("Select at least one metric to display the radar chart.")
+
+            # ✨ NEW V2: CHORD DIAGRAM
+            with st.expander("🎻 Chord Diagram (Top N Concept Interconnections)", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    chord_backend = st.selectbox("Backend", options=["Plotly", "HoloViews + Bokeh", "Matplotlib"],
+                                                  index=["Plotly", "HoloViews + Bokeh", "Matplotlib"].index(
+                                                      st.session_state.get('chord_backend', 'Plotly')),
+                                                  key="chord_backend_live")
+                with col2:
+                    chord_top_n = st.slider("Top N concepts", 3, 30, st.session_state.get('chord_top_n', 15), key="chord_top_n_live")
+                with col3:
+                    chord_cmap = st.selectbox("Colormap", options=list(SUPPORTED_COLORMAPS.keys()),
+                                               index=list(SUPPORTED_COLORMAPS.keys()).index(st.session_state.get('chord_cmap', cmap)) 
+                                               if st.session_state.get('chord_cmap', cmap) in SUPPORTED_COLORMAPS else 0,
+                                               key="chord_cmap_live")
+                col4, col5, col6 = st.columns(3)
+                with col4:
+                    chord_opacity = st.slider("Edge opacity", 0.1, 1.0, st.session_state.get('chord_opacity', 0.6), step=0.1, key="chord_opacity_live")
+                with col5:
+                    chord_threshold = st.slider("Edge threshold", 0.0, 5.0, st.session_state.get('chord_threshold', 0.0), step=0.5, key="chord_threshold_live")
+                with col6:
+                    chord_label_size = st.slider("Label size", 6, 16, st.session_state.get('chord_label_size', 10), key="chord_label_live")
+                col7, col8 = st.columns(2)
+                with col7:
+                    chord_sort = st.selectbox("Sort by", options=["degree", "frequency", "alphabetical"],
+                                               index=["degree", "frequency", "alphabetical"].index(
+                                                   st.session_state.get('chord_sort_by', 'degree')),
+                                               key="chord_sort_live")
+                with col8:
+                    chord_h = st.slider("Height", 400, 900, st.session_state.get('chord_height', 700), step=50, key="chord_height_live")
+
+                render_chord_diagram(nx_graph, valid_concepts, concept_abstract_map,
+                                     backend=chord_backend, top_n=chord_top_n, cmap_name=chord_cmap,
+                                     edge_opacity=chord_opacity, edge_threshold=chord_threshold,
+                                     label_font_size=chord_label_size, sort_by=chord_sort, height=chord_h)
 
         with distill_tab:
             st.subheader("🔍 Concept Distillation Efficiency")
             distill_df = compute_concept_distillation(valid_concepts, concept_abstract_map, abstracts)
-            st.dataframe(distill_df, use_container_width=True)
-            st.markdown("**📈 Top Distilled Concepts:**")
-            st.bar_chart(distill_df.set_index('concept')[['distillation_efficiency']])
+
+            # ✨ TOP N CONTROL FOR DISTILLATION
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                top_n_distill = st.slider("Show Top N", 5, min(100, len(distill_df)), min(20, len(distill_df)), key="top_n_distill")
+            with col1:
+                st.write(f"Showing top **{top_n_distill}** of **{len(distill_df)}** concepts")
+
+            display_df = distill_df.head(top_n_distill)
+            st.dataframe(display_df, use_container_width=True)
+
+            st.markdown("**📈 Distillation Efficiency Chart:**")
+            chart_df = display_df.set_index('concept')[['distillation_efficiency']]
+            st.bar_chart(chart_df)
+
+            # Multi-metric comparison for top N
+            st.markdown("**📊 Multi-Metric Comparison (Top N):**")
+            metric_cols = [c for c in ['frequency', 'tfidf_weight', 'semantic_density', 'coherence_score', 'distillation_efficiency'] 
+                           if c in display_df.columns]
+            if metric_cols:
+                compare_df = display_df[['concept'] + metric_cols].set_index('concept')
+                st.line_chart(compare_df)
+
             st.info("💡 *Distillation efficiency combines TF-IDF weighting, semantic density, and internal coherence to rank concept quality.*")
+
         with valid_tab:
             st.subheader("📐 Mathematical Validation & Statistical Tests")
             val_metrics = validate_graph_metrics(nx_graph, valid_concepts, concept_abstract_map)

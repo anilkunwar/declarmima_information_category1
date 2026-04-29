@@ -2591,7 +2591,7 @@ def generate_local_response_ollama(model_tag: str, ollama_host: str, prompt: str
 # =============================================
 # STREAMLIT UI (Extended with Salience Dropdown)
 # =============================================
-
+#
 def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
@@ -2642,6 +2642,7 @@ def render_sidebar():
             "porosity formation", "intermetallic compound", "columnar to equiaxed transition",
             "residual stress", "solidification microstructure"
         ]
+
         selected_custom = st.multiselect(
             "Add extra high-priority concepts (boosted salience)",
             options=[
@@ -2650,6 +2651,7 @@ def render_sidebar():
                 "intermetallic compound", "IMC", "Cu6Sn5",
                 "columnar to equiaxed transition", "CET", "epitaxial growth",
                 "residual stress", "grain morphology", "solidification",
+                "solidification microstructure",   # Added missing option
                 "digital twin", "physics-informed modeling", "process-structure-property"
             ],
             default=default_priority,
@@ -2695,7 +2697,6 @@ def render_sidebar():
             st.success("✅ Crossref API: Available")
         else:
             st.info("ℹ️ Crossref: Optional for metadata enrichment")
-
 
 def render_document_uploader():
     st.markdown("### 📁 Upload Full-Text PDF Documents")

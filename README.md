@@ -57,6 +57,9 @@ Processing parameters
 
 [![meaningtowords](https://img.shields.io/badge/reasoningragmodelcloud-v15.0-turquoise)](https://information-retrieval-reasoning-visualization15.streamlit.app/) (v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS)
 
+SALIENCE-AWARE RAG MODEL
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v16.0-turquoise)](https://information-retrieval-reasoning-visualization16.streamlit.app/) (v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS)
 
 Multicomponent Alloy Microstructure Focus :
 

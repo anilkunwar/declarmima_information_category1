@@ -817,16 +817,18 @@ DECLARMIMA_PROPOSAL_TEXT = """Deciphering laser-microstructure interaction in mu
 # =============================================
 # FULL-TEXT CONCEPT EXTRACTOR WITH SALIENCE SCORING (NEW)
 # =============================================
-
+#
 class FullTextConceptExtractor:
     """
     Extracts scientific concepts from full‑text PDF chunks with multi‑factor salience.
-    Core pillars (LASER, MICROSTRUCTURE, INTERACTION) and user priority concepts receive a strong boost.
+    Works with both SentenceTransformer and HuggingFaceEmbeddings (LangChain).
     """
     def __init__(self, embed_model, proposal_text: str = None):
         self.embed_model = embed_model
         self.proposal_text = proposal_text or DECLARMIMA_PROPOSAL_TEXT
-        self.proposal_embedding = self.embed_model.encode([self.proposal_text])[0]
+        
+        # Compute proposal embedding using the appropriate method
+        self.proposal_embedding = self._embed_text(self.proposal_text)
 
         # Core pillars (always high salience)
         self.core_pillars = {
@@ -852,6 +854,29 @@ class FullTextConceptExtractor:
         }
 
         self.custom_priority: Dict[str, float] = {}
+
+    def _embed_text(self, text: str) -> np.ndarray:
+        """Unified embedding method that works with both HuggingFaceEmbeddings and SentenceTransformer."""
+        if hasattr(self.embed_model, 'embed_query'):
+            # LangChain HuggingFaceEmbeddings
+            return np.array(self.embed_model.embed_query(text))
+        elif hasattr(self.embed_model, 'encode'):
+            # SentenceTransformer
+            return self.embed_model.encode(text)
+        else:
+            raise AttributeError("Embedding model has neither 'embed_query' nor 'encode' method")
+
+    def _embed_batch(self, texts: List[str]) -> np.ndarray:
+        """Batch embedding for efficiency."""
+        if hasattr(self.embed_model, 'embed_documents'):
+            # LangChain
+            return np.array(self.embed_model.embed_documents(texts))
+        elif hasattr(self.embed_model, 'encode'):
+            # SentenceTransformer
+            return self.embed_model.encode(texts, show_progress_bar=False)
+        else:
+            # Fallback: embed one by one
+            return np.array([self._embed_text(t) for t in texts])
 
     def set_custom_priority(self, concepts: List[str]):
         """Set user‑defined priority concepts from the Streamlit dropdown."""
@@ -916,7 +941,15 @@ class FullTextConceptExtractor:
         n_docs = len(chunks)
         if n_docs == 0:
             return {}
-        for concept in candidates:
+
+        # Pre‑compute embeddings for all candidates at once for efficiency
+        try:
+            candidate_embeddings = self._embed_batch(candidates)
+        except Exception as e:
+            # Fallback: embed one by one
+            candidate_embeddings = np.array([self._embed_text(c) for c in candidates])
+
+        for idx, concept in enumerate(candidates):
             freq = sum(1 for ch in chunks if concept in ch.page_content.lower())
             freq_norm = np.log1p(freq) / np.log1p(n_docs) if n_docs > 0 else 0.0
 
@@ -930,7 +963,7 @@ class FullTextConceptExtractor:
             has_number = bool(re.search(r'\d', concept))
             quant_bonus = 1.12 if has_number else 1.0
 
-            emb = self.embed_model.encode([concept])[0]
+            emb = candidate_embeddings[idx]
             proposal_sim = float(np.dot(emb, self.proposal_embedding) /
                                (np.linalg.norm(emb) * np.linalg.norm(self.proposal_embedding) + 1e-8))
 
@@ -939,7 +972,6 @@ class FullTextConceptExtractor:
             scores[concept] = float(np.clip(base_salience * quant_bonus, 0.0, 1.0))
 
         return scores
-
 
 # =============================================
 # REASONING CHAIN (THINKING TRACE)

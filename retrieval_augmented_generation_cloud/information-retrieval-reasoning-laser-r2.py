@@ -2012,8 +2012,7 @@ def render_contradiction_table(contradictions: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def extract_equations_from_text(text: str) -> List[str]:
-    eq_pattern = re.compile(r'(\$[^$]+\$|\\\[.*?\\\]|([A-Za-z_\{\}]+)\s*=\s*[^
-]+)')
+    eq_pattern = re.compile(r'(\$[^$]+\$|\\\[.*?\\\]|([A-Za-z_\{\}]+)\s*=\s*[^\\n]+)')
     matches = eq_pattern.findall(text)
     return [m[0].strip() for m in matches if len(m[0]) > 10]
 

@@ -51,6 +51,7 @@ import hashlib
 from dataclasses import dataclass, field
 
 # Matplotlib / NetworkX for static publication graphs
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap

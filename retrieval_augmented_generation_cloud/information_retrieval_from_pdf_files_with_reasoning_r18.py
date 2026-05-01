@@ -4079,7 +4079,7 @@ def main():
                 registry = st.session_state.concept_registry
                 
                 # Extract and expand
-                from CrossDocumentThinker import CrossDocumentThinker  # Would import properly in real code
+                #from CrossDocumentThinker import CrossDocumentThinker  # Would import properly in real code
                 thinker = CrossDocumentThinker.__new__(CrossDocumentThinker)
                 thinker.registry = registry
                 

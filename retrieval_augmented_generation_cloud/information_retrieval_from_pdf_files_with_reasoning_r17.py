@@ -3288,9 +3288,9 @@ def render_sidebar():
             ["DejaVu Sans", "Arial", "Helvetica", "Times New Roman", "Computer Modern", "serif", "sans-serif"],
             index=0
         )
-        st.session_state.viz_font_size = st.slider("Base Font Size", 8, 16, 10)
-        st.session_state.viz_title_font_size = st.slider("Title Font Size", 10, 24, 14)
-        st.session_state.viz_label_font_size = st.slider("Label Font Size", 6, 14, 9)
+        st.session_state.viz_font_size = st.slider("Base Font Size", 8, 55, 16)
+        st.session_state.viz_title_font_size = st.slider("Title Font Size", 10, 54, 24)
+        st.session_state.viz_label_font_size = st.slider("Label Font Size", 6, 60, 14)
         st.session_state.viz_colormap = st.selectbox(
             "Default Colormap",
             list(PublicationQualityVisualizationEngine.COLORMAP_OPTIONS.keys()),

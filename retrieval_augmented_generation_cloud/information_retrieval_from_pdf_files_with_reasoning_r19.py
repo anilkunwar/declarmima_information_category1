@@ -2864,11 +2864,13 @@ def _load_ollama_model(model_key: str):
         return None, None, st.session_state.ollama_host, "ollama"
     return None, model_tag, st.session_state.ollama_host, "ollama"
 
+#
 def _load_transformers_model(model_key: str, use_4bit: bool = True):
     repo_id = get_hf_repo_id(model_key)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     available_vram = get_available_gpu_memory()
     mem_info = estimate_model_memory(model_key, use_4bit)
+    
     st.sidebar.info(f"""
 📊 Model Memory Estimate:
 - Parameters: {mem_info['params']}
@@ -2880,6 +2882,7 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True):
 """)
     if "0.5B" in repo_id or "1.1B" in repo_id or "gpt2" in repo_id or device == "cpu":
         use_4bit = False
+
     quantization_config = None
     if use_4bit and device == "cuda" and available_vram:
         try:
@@ -2894,21 +2897,27 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True):
         except ImportError:
             st.sidebar.warning("⚠️ bitsandbytes not installed.")
             use_4bit = False
+
     tokenizer = AutoTokenizer.from_pretrained(
         repo_id, trust_remote_code=True, padding_side="left", use_fast=True
     )
+
     model_kwargs = {
         "trust_remote_code": True,
         "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
     }
     if quantization_config:
         model_kwargs["quantization_config"] = quantization_config
-    model_kwargs["device_map"] = "auto"
-    elif device == "cuda":
-        model_kwargs["device_map"] = "auto"
+
+    # 🔧 FIXED: Removed problematic elif. Clean, unambiguous assignment.
+    model_kwargs["device_map"] = "auto" if device == "cuda" else None
+
     model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
-    if "device_map" not in model_kwargs and device == "cpu":
+    
+    # Only manually move to device if auto-placement wasn't used
+    if device == "cpu" or "device_map" not in model_kwargs:
         model = model.to(device)
+        
     model.eval()
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

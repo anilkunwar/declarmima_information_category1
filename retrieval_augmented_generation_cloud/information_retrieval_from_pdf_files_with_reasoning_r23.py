@@ -4449,7 +4449,8 @@ def render_chat_interface():
                                         buf = BytesIO()
                                         fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
                                         st.download_button("📥 Download Graph (PNG)", buf.getvalue(),
-                                                           file_name=f"{meta['quantity_label']}_kg.png", mime="image/png")
+                                                           file_name=f"{meta['quantity_label']}_kg.png", mime="image/png",
+                                                           key=f"quant_kg_dl_{meta['quantity_label']}")
                             with tabs[4]:
                                 for fig in mpl_figs:
                                     title = fig.axes[0].get_title() or ""
@@ -4459,13 +4460,15 @@ def render_chat_interface():
                                         fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
                                         st.download_button(f"📥 Download {title.split('(')[-1].replace(')','')} (PNG)",
                                                            buf.getvalue(), file_name=f"{meta['quantity_label']}_dr.png",
-                                                           mime="image/png")
+                                                           mime="image/png",
+                                                           key=f"quant_dr_dl_{meta['quantity_label']}_{title[:10]}")
 
                         with st.expander("🔢 Raw Extracted Data"):
                             st.dataframe(df, use_container_width=True)
                             csv = df.to_csv(index=False).encode('utf-8')
                             st.download_button("📥 Download CSV", csv,
-                                               file_name=f"{meta['quantity_label']}_data.csv", mime="text/csv")
+                                               file_name=f"{meta['quantity_label']}_data.csv", mime="text/csv",
+                                               key=f"quant_csv_dl_{meta['quantity_label']}")
 
                     # Store message
                     st.session_state.messages.append({
@@ -4734,7 +4737,8 @@ You have ~{available_vram:.1f}GB available.
                 buf = BytesIO()
                 fig_net.savefig(buf, format="png", dpi=viz.figure_dpi, bbox_inches="tight")
                 st.download_button("📥 Download Network (PNG)", data=buf.getvalue(),
-                                   file_name="knowledge_network.png", mime="image/png")
+                                   file_name="knowledge_network.png", mime="image/png",
+                                   key="static_net_dl")
             with c2:
                 st.markdown("**Salience‑Aware Chord Diagram (Plotly)**")
                 st.plotly_chart(viz.plot_chord_cooccurrence(filtered_concepts=filtered, top_n=16, colormap=active_cmap), use_container_width=True)
@@ -4747,7 +4751,8 @@ You have ~{available_vram:.1f}GB available.
                         html = file_html(bokeh_fig, CDN, "Bokeh Chord")
                         st.components.v1.html(html, height=850)
                         st.download_button("📥 Download Bokeh HTML", data=html.encode('utf-8'),
-                                           file_name="bokeh_chord.html", mime="text/html")
+                                           file_name="bokeh_chord.html", mime="text/html",
+                                           key="bokeh_chord_dl")
         with tab3:
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -4846,12 +4851,14 @@ You have ~{available_vram:.1f}GB available.
                         buf = BytesIO()
                         fig_kg.savefig(buf, format="png", dpi=300, bbox_inches="tight")
                         st.download_button("📥 Download KG", buf.getvalue(),
-                                           file_name=f"{selected_qty}_kg.png", mime="image/png")
+                                           file_name=f"{selected_qty}_kg.png", mime="image/png",
+                                           key=f"explorer_kg_dl_{selected_qty}")
 
                     with st.expander("🔢 Full Data Table"):
                         st.dataframe(df_qty, use_container_width=True)
                         csv = df_qty.to_csv(index=False).encode('utf-8')
-                        st.download_button("📥 Download CSV", csv, file_name=f"{selected_qty}_data.csv", mime="text/csv")
+                        st.download_button("📥 Download CSV", csv, file_name=f"{selected_qty}_data.csv", mime="text/csv",
+                                           key=f"explorer_csv_dl_{selected_qty}")
                 else:
                     st.warning(f"No `{selected_qty}` values were extracted from the uploaded documents. "
                                f"Ensure the PDFs contain explicit numeric statements (e.g. 'laser power of 200 W').")

@@ -59,6 +59,9 @@ Processing parameters
 
 SALIENCE-AWARE RAG MODEL
 
+V16-V18: Document Processing does not depend on the choice of LLM in the list of options (uses all-MiniLM-L6-v2 for fulltextconceptextraction) and Query-time Reasoning depends on the Choice of LLM
+
+
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v16.0-turquoise)](https://information-retrieval-reasoning-visualization16.streamlit.app/) (v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS)
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v17.0-turquoise)](https://information-retrieval-reasoning-visualization17.streamlit.app/) (v16 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )

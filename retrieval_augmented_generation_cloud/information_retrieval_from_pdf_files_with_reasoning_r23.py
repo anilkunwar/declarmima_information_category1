@@ -3097,12 +3097,25 @@ class PublicationQualityVisualizationEngine:
             fig.update_layout(title=f"No {quantity_name} data extracted")
             return fig
 
+        # Map logical grouping dimension to actual DataFrame column
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, group_by)
+
+        if group_col not in df.columns:
+            fig = go.Figure()
+            fig.update_layout(title=f"Cannot group by '{group_by}': column '{group_col}' not found in data")
+            return fig
+
         fig = go.Figure()
-        groups = sorted(df[group_by].unique())
+        groups = sorted(df[group_col].unique())
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
 
         for i, grp in enumerate(groups):
-            subset = df[df[group_by] == grp]
+            subset = df[df[group_col] == grp]
             color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
             fig.add_trace(go.Bar(
                 name=grp,
@@ -3130,6 +3143,7 @@ class PublicationQualityVisualizationEngine:
         return fig
 
     def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity_name: str,
+                                   group_by: str = "material",
                                    colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             fig = go.Figure()
@@ -3140,9 +3154,21 @@ class PublicationQualityVisualizationEngine:
         n_bins = min(5, max(2, len(df) // 3))
         df["value_range"] = pd.cut(df["value"], bins=n_bins, precision=1).astype(str)
 
+        # Map logical grouping to DataFrame columns
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+
+        # Build path dynamically based on available columns
+        path_cols = [group_col, "doc_stem", "value_range"]
+        path_cols = [c for c in path_cols if c in df.columns]
+
         fig = px.sunburst(
             df,
-            path=["material", "doc_stem", "value_range"],
+            path=path_cols,
             values="value",
             color="value",
             color_continuous_scale=colormap or "Viridis",
@@ -3152,6 +3178,7 @@ class PublicationQualityVisualizationEngine:
         return fig
 
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity_name: str,
+                                          group_by: str = "material",
                                           colormap: Optional[str] = None,
                                           figsize: Tuple[int, int] = (14, 12)) -> plt.Figure:
         G = nx.Graph()
@@ -3160,12 +3187,21 @@ class PublicationQualityVisualizationEngine:
 
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
 
-        # Material nodes
-        mats = sorted(df["material"].unique())
-        for i, mat in enumerate(mats):
-            G.add_node(mat, node_type="material", domain="MATERIAL")
-            count = len(df[df["material"] == mat])
-            G.add_edge(hub, mat, weight=count)
+        # Map logical grouping to DataFrame columns
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+
+        # Primary grouping nodes
+        if group_col in df.columns:
+            groups = sorted(df[group_col].unique())
+            for i, grp in enumerate(groups):
+                G.add_node(grp, node_type="group", domain=group_col.upper())
+                count = len(df[df[group_col] == grp])
+                G.add_edge(hub, grp, weight=count)
 
         # Document nodes
         docs = sorted(df["doc_stem"].unique())
@@ -3179,7 +3215,8 @@ class PublicationQualityVisualizationEngine:
             val_node = f"{row['value']:.1f} {row['unit']}"
             if val_node not in G:
                 G.add_node(val_node, node_type="value", domain="PARAMETER", value=row["value"])
-            G.add_edge(row["material"], val_node, weight=1)
+            if group_col in df.columns:
+                G.add_edge(row[group_col], val_node, weight=1)
             G.add_edge(row["doc_stem"], val_node, weight=1)
 
         fig, ax = plt.subplots(figsize=figsize)
@@ -3201,13 +3238,27 @@ class PublicationQualityVisualizationEngine:
         return fig
 
     def plot_quantitative_radar(self, df: pd.DataFrame, quantity_name: str,
+                                group_by: str = "material",
                                 colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             fig = go.Figure()
             fig.update_layout(title=f"No {quantity_name} data extracted")
             return fig
 
-        stats = df.groupby("material")["value"].agg(["mean", "std", "min", "max", "count"])
+        # Map logical grouping to DataFrame columns
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+
+        if group_col not in df.columns:
+            fig = go.Figure()
+            fig.update_layout(title=f"Cannot group by '{group_by}': column '{group_col}' not found")
+            return fig
+
+        stats = df.groupby(group_col)["value"].agg(["mean", "std", "min", "max", "count"])
         categories = ["Mean", "Max", "Min", "Std", "Count"]
         fig = go.Figure()
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
@@ -3233,20 +3284,31 @@ class PublicationQualityVisualizationEngine:
         return fig
 
     def plot_quantitative_tsne(self, df: pd.DataFrame, embedding_fn: Callable,
-                               quantity_name: str, colormap: Optional[str] = None,
+                               quantity_name: str, group_by: str = "material",
+                               colormap: Optional[str] = None,
                                figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
         if not SKLEARN_AVAILABLE or len(df) < 5:
             return None
+
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            group_col = "material"
+
         embs = np.array([embedding_fn(c) for c in df["context"].tolist()])
         coords = TSNE(n_components=2, perplexity=min(30, len(df) - 1), random_state=42).fit_transform(embs)
 
         fig, ax = plt.subplots(figsize=figsize)
-        mats = df["material"].unique()
+        groups = df[group_col].unique()
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
-        for i, mat in enumerate(mats):
-            mask = df["material"] == mat
-            color = mcolors.to_hex(cmap_obj(i / max(len(mats) - 1, 1)))
-            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=mat, alpha=0.85, s=120, edgecolors='white')
+        for i, grp in enumerate(groups):
+            mask = df[group_col] == grp
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
         for idx, row in df.iterrows():
             ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
                         fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
@@ -3258,22 +3320,33 @@ class PublicationQualityVisualizationEngine:
         return fig
 
     def plot_quantitative_pca(self, df: pd.DataFrame, embedding_fn: Callable,
-                              quantity_name: str, colormap: Optional[str] = None,
+                              quantity_name: str, group_by: str = "material",
+                              colormap: Optional[str] = None,
                               figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
         if not SKLEARN_AVAILABLE or len(df) < 5:
             return None
+
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            group_col = "material"
+
         embs = np.array([embedding_fn(c) for c in df["context"].tolist()])
         pca = PCA(n_components=2)
         coords = pca.fit_transform(embs)
         var_ratio = pca.explained_variance_ratio_
 
         fig, ax = plt.subplots(figsize=figsize)
-        mats = df["material"].unique()
+        groups = df[group_col].unique()
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
-        for i, mat in enumerate(mats):
-            mask = df["material"] == mat
-            color = mcolors.to_hex(cmap_obj(i / max(len(mats) - 1, 1)))
-            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=mat, alpha=0.85, s=120, edgecolors='white')
+        for i, grp in enumerate(groups):
+            mask = df[group_col] == grp
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
         for idx, row in df.iterrows():
             ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
                         fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
@@ -3287,20 +3360,31 @@ class PublicationQualityVisualizationEngine:
         return fig
 
     def plot_quantitative_umap(self, df: pd.DataFrame, embedding_fn: Callable,
-                               quantity_name: str, colormap: Optional[str] = None,
+                               quantity_name: str, group_by: str = "material",
+                               colormap: Optional[str] = None,
                                figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
         if not UMAP_AVAILABLE or len(df) < 5:
             return None
+
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            group_col = "material"
+
         embs = np.array([embedding_fn(c) for c in df["context"].tolist()])
         coords = umap.UMAP(n_neighbors=min(15, len(df) - 1), min_dist=0.1, random_state=42).fit_transform(embs)
 
         fig, ax = plt.subplots(figsize=figsize)
-        mats = df["material"].unique()
+        groups = df[group_col].unique()
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
-        for i, mat in enumerate(mats):
-            mask = df["material"] == mat
-            color = mcolors.to_hex(cmap_obj(i / max(len(mats) - 1, 1)))
-            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=mat, alpha=0.85, s=120, edgecolors='white')
+        for i, grp in enumerate(groups):
+            mask = df[group_col] == grp
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
         for idx, row in df.iterrows():
             ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
                         fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
@@ -4057,22 +4141,22 @@ Synthesize these findings rigorously. Discuss trends, outliers, agreements/discr
 
     if not df.empty:
         ply_figs.append(viz.plot_quantitative_histogram(df, quantity_label, grouping_dim))
-        ply_figs.append(viz.plot_quantitative_sunburst(df, quantity_label))
-        ply_figs.append(viz.plot_quantitative_radar(df, quantity_label))
-        mpl_figs.append(viz.plot_quantitative_knowledge_graph(df, quantity_label))
+        ply_figs.append(viz.plot_quantitative_sunburst(df, quantity_label, grouping_dim))
+        ply_figs.append(viz.plot_quantitative_radar(df, quantity_label, grouping_dim))
+        mpl_figs.append(viz.plot_quantitative_knowledge_graph(df, quantity_label, grouping_dim))
 
         # Dimensionality reduction on extraction contexts (shows clustering of similar mentions)
         emb_src = getattr(vectorstore, 'embedding_function', getattr(vectorstore, 'embeddings', vectorstore))
         emb_fn = EmbeddingWrapper(emb_src)
 
         if len(df) >= 5:
-            fig_tsne = viz.plot_quantitative_tsne(df, emb_fn, quantity_label)
+            fig_tsne = viz.plot_quantitative_tsne(df, emb_fn, quantity_label, grouping_dim)
             if fig_tsne:
                 mpl_figs.append(fig_tsne)
-            fig_pca = viz.plot_quantitative_pca(df, emb_fn, quantity_label)
+            fig_pca = viz.plot_quantitative_pca(df, emb_fn, quantity_label, grouping_dim)
             if fig_pca:
                 mpl_figs.append(fig_pca)
-            fig_umap = viz.plot_quantitative_umap(df, emb_fn, quantity_label)
+            fig_umap = viz.plot_quantitative_umap(df, emb_fn, quantity_label, grouping_dim)
             if fig_umap:
                 mpl_figs.append(fig_umap)
 
@@ -4840,13 +4924,13 @@ You have ~{available_vram:.1f}GB available.
                     with c1:
                         st.plotly_chart(qviz.plot_quantitative_histogram(df_qty, selected_qty, group_opt, q_cmap), use_container_width=True)
                     with c2:
-                        st.plotly_chart(qviz.plot_quantitative_sunburst(df_qty, selected_qty, q_cmap), use_container_width=True)
+                        st.plotly_chart(qviz.plot_quantitative_sunburst(df_qty, selected_qty, group_opt, q_cmap), use_container_width=True)
 
                     c3, c4 = st.columns(2)
                     with c3:
-                        st.plotly_chart(qviz.plot_quantitative_radar(df_qty, selected_qty, q_cmap), use_container_width=True)
+                        st.plotly_chart(qviz.plot_quantitative_radar(df_qty, selected_qty, group_opt, q_cmap), use_container_width=True)
                     with c4:
-                        fig_kg = qviz.plot_quantitative_knowledge_graph(df_qty, selected_qty, q_cmap)
+                        fig_kg = qviz.plot_quantitative_knowledge_graph(df_qty, selected_qty, group_opt, q_cmap)
                         st.pyplot(fig_kg)
                         buf = BytesIO()
                         fig_kg.savefig(buf, format="png", dpi=300, bbox_inches="tight")

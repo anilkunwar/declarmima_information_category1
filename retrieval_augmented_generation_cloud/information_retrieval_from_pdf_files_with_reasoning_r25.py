@@ -3023,6 +3023,7 @@ class PublicationQualityVisualizationEngine:
             "method": "method"
         }
         group_col = column_map.get(group_by, "material")
+        groups = []
         if group_col in df.columns:
             groups = sorted(df[group_col].unique())
             for i, grp in enumerate(groups):
@@ -3044,7 +3045,8 @@ class PublicationQualityVisualizationEngine:
         fig, ax = plt.subplots(figsize=figsize)
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
         nx.draw_networkx_nodes(G, pos, nodelist=[hub], node_color="#dc2626", node_size=2500, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=groups, node_color="#3b82f6", node_size=900, ax=ax)
+        if groups:
+            nx.draw_networkx_nodes(G, pos, nodelist=groups, node_color="#3b82f6", node_size=900, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=docs, node_color="#10b981", node_size=700, ax=ax)
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#f59e0b", node_size=350, ax=ax)
@@ -3750,46 +3752,6 @@ def extract_laser_metadata(text: str, filename: str) -> Dict[str, any]:
                 pass
     return metadata
 
-def load_pdf_chunks(uploaded_files, use_parallel: bool = True):
-    if use_parallel and len(uploaded_files) > 1:
-        try:
-            all_pages, temp_paths = FastPDFProcessor.process_multiple_pdfs(uploaded_files)
-            all_chunks = []
-            pages_by_file = {}
-            for page in all_pages:
-                src = page.metadata.get("source", "unknown")
-                if src not in pages_by_file:
-                    pages_by_file[src] = []
-                pages_by_file[src].append(page)
-            for filename, pages in pages_by_file.items():
-                chunks = semantic_chunk_document(pages, filename)
-                all_chunks.extend(chunks)
-            for tmp_path in temp_paths:
-                try: os.unlink(tmp_path)
-                except: pass
-            return all_chunks
-        except Exception as e:
-            logger.warning(f"Parallel processing failed: {e}. Falling back to sequential.")
-    all_chunks = []
-    for file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(file.getbuffer())
-            loader = PyPDFLoader(tmp.name)
-            pages = loader.load()
-            chunks = semantic_chunk_document(pages, file.name)
-            all_chunks.extend(chunks)
-        os.unlink(tmp.name)
-    return all_chunks
-
-def process_documents(uploaded_files):
-    """Legacy wrapper for backward compatibility, now delegates to QueryDrivenProcessor."""
-    if st.session_state.query_processor is None:
-        st.session_state.query_processor = QueryDrivenProcessor()
-    st.session_state.query_processor.register_files(uploaded_files)
-    st.session_state.processed_files.update([f.name for f in uploaded_files])
-    st.session_state.processing_complete = False  # Will be set to True after query triggers processing
-    return True
-
 # =====================================================================
 # RETRIEVAL & ANSWER GENERATION
 # =====================================================================
@@ -4226,19 +4188,31 @@ def render_chat_interface():
                 progress = st.progress(0.0, text="Initializing pipeline...")
                 # Check cache first
                 q_hash = compute_text_hash(prompt)
-                if q_hash in st.session_state.query_cache and not st.session_state.query_processor._processed:
+                if q_hash in st.session_state.query_cache:
                     cached = st.session_state.query_cache[q_hash]
                     graph, vectorstore, emb_fn, concept_metadata, chain = cached
                     st.session_state.processing_complete = True
+                    st.session_state.knowledge_graph = graph
+                    st.session_state.concept_selector = DynamicConceptSelector(graph)
+                    st.session_state.vectorstore = vectorstore  # FIX: persist vectorstore
                 else:
                     graph, vectorstore, emb_fn, concept_metadata, chain = st.session_state.query_processor.process_for_query(prompt, progress)
                     st.session_state.query_cache[q_hash] = (graph, vectorstore, emb_fn, concept_metadata, chain)
                     st.session_state.processing_complete = True
                     st.session_state.knowledge_graph = graph
                     st.session_state.concept_selector = DynamicConceptSelector(graph)
+                    st.session_state.vectorstore = vectorstore  # FIX: persist vectorstore
 
             with st.spinner("🔍 Running cross-document reasoning..."):
                 is_quantitative = QuantitativeQueryEngine.detect_quantity(prompt) is not None
+                # Initialize variables that will be set in both branches
+                answer = ""
+                retrieved_docs = []
+                reasoning_meta = {}
+                mpl_figs = []
+                ply_figs = []
+                df = pd.DataFrame()
+
                 if is_quantitative and st.session_state.knowledge_graph:
                     answer, df, meta, mpl_figs, ply_figs, chain = retrieve_and_answer_quantitative(
                         vectorstore, st.session_state.knowledge_graph,
@@ -4248,19 +4222,24 @@ def render_chat_interface():
                         prompt, k=st.session_state.max_retrieved_chunks
                     )
                     st.markdown(answer)
+                    # FIX: define reasoning_meta and retrieved_docs explicitly
+                    reasoning_meta = meta
+                    reasoning_meta.setdefault('relevance', 1.0)
+                    retrieved_docs = []   # quantitative branch has no source chunks
+                    # Display quantitative visualizations
                     if not df.empty:
                         st.markdown(f"**📊 Extracted {len(df)} `{meta['quantity_label']}` values "
                                     f"across {df['doc_stem'].nunique()} documents**")
                         with st.expander("📈 Quantitative Visualizations", expanded=True):
                             tabs = st.tabs(["Histogram", "Sunburst", "Radar", "Knowledge Graph", "t-SNE / PCA / UMAP"])
                             with tabs[0]:
-                                for fig in [f for f in ply_figs if "Histogram" in f.layout.title.text]:
+                                for fig in [f for f in ply_figs if "Histogram" in (f.layout.title.text or "")]:
                                     st.plotly_chart(fig, use_container_width=True)
                             with tabs[1]:
-                                for fig in [f for f in ply_figs if "Sunburst" in f.layout.title.text]:
+                                for fig in [f for f in ply_figs if "Sunburst" in (f.layout.title.text or "")]:
                                     st.plotly_chart(fig, use_container_width=True)
                             with tabs[2]:
-                                for fig in [f for f in ply_figs if "Radar" in f.layout.title.text]:
+                                for fig in [f for f in ply_figs if "Radar" in (f.layout.title.text or "")]:
                                     st.plotly_chart(fig, use_container_width=True)
                             with tabs[3]:
                                 for fig in mpl_figs:
@@ -4298,10 +4277,12 @@ def render_chat_interface():
                     )
                     reasoning_meta['relevance'] = avg_relevance
                     st.markdown(answer)
+
+                # Now reasoning_meta and retrieved_docs are always defined
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": answer,
-                    "sources": retrieved_docs if not is_quantitative else [],
+                    "sources": retrieved_docs,
                     "reasoning_meta": reasoning_meta,
                     "reasoning_chain": chain
                 })
@@ -4414,6 +4395,7 @@ You have ~{available_vram:.1f}GB available.
                 st.session_state.query_processor = QueryDrivenProcessor()
             st.session_state.query_processor.register_files(uploaded_files)
             st.session_state.processed_files.update([f.name for f in uploaded_files])
+            st.session_state.query_cache = {}   # FIX: clear cache on new files
             st.success(f"✅ Registered {len(uploaded_files)} files. Ready for query-driven processing!")
         elif uploaded_files:
             st.warning("⏳ Click 'Register Files' to prepare for query-driven processing")
@@ -4499,7 +4481,7 @@ You have ~{available_vram:.1f}GB available.
         if selector:
             filtered = selector.get_filtered_concepts()
             meta = selector.get_selection_metadata()
-            st.info(f"🎯 Showing {meta['filtered_count']} of {meta['total_available']} concepts (Top {meta['top_n']} | Domains: {', '.join(meta['active_domains'])})")
+            st.info(f"🎯 Showing {meta['filtered_count']} of {meta['total_available']} concepts (Top {meta['top_n']} | Domains: {', '.join(meta['active_domains'])} | LLM ranking: {meta['llm_ranking_active']} | Salience ≥ {meta['salience_threshold']})")
         else:
             filtered = None
 
@@ -4510,7 +4492,7 @@ You have ~{available_vram:.1f}GB available.
             "📡 Document Profiles",
             "⚡ Contradictions & Salience",
             "🔬 Embedding Spaces (t-SNE/UMAP/PCA)",
-            "🔢 Quantitative Explorer"  # NEW
+            "🔢 Quantitative Explorer"
         ])
         with tab1:
             c1, c2 = st.columns(2)

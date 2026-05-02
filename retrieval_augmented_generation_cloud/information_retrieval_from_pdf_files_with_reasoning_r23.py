@@ -3163,7 +3163,8 @@ class PublicationQualityVisualizationEngine:
         group_col = column_map.get(group_by, "material")
 
         # Build path dynamically based on available columns
-        path_cols = [group_col, "doc_stem", "value_range"]
+        # Use dict.fromkeys() to preserve order while removing duplicates
+        path_cols = list(dict.fromkeys([group_col, "doc_stem", "value_range"]))
         path_cols = [c for c in path_cols if c in df.columns]
 
         fig = px.sunburst(

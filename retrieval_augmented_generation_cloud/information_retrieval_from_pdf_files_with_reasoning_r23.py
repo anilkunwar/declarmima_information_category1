@@ -3224,7 +3224,7 @@ class PublicationQualityVisualizationEngine:
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
 
         nx.draw_networkx_nodes(G, pos, nodelist=[hub], node_color="#dc2626", node_size=2500, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=mats, node_color="#3b82f6", node_size=900, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=groups, node_color="#3b82f6", node_size=900, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=docs, node_color="#10b981", node_size=700, ax=ax)
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#f59e0b", node_size=350, ax=ax)

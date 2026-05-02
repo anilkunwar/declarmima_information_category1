@@ -68,6 +68,12 @@ V16-V18: Document Processing does not depend on the choice of LLM in the list of
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v18.0-turquoise)](https://information-retrieval-reasoning-visualization18.streamlit.app/) (v16 and includes multicomponent alloys, query attention, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS)
 
+v19-v20: Both Document Professing and Query-time Reasoning Depend on the Choice of LLMs models
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v19.0-turquoise)](https://information-retrieval-reasoning-visualization19.streamlit.app/) (v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v20.0-turquoise)](https://information-retrieval-reasoning-visualization20.streamlit.app/) (v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
 
 Multicomponent Alloy Microstructure Focus :
 

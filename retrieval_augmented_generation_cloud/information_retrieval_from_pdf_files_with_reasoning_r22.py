@@ -3257,8 +3257,7 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True):
     }
     if quantization_config:
         model_kwargs["quantization_config"] = quantization_config
-    model_kwargs["device_map"] = "auto"
-    elif device == "cuda":
+    if device == "cuda":
         model_kwargs["device_map"] = "auto"
     model = AutoModelForCausalLM.from_pretrained(repo_id, **model_kwargs)
     if "device_map" not in model_kwargs and device == "cpu":

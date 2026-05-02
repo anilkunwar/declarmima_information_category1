@@ -25,6 +25,9 @@ Key Upgrades:
 18. NEW: ADVANCED MEMORY MANAGEMENT & GARBAGE COLLECTION ROUTINES
 19. NEW: EXTENSIVE PROGRESS TRACKING, ERROR RECOVERY, & FALLBACK STRATEGIES
 20. NEW: COMPREHENSIVE INLINE DOCUMENTATION & ARCHITECTURAL COMMENTS
+21. FIX: UnboundLocalError on reasoning_meta in quantitative branch
+22. FIX: Broken cache logic preventing reuse after first query
+23. FIX: Vectorstore persistence failure in visualization dashboard
 """
 import streamlit as st
 import os
@@ -222,7 +225,6 @@ class AppConfig:
         "base_salience_weight": 0.35,
         "cache_ttl_minutes": 60
     }
-
     def __init__(self):
         self._config = self.DEFAULT_CONFIG.copy()
         self._overrides = {}
@@ -241,8 +243,8 @@ class AppConfig:
                 except (ValueError, TypeError) as e:
                     logger.error(f"Failed to coerce {key}: {e}")
                     return
-        self._overrides[key] = value
-        logger.debug(f"Config updated: {key} = {value}")
+            self._overrides[key] = value
+            logger.debug(f"Config updated: {key} = {value}")
 
     def load_from_dict(self, config_dict: Dict[str, Any]):
         self._overrides.update({k: v for k, v in config_dict.items() if k in self._config})
@@ -282,7 +284,9 @@ LOCAL_LLM_OPTIONS = {
     "[Ollama] gemma2:9b (via ollama serve)": "ollama:gemma2:9b",
     "[Ollama] falcon3:10b (via ollama serve)": "ollama:falcon3:10b",
 }
+
 LOCAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 LASER_DOMAIN_CONFIG = {
     "chunk_size": 800,
     "chunk_overlap": 150,
@@ -320,6 +324,7 @@ LASER_KEYWORDS = {
     "properties": ["interfacial energy", "thermal conductivity", "diffusion coefficient", "viscosity",
                    "gibbs free energy", "enthalpy", "absorptivity", "reflectivity", "spatter", "porosity"],
 }
+
 MATERIAL_ALIASES = {
     "silicon": ["silicon", "si", "crystalline silicon", "c-si", "si(100)", "si(111)"],
     "titanium": ["titanium", "ti", "cp-ti", "ti-6al-4v", "ti6al4v"],
@@ -337,6 +342,7 @@ MATERIAL_ALIASES = {
     "multicomponent alloy": ["multicomponent alloy", "multi-component alloy", "multicomponent", "multi-component",
                              "complex concentrated alloy", "cca", "multicomponent system", "multicomponent metallic"],
 }
+
 METHOD_ALIASES = {
     "sem": ["sem", "scanning electron microscopy", "scanning electron microscope"],
     "afm": ["afm", "atomic force microscopy", "atomic force microscope"],
@@ -350,6 +356,7 @@ METHOD_ALIASES = {
     "finite_element": ["finite element", "fem", "moose", "abaqus"],
     "calphad": ["calphad", "thermo-calc", "thermocalc", "pandat"],
 }
+
 QUANTITY_PATTERNS = {
     "wavelength": re.compile(r'(\d+(?:\.\d+)?)\s*(?:nm|nanometers?)\s*(?:wavelength|λ|lambda)', re.I),
     "pulse_duration": re.compile(r'(\d+(?:\.\d+)?)\s*(?:fs|femtoseconds?|ps|picoseconds?|ns|nanoseconds?)\s*(?:pulse|duration)', re.I),
@@ -632,9 +639,11 @@ class BibliographicMetadata:
         if self.arxiv_id:
             if style in ["doi", "short"]:
                 return f"[arXiv:{self.arxiv_id}]"
+        
         if self.authors and self.year:
             first_author = self._format_author_name(self.authors[0])
             et_al = " et al." if len(self.authors) > 1 else ""
+            
             if style == "apa":
                 journal_part = f", {self.journal}" if self.journal else ""
                 return f"{first_author}{et_al}{journal_part}, {self.year}"
@@ -654,6 +663,7 @@ class BibliographicMetadata:
                 if self.pages:
                     parts.append(f"pp. {self.pages}")
                 return ". ".join(parts) + "."
+        
         base_name = Path(self.source_filename).stem
         if self.year:
             return f"[{base_name}, {self.year}]"
@@ -717,6 +727,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
     if arxiv_match:
         meta.arxiv_id = arxiv_match.group(1)
         meta.confidence = max(meta.confidence, 0.85)
+    
     year_matches = BibliographicMetadata.YEAR_PATTERN.findall(text_sample)
     for year_str in year_matches:
         year = int(year_str)
@@ -727,6 +738,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
                 meta.year = year
                 meta.confidence = max(meta.confidence, 0.7)
                 break
+    
     for pattern in BibliographicMetadata.JOURNAL_PATTERNS:
         journal_match = pattern.search(text_sample)
         if journal_match:
@@ -737,12 +749,14 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
                 meta.journal = journal
                 meta.confidence = max(meta.confidence, 0.6)
                 break
+    
     vol_match = BibliographicMetadata.VOLUME_PATTERN.search(text_sample)
     if vol_match:
         meta.volume = vol_match.group(1)
     iss_match = BibliographicMetadata.ISSUE_PATTERN.search(text_sample)
     if iss_match:
         meta.issue = iss_match.group(1)
+
     author_section = text_sample[:2000]
     author_matches = BibliographicMetadata.AUTHOR_PATTERN.findall(author_section)
     if author_matches:
@@ -757,6 +771,7 @@ def extract_metadata_from_pdf_text(text: str, filename: str) -> BibliographicMet
             meta.authors = [raw_authors.strip()]
         if meta.authors:
             meta.confidence = max(meta.confidence, 0.5)
+
     title_patterns = [
         re.compile(r'(?:^|\n)([A-Z][^.\n]{20,150}(?:\.[^A-Z]|$))'),
         re.compile(r'(?:title:?\s*)([A-Z][^.\n]{20,200}?)\.?(?:\n|$)', re.I),
@@ -794,6 +809,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
                 meta.extraction_method = "pdf_metadata"
         except Exception as e:
             st.warning(f"Could not read PDF metadata: {e}")
+
     try:
         loader = PyPDFLoader(pdf_path)
         pages = loader.load()
@@ -811,6 +827,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
             meta.extraction_method = text_meta.extraction_method
     except Exception as e:
         st.warning(f"Text extraction for metadata failed: {e}")
+
     if PDF2DOI_AVAILABLE and not meta.doi:
         try:
             result = pdf2doi.pdf2doi(pdf_path)
@@ -833,6 +850,7 @@ def extract_metadata_from_pdf_file(pdf_path: str, filename: str) -> Bibliographi
                             pass
         except Exception as e:
             st.warning(f"pdf2doi lookup failed: {e}")
+
     if CROSSREF_AVAILABLE and meta.doi and not meta.journal:
         try:
             cr = CrossrefAPI()
@@ -1045,7 +1063,7 @@ class FullTextConceptExtractor:
         self._compute_semantic_pillar_embeddings()
         max_sim = 0.0
         for pillar, pillar_emb in self._pillar_embeddings.items():
-            sim = float(np.dot(concept_embedding, pillar_emb) /
+            sim = float(np.dot(concept_embedding, pillar_emb) / 
                         (np.linalg.norm(concept_embedding) * np.linalg.norm(pillar_emb) + 1e-8))
             if sim > max_sim:
                 max_sim = sim
@@ -1088,7 +1106,7 @@ class FullTextConceptExtractor:
         """Cached embedding for repeated texts."""
         return self._embed_text(text)
 
-    def extract_concepts_fast(self, chunks: List[Document], min_salience: float = 0.42, 
+    def extract_concepts_fast(self, chunks: List[Document], min_salience: float = 0.42,
                               query_embedding: Optional[np.ndarray] = None) -> Tuple[List[str], Dict[str, Dict]]:
         """Optimized concept extraction with caching, batch processing, and query-biased salience."""
         candidates = self._extract_candidates_fast(chunks)
@@ -1112,10 +1130,10 @@ class FullTextConceptExtractor:
             # NEW: Query-biased adjustment
             query_weight = 0.0
             if query_embedding is not None:
-                sim = float(np.dot(candidate_embeddings[idx], query_embedding) / 
+                sim = float(np.dot(candidate_embeddings[idx], query_embedding) /
                             (np.linalg.norm(candidate_embeddings[idx]) * np.linalg.norm(query_embedding) + 1e-8))
                 query_weight = max(0.0, min(1.0, sim * app_config.get("query_similarity_weight", 0.65)))
-            
+
             final_score = (base_score * (1.0 + 0.65 * boost + semantic_boost)) * app_config.get("base_salience_weight", 0.35)
             final_score += query_weight
             final_score = np.clip(final_score, 0.0, 1.0)
@@ -1132,6 +1150,7 @@ class FullTextConceptExtractor:
                     "semantic_boost": round(float(semantic_boost), 3),
                     "frequency": sum(1 for ch in chunks if concept.lower() in ch.page_content.lower())
                 }
+        
         final_concepts.sort(key=lambda c: metadata[c]["salience"], reverse=True)
         return final_concepts, metadata
 
@@ -1145,22 +1164,29 @@ class FullTextConceptExtractor:
             candidate_embeddings = self._embed_batch(candidates)
         except Exception:
             candidate_embeddings = np.array([self._embed_text_cached(c) for c in candidates])
+
         chunk_sections = [self.section_weights.get(ch.metadata.get("section", "UNKNOWN").upper(), 0.3) for ch in chunks]
         chunk_sources = [ch.metadata.get("source") for ch in chunks]
+
         for idx, concept in enumerate(candidates):
             matches = [concept in ch.page_content.lower() for ch in chunks]
             freq = sum(matches)
             freq_norm = np.log1p(freq) / np.log1p(n_docs) if n_docs > 0 else 0.0
+            
             docs_with_concept = len(set(chunk_sources[i] for i, m in enumerate(matches) if m))
             cross_doc = docs_with_concept / n_docs if n_docs > 0 else 0.0
+            
             section_scores = [chunk_sections[i] for i, m in enumerate(matches) if m]
             section_imp = np.mean(section_scores) if section_scores else 0.3
+            
             has_number = bool(re.search(r'\d', concept))
             quant_bonus = 1.12 if has_number else 1.0
+            
             emb = candidate_embeddings[idx]
-            proposal_sim = float(np.dot(emb, self.proposal_embedding) /
-                                 (np.linalg.norm(emb) * np.linalg.norm(self.proposal_embedding) + 1e-8))
-            base_salience = (0.25 * freq_norm + 0.20 * cross_doc + 0.18 * section_imp +
+            proposal_sim = float(np.dot(emb, self.proposal_embedding) / 
+                                (np.linalg.norm(emb) * np.linalg.norm(self.proposal_embedding) + 1e-8))
+
+            base_salience = (0.25 * freq_norm + 0.20 * cross_doc + 0.18 * section_imp + 
                              0.15 * proposal_sim + 0.12 * (1.0 if has_number else 0.6))
             scores[concept] = float(np.clip(base_salience * quant_bonus, 0.0, 1.0))
         return scores
@@ -1174,6 +1200,7 @@ class FullTextConceptExtractor:
             candidate_embeddings = self._embed_batch(candidates)
         except Exception:
             candidate_embeddings = np.array([self._embed_text(c) for c in candidates])
+        
         for idx, concept in enumerate(candidates):
             base_score = salience_scores.get(concept, 0.0)
             boost = max(
@@ -1183,6 +1210,7 @@ class FullTextConceptExtractor:
             )
             semantic_boost = self._get_semantic_boost(concept, candidate_embeddings[idx])
             final_score = base_score * (1.0 + 0.65 * boost + semantic_boost)
+            
             if final_score >= min_salience or boost >= 0.8:
                 final_concepts.append(concept)
                 metadata[concept] = {
@@ -1231,6 +1259,7 @@ class FullTextConceptExtractor:
             candidate_embeddings = self._embed_batch(candidates)
         except Exception as e:
             candidate_embeddings = np.array([self._embed_text(c) for c in candidates])
+        
         for idx, concept in enumerate(candidates):
             freq = sum(1 for ch in chunks if concept in ch.page_content.lower())
             freq_norm = np.log1p(freq) / np.log1p(n_docs) if n_docs > 0 else 0.0
@@ -1242,9 +1271,9 @@ class FullTextConceptExtractor:
             has_number = bool(re.search(r'\d', concept))
             quant_bonus = 1.12 if has_number else 1.0
             emb = candidate_embeddings[idx]
-            proposal_sim = float(np.dot(emb, self.proposal_embedding) /
-                                 (np.linalg.norm(emb) * np.linalg.norm(self.proposal_embedding) + 1e-8))
-            base_salience = (0.25 * freq_norm + 0.20 * cross_doc + 0.18 * section_imp +
+            proposal_sim = float(np.dot(emb, self.proposal_embedding) / 
+                                (np.linalg.norm(emb) * np.linalg.norm(self.proposal_embedding) + 1e-8))
+            base_salience = (0.25 * freq_norm + 0.20 * cross_doc + 0.18 * section_imp + 
                              0.15 * proposal_sim + 0.12 * (1.0 if has_number else 0.6))
             scores[concept] = float(np.clip(base_salience * quant_bonus, 0.0, 1.0))
         return scores
@@ -1269,8 +1298,10 @@ Given a list of raw extracted candidate concepts, perform the following:
 - Physical mechanisms
 4. Return ONLY a valid JSON list of objects with keys:
 "concept", "normalized", "importance", "domain" (MATERIAL/METHOD/PHENOMENON/PARAMETER)
+
 CANDIDATES:
 {candidates}
+
 JSON OUTPUT:
 """
     def __init__(self, llm_generate_fn: Callable, batch_size: int = 8, timeout: int = 30):
@@ -1304,16 +1335,16 @@ JSON OUTPUT:
                                 "domain": item.get("domain", "UNKNOWN"),
                                 "llm_source": True
                             })
-                        else:
-                            logger.warning(f"LLM failed to return valid JSON for batch {batch_idx}")
                 else:
                     logger.warning(f"LLM failed to return valid JSON for batch {batch_idx}")
             except Exception as e:
                 logger.error(f"LLM extraction error batch {batch_idx}: {e}")
                 continue
+
         if not ranked_results:
             logger.warning("LLM extraction failed entirely. Falling back to embedding scores.")
             ranked_results = [{"concept": c, "normalized": c, "importance": 0.5, "domain": "UNKNOWN", "llm_source": False} for c in raw_candidates]
+
         seen = set()
         unique_results = []
         for r in ranked_results:
@@ -1350,7 +1381,8 @@ Claim: "{claim.claim_text}"
 Subject: {claim.subject}
 Predicate: {claim.predicate}
 Object: {claim.object_val}
-Is this claim scientifically coherent and extractable? Return JSON: {"verified": true/false, "confidence": 0.0-1.0, "refined_text": "..."}
+
+Is this claim scientifically coherent and extractable? Return JSON: {{"verified": true/false, "confidence": 0.0-1.0, "refined_text": "..."}}
 """
         try:
             response = self.llm_generate_fn(prompt)
@@ -1405,6 +1437,7 @@ class ReasoningChain:
                     G.add_node(chk_id, node_type="chunk", source=chunk_src, layer=i+1)
                     G.add_edge(node_id, chk_id, relation="retrieves")
             prev_node = node_id
+        
         G.add_node("ANSWER", node_type="answer", layer=len(self.steps)+1)
         G.add_edge(prev_node, "ANSWER", relation="synthesizes")
         self.thinking_graph = G
@@ -1452,10 +1485,10 @@ class EnhancedCrossDocumentKnowledgeGraph:
             for ent in entities:
                 self.entities[ent.normalized].append(ent)
                 self.entity_index[ent.normalized].add(doc_id)
-                self.documents[doc_id]["topics"].add(ent.label)
-            claims = self._extract_claims_from_chunk(chunk, i)
-            for claim in claims:
-                self.claims.append(claim)
+            self.documents[doc_id]["topics"].add(ent.label)
+        claims = self._extract_claims_from_chunk(chunk, i)
+        for claim in claims:
+            self.claims.append(claim)
         if concept_metadata:
             for concept, meta in concept_metadata.items():
                 if concept not in self.concept_metadata:
@@ -1506,6 +1539,7 @@ class EnhancedCrossDocumentKnowledgeGraph:
                             doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.9
                         ))
                     pos = text_lower.find(alias_lower, pos + 1)
+        
         for topic, keywords in LASER_KEYWORDS.items():
             for kw in keywords:
                 kw_lower = kw.lower()
@@ -1564,10 +1598,10 @@ class EnhancedCrossDocumentKnowledgeGraph:
             for ent in entities:
                 self.entities[ent.normalized].append(ent)
                 self.entity_index[ent.normalized].add(doc_id)
-                self.documents[doc_id]["topics"].add(ent.label)
-            claims = self._extract_claims_from_chunk_fast(chunk, i)
-            for claim in claims:
-                self.claims.append(claim)
+            self.documents[doc_id]["topics"].add(ent.label)
+        claims = self._extract_claims_from_chunk_fast(chunk, i)
+        for claim in claims:
+            self.claims.append(claim)
         if concept_metadata:
             for concept, meta in concept_metadata.items():
                 if concept not in self.concept_metadata:
@@ -1737,8 +1771,7 @@ class EnhancedCrossDocumentKnowledgeGraph:
                     reason = "cross-doc-link"
             for claim in self.claims:
                 if claim.doc_source == doc and claim.chunk_id == chunk.metadata.get("chunk_index", -1):
-                    if any(ent in claim.subject.lower() or ent in claim.object_val.lower()
-                           for ent in query_entities):
+                    if any(ent in claim.subject.lower() or ent in claim.object_val.lower() for ent in query_entities):
                         score += 0.25
                         reason = "claim-evidence"
             if score > 0:
@@ -1773,6 +1806,7 @@ class EnhancedCrossDocumentKnowledgeGraph:
         entities = list(self.entities.keys())
         claims = [(c.doc_source, c.chunk_id, i) for i, c in enumerate(self.claims)]
         topics = list(LASER_KEYWORDS.keys())
+
         doc_map = {d: i for i, d in enumerate(docs)}
         chunk_map = {(d, c.metadata.get("chunk_index", i)): i for i, (d, c) in enumerate(chunks)}
         ent_map = {e: i for i, e in enumerate(entities)}
@@ -1782,11 +1816,13 @@ class EnhancedCrossDocumentKnowledgeGraph:
             "doc": doc_map, "chunk": chunk_map, "entity": ent_map,
             "claim": claim_map, "topic": topic_map
         }
+
         def edges(pairs):
             if not pairs:
                 return None
             src, dst = zip(*pairs)
             return (torch.tensor(src, dtype=torch.int64), torch.tensor(dst, dtype=torch.int64))
+
         dc_pairs = []
         for (d, c), idx in chunk_map.items():
             dc_pairs.append((doc_map[d], idx))
@@ -1826,6 +1862,7 @@ class EnhancedCrossDocumentKnowledgeGraph:
             for ent_norm in entities:
                 if ent_norm in claim.subject.lower() or ent_norm in claim.object_val.lower():
                     cle_pairs.append((ci, ent_map[ent_norm]))
+
         data_dict = {}
         if dc_pairs:
             data_dict[('doc', 'contains', 'chunk')] = edges(dc_pairs)
@@ -1839,9 +1876,11 @@ class EnhancedCrossDocumentKnowledgeGraph:
             data_dict[('entity', 'belongs_to', 'topic')] = edges(et_pairs)
         if cle_pairs:
             data_dict[('claim', 'about', 'entity')] = edges(cle_pairs)
+
         if not data_dict:
             self.dgl_graph = None
             return None
+
         g = dgl.heterograph(data_dict)
         emb_dim = 384
         if embedding_fn:
@@ -1868,10 +1907,10 @@ class EnhancedCrossDocumentKnowledgeGraph:
         else:
             for ntype in g.ntypes:
                 g.nodes[ntype].data['feat'] = torch.randn(g.num_nodes(ntype), emb_dim) * 0.01
-        if 'claim' in g.ntypes:
-            g.nodes['claim'].data['feat'] = torch.randn(g.num_nodes('claim'), emb_dim) * 0.01
-        if 'topic' in g.ntypes:
-            g.nodes['topic'].data['feat'] = torch.eye(g.num_nodes('topic'))
+            if 'claim' in g.ntypes:
+                g.nodes['claim'].data['feat'] = torch.randn(g.num_nodes('claim'), emb_dim) * 0.01
+            if 'topic' in g.ntypes:
+                g.nodes['topic'].data['feat'] = torch.eye(g.num_nodes('topic'))
         self.dgl_graph = g
         return g
 
@@ -1908,6 +1947,7 @@ class QuantitativeDataExtractor:
             for ent in ent_list:
                 if ent.label == quantity_label and ent.value is not None:
                     targets.append(ent)
+        
         for ent in targets:
             material = self._infer_associated(ent, "MATERIAL")
             method   = self._infer_associated(ent, "METHOD")
@@ -1991,10 +2031,12 @@ class GraphDiffusionRetriever:
         if not query_entities:
             sorted_chunks = sorted(chunks, key=lambda c: vector_scores.get(c.metadata.get("chunk_index", -1), 0), reverse=True)
             return [(c, vector_scores.get(c.metadata.get("chunk_index", -1), 0), "vector-only") for c in sorted_chunks[:top_k]]
+        
         if DGL_AVAILABLE and self.graph.dgl_graph is not None:
             diffusion_scores = self._dgl_diffusion(query_entities, chunks)
         else:
             diffusion_scores = self._nx_diffusion(query_entities, chunks)
+        
         hybrid = []
         for chunk in chunks:
             cidx = chunk.metadata.get("chunk_index", -1)
@@ -2094,9 +2136,9 @@ class CrossDocumentThinker:
             contradictions.extend(contr)
         chain.add_step("cross_doc_analysis",
                        f"Consensus: {len(consensus_data)}, Contradictions: {len(contradictions)}", {
-            "consensus_entities": [c["entity"] for c in consensus_data],
-            "contradiction_pairs": [(c["doc_a"], c["doc_b"], c["entity"]) for c in contradictions[:3]]
-        })
+                           "consensus_entities": [c["entity"] for c in consensus_data],
+                           "contradiction_pairs": [(c["doc_a"], c["doc_b"], c["entity"]) for c in contradictions[:3]]
+                       })
         prompt = self._build_reasoning_prompt(retrieved_docs, query, consensus_data, contradictions, relevant_claims)
         answer = self.llm_generate_fn(prompt)
         chain.add_step("synthesis", "Generated answer via LLM synthesis", {
@@ -2156,6 +2198,7 @@ class CrossDocumentThinker:
             claim_text = "\nRelevant Claims from Literature:\n"
             for c in claims[:5]:
                 claim_text += f"- [{c.doc_source}] {c.subject} → {c.predicate} → {c.object_val}\n"
+        
         system = """You are an expert scientific research assistant specializing in laser-microstructure interactions, multicomponent alloys, and physics-informed digital twins.
 SYNTHESIZE across documents. Identify CONSENSUS and CONTRADICTIONS explicitly.
 Report UNCERTAINTY: use ranges, standard deviations, and confidence statements.
@@ -2328,6 +2371,7 @@ class PublicationQualityVisualizationEngine:
             ent_counts = Counter({k: len(v) for k, v in self.graph.entities.items()})
             scored = [(ent, self.get_salience(ent) * ent_counts.get(ent, 1)) for ent in self.graph.entities.keys()]
             top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
+        
         for doc_id in self.graph.documents:
             G.add_node(Path(doc_id).stem, node_type="doc", bipartite=0)
         for ent in top_entities:
@@ -2341,6 +2385,7 @@ class PublicationQualityVisualizationEngine:
                 doc_node = Path(e.doc_source).stem
                 if doc_node in G:
                     G.add_edge(doc_node, ent, weight=e.confidence * (0.5 + 0.5 * salience))
+        
         fig, ax = plt.subplots(figsize=figsize)
         if layout == "spring":
             pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
@@ -2350,6 +2395,7 @@ class PublicationQualityVisualizationEngine:
             pos = nx.circular_layout(G)
         else:
             pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
+        
         doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
         ent_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "entity"]
         nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#1e40af",
@@ -2357,6 +2403,7 @@ class PublicationQualityVisualizationEngine:
         domains = list(set(G.nodes[n].get("domain", "UNKNOWN") for n in ent_nodes))
         cmap = plt.get_cmap(self._get_colormap(colormap))
         domain_color_idx = {d: i for i, d in enumerate(domains)}
+        
         for node in ent_nodes:
             salience = G.nodes[node].get("salience", 0.5)
             domain = G.nodes[node].get("domain", "UNKNOWN")
@@ -2371,11 +2418,13 @@ class PublicationQualityVisualizationEngine:
             size = (300 + salience * 900) * node_size_factor
             nx.draw_networkx_nodes(G, pos, nodelist=[node], node_color=color,
                                    node_shape="o", node_size=size, alpha=0.9, ax=ax)
+        
         nx.draw_networkx_edges(G, pos, alpha=edge_alpha, width=0.8, ax=ax)
         if show_labels:
             lbl_size = label_font_size or self.label_font_size
             nx.draw_networkx_labels(G, pos, font_size=lbl_size, ax=ax,
                                     font_family=self.font_family)
+        
         legend_patches = [mpatches.Patch(color="#1e40af", label="Documents")]
         for dom in domains:
             if colormap:
@@ -2384,6 +2433,7 @@ class PublicationQualityVisualizationEngine:
             else:
                 c = self.DOMAIN_COLORS.get(dom, "#6b7280")
             legend_patches.append(mpatches.Patch(color=c, label=dom))
+        
         ax.legend(handles=legend_patches, loc="upper left", fontsize=9)
         ax.set_title("Salience-Aware Cross-Document Knowledge Network\n(Node size = importance)",
                      fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
@@ -2398,10 +2448,12 @@ class PublicationQualityVisualizationEngine:
         else:
             scored = [(ent, self.get_salience(ent) * len(self.graph.entities.get(ent, []))) for ent in self.graph.entities]
             top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
+        
         if not top_entities:
             fig = go.Figure()
             fig.update_layout(title="No entity co-occurrence data")
             return fig
+
         n = len(top_entities)
         node_to_idx = {node: i for i, node in enumerate(top_entities)}
         adj = np.zeros((n, n))
@@ -2453,6 +2505,7 @@ class PublicationQualityVisualizationEngine:
             top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
         if len(top_entities) < 3:
             return None
+        
         n = len(top_entities)
         node_to_idx = {node: i for i, node in enumerate(top_entities)}
         adj = np.zeros((n, n))
@@ -2471,6 +2524,7 @@ class PublicationQualityVisualizationEngine:
                     edge_weights.append(adj[i][j])
         if not edge_list:
             return None
+
         node_colors = []
         node_sizes = []
         for ent in top_entities:
@@ -2478,16 +2532,19 @@ class PublicationQualityVisualizationEngine:
             color = self.DOMAIN_COLORS.get(domain, "#6b7280")
             node_colors.append(color)
             node_sizes.append(15 + self.get_salience(ent) * 35)
+        
         G = nx.Graph()
         G.add_nodes_from(range(n))
         for (i, j), w in zip(edge_list, edge_weights):
             G.add_edge(i, j, weight=w)
+        
         pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
         p = figure(title="Interactive Chord-Style Co-occurrence Network (Bokeh)",
                    width=width, height=height,
                    x_range=(-1.2, 1.2), y_range=(-1.2, 1.2),
                    tools="pan,wheel_zoom,box_zoom,reset,save",
                    active_scroll="wheel_zoom")
+        
         edge_xs = []
         edge_ys = []
         edge_alphas = []
@@ -2498,7 +2555,9 @@ class PublicationQualityVisualizationEngine:
             edge_xs.append([x0, x1])
             edge_ys.append([y0, y1])
             edge_alphas.append(0.2 + 0.6 * (w / max_w))
+        
         p.multi_line(edge_xs, edge_ys, line_color="#888888", line_alpha=edge_alphas, line_width=1.5)
+        
         node_x = [pos[i][0] for i in range(n)]
         node_y = [pos[i][1] for i in range(n)]
         source = ColumnDataSource(data=dict(
@@ -2509,6 +2568,7 @@ class PublicationQualityVisualizationEngine:
             salience=[self.get_salience(e) for e in top_entities],
             domain=[self.graph.entities[e][0].domain if self.graph.entities.get(e) else "UNKNOWN" for e in top_entities]
         ))
+        
         p.circle('x', 'y', size='size', color='color', alpha=0.8, source=source,
                  hover_color='red', hover_alpha=1.0)
         labels = LabelSet(x='x', y='y', text='name', level='glyph',
@@ -2516,6 +2576,7 @@ class PublicationQualityVisualizationEngine:
                           text_font_size=f"{self.label_font_size}pt",
                           text_font=self.font_family)
         p.add_layout(labels)
+        
         hover = HoverTool(tooltips=[
             ("Entity", "@name"),
             ("Domain", "@domain"),
@@ -2537,6 +2598,7 @@ class PublicationQualityVisualizationEngine:
             top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
         if len(top_entities) < 3:
             return None
+        
         edges_df = []
         for doc in self.graph.documents:
             present = [ent for ent in top_entities if ent in self.graph.entity_index and doc in self.graph.entity_index[ent]]
@@ -2546,6 +2608,7 @@ class PublicationQualityVisualizationEngine:
                         edges_df.append({'source': e1, 'target': e2, 'weight': 1})
         if not edges_df:
             return None
+        
         edges_df = pd.DataFrame(edges_df).groupby(['source', 'target']).sum().reset_index()
         chord = hv.Chord(edges_df).opts(
             opts.Chord(cmap='Category20', edge_cmap='Category20',
@@ -2758,6 +2821,7 @@ class PublicationQualityVisualizationEngine:
         else:
             node_colors = [color_map.get(G.nodes[n].get("node_type", "query"), "#6b7280") for n in G.nodes()]
         node_sizes = [1200 if G.nodes[n].get("node_type") in ["query", "answer"] else 600 for n in G.nodes()]
+        
         nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_sizes, alpha=0.9, ax=ax)
         nx.draw_networkx_edges(G, pos, arrows=True, arrowsize=15, alpha=0.5, ax=ax,
                                connectionstyle="arc3,rad=0.1", edge_color="#4b5563")
@@ -2805,10 +2869,10 @@ class PublicationQualityVisualizationEngine:
             y = coords[mask, 1]
             color = mcolors.to_hex(cmap(i / max(len(unique_domains) - 1, 1)))
             ax.scatter(x, y, c=color, label=domain, alpha=0.8, s=80, edgecolors='white')
-        for i, ent in enumerate(top):
-            ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
-                        fontsize=self.label_font_size - 1, alpha=0.8,
-                        fontfamily=self.font_family)
+            for i, ent in enumerate(top):
+                ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
+                            fontsize=self.label_font_size - 1, alpha=0.8,
+                            fontfamily=self.font_family)
         ax.legend(loc='best', fontsize=self.label_font_size)
         ax.set_title("Entity Embedding Space (t-SNE)",
                      fontsize=self.title_font_size, fontweight='bold',
@@ -2836,10 +2900,10 @@ class PublicationQualityVisualizationEngine:
             y = coords[mask, 1]
             color = mcolors.to_hex(cmap(i / max(len(unique_domains) - 1, 1)))
             ax.scatter(x, y, c=color, label=domain, alpha=0.8, s=80, edgecolors='white')
-        for i, ent in enumerate(top):
-            ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
-                        fontsize=self.label_font_size - 1, alpha=0.8,
-                        fontfamily=self.font_family)
+            for i, ent in enumerate(top):
+                ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
+                            fontsize=self.label_font_size - 1, alpha=0.8,
+                            fontfamily=self.font_family)
         ax.legend(loc='best', fontsize=self.label_font_size)
         ax.set_title("Entity Embedding Space (UMAP)",
                      fontsize=self.title_font_size, fontweight='bold',
@@ -2868,10 +2932,10 @@ class PublicationQualityVisualizationEngine:
             y = coords[mask, 1]
             color = mcolors.to_hex(cmap(i / max(len(unique_domains) - 1, 1)))
             ax.scatter(x, y, c=color, label=domain, alpha=0.8, s=80, edgecolors='white')
-        for i, ent in enumerate(top):
-            ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
-                        fontsize=self.label_font_size - 1, alpha=0.8,
-                        fontfamily=self.font_family)
+            for i, ent in enumerate(top):
+                ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
+                            fontsize=self.label_font_size - 1, alpha=0.8,
+                            fontfamily=self.font_family)
         ax.legend(loc='best', fontsize=self.label_font_size)
         ax.set_title(f"Entity Embedding Space (PCA)\nPC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}",
                      fontsize=self.title_font_size, fontweight='bold',
@@ -2950,6 +3014,7 @@ class PublicationQualityVisualizationEngine:
             fig = go.Figure()
             fig.update_layout(title=f"Cannot group by '{group_by}': column '{group_col}' not found in data")
             return fig
+        
         fig = go.Figure()
         groups = sorted(df[group_col].unique())
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
@@ -3023,16 +3088,19 @@ class PublicationQualityVisualizationEngine:
             "method": "method"
         }
         group_col = column_map.get(group_by, "material")
+        groups = []
         if group_col in df.columns:
             groups = sorted(df[group_col].unique())
             for i, grp in enumerate(groups):
                 G.add_node(grp, node_type="group", domain=group_col.upper())
                 count = len(df[df[group_col] == grp])
                 G.add_edge(hub, grp, weight=count)
+        
         docs = sorted(df["doc_stem"].unique())
         for doc in docs:
             G.add_node(doc, node_type="document", domain="DOCUMENT")
             G.add_edge(hub, doc, weight=len(df[df["doc_stem"] == doc]))
+        
         top = df.nlargest(min(25, len(df)), "value")
         for _, row in top.iterrows():
             val_node = f"{row['value']:.1f} {row['unit']}"
@@ -3041,10 +3109,12 @@ class PublicationQualityVisualizationEngine:
             if group_col in df.columns:
                 G.add_edge(row[group_col], val_node, weight=1)
             G.add_edge(row["doc_stem"], val_node, weight=1)
+        
         fig, ax = plt.subplots(figsize=figsize)
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
         nx.draw_networkx_nodes(G, pos, nodelist=[hub], node_color="#dc2626", node_size=2500, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=groups, node_color="#3b82f6", node_size=900, ax=ax)
+        if groups:
+            nx.draw_networkx_nodes(G, pos, nodelist=groups, node_color="#3b82f6", node_size=900, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=docs, node_color="#10b981", node_size=700, ax=ax)
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#f59e0b", node_size=350, ax=ax)
@@ -3119,9 +3189,9 @@ class PublicationQualityVisualizationEngine:
             mask = df[group_col] == grp
             color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
             ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
-        for idx, row in df.iterrows():
-            ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
-                        fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
+            for idx, row in df.iterrows():
+                ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
+                            fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
         ax.legend(loc='best', fontsize=self.label_font_size)
         ax.set_title(f"{quantity_name.replace('_', ' ').title()} Context Embeddings (t-SNE)",
                      fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
@@ -3154,9 +3224,9 @@ class PublicationQualityVisualizationEngine:
             mask = df[group_col] == grp
             color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
             ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
-        for idx, row in df.iterrows():
-            ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
-                        fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
+            for idx, row in df.iterrows():
+                ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
+                            fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
         ax.legend(loc='best', fontsize=self.label_font_size)
         ax.set_title(f"{quantity_name.replace('_', ' ').title()} Context Embeddings (PCA)\n"
                      f"PC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}",
@@ -3189,9 +3259,9 @@ class PublicationQualityVisualizationEngine:
             mask = df[group_col] == grp
             color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
             ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
-        for idx, row in df.iterrows():
-            ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
-                        fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
+            for idx, row in df.iterrows():
+                ax.annotate(f"{row['value']:.0f}", (coords[idx, 0], coords[idx, 1]),
+                            fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
         ax.legend(loc='best', fontsize=self.label_font_size)
         ax.set_title(f"{quantity_name.replace('_', ' ').title()} Context Embeddings (UMAP)",
                      fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
@@ -3210,15 +3280,18 @@ class PublicationQualityVisualizationEngine:
             scored = [(node, self.get_salience(node)) for node in nx_graph.nodes()]
             top_nodes = [node for node, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n_nodes]]
             nx_graph = nx_graph.subgraph(top_nodes).copy()
+        
         net = Network(height="700px", width="100%", bgcolor="#ffffff", font_color="#000000", cdn_resources='remote')
         if physics_enabled:
             net.barnes_hut(gravity=-1800, spring_length=140, damping=0.85)
+        
         domains = list(set(nx_graph.nodes[n].get("domain", "UNKNOWN") for n in nx_graph.nodes() if "domain" in nx_graph.nodes[n]))
         cmap = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
         domain_colors = {}
         if cmap:
             for i, d in enumerate(domains):
                 domain_colors[d] = mcolors.to_hex(cmap(i / max(len(domains) - 1, 1)))
+        
         for node in nx_graph.nodes():
             salience = self.get_salience(node)
             size = int(15 + salience * 55)
@@ -3235,12 +3308,14 @@ class PublicationQualityVisualizationEngine:
                 borderWidth=border,
                 title=f"{node}\nSalience: {salience:.2f}\nFrequency: {len(freq)}"
             )
+        
         for u, v in nx_graph.edges():
             w = nx_graph[u][v].get('weight', 1)
             salience_u = self.get_salience(u)
             salience_v = self.get_salience(v)
             edge_weight = w * (salience_u + salience_v) / 2
             net.add_edge(u, v, value=edge_weight, width=max(1, int(edge_weight * 2)))
+        
         html_content = net.generate_html()
         st.components.v1.html(html_content, height=750, scrolling=True)
         try:
@@ -3326,15 +3401,15 @@ def semantic_chunk_document(pages: List[Document], filename: str) -> List[Docume
     chunks = []
     splitters = {
         'ABSTRACT': RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50,
-                                                   separators=["\n", "\n", ". ", "; ", ", "], length_function=len),
+                                                   separators=["\n", "\n\n", ". ", "; ", ", "], length_function=len),
         'CONCLUSION': RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50,
-                                                     separators=["\n", "\n", ". ", "; ", ", "], length_function=len),
+                                                     separators=["\n", "\n\n", ". ", "; ", ", "], length_function=len),
         'METHODS': RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100,
-                                                  separators=["\n", "\n", ". ", "; ", ", "], length_function=len),
+                                                  separators=["\n", "\n\n", ". ", "; ", ", "], length_function=len),
         'DEFAULT': RecursiveCharacterTextSplitter(
             chunk_size=LASER_DOMAIN_CONFIG["chunk_size"],
             chunk_overlap=LASER_DOMAIN_CONFIG["chunk_overlap"],
-            separators=["\n", "\n", ". ", "; ", ", "],
+            separators=["\n", "\n\n", ". ", "; ", ", "],
             length_function=len
         )
     }
@@ -3391,44 +3466,44 @@ class QueryDrivenProcessor:
         emb_wrapper = EmbeddingWrapper(embed_model)
         query_emb = emb_wrapper(query)
         chain.add_step("query_embedding", "Generated query embedding for bias calculation", {"dim": len(query_emb)})
-
+        
         # Step 2: Load & Chunk Documents
         if progress_bar: progress_bar.progress(0.1, text="📄 Extracting & chunking documents...")
         all_chunks = []
         pages_by_file = {}
         use_pymupdf = PYMUPDF_AVAILABLE
-        
         for file in self.raw_files:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(file.getbuffer())
                 tmp_path = tmp.name
-            try:
-                if use_pymupdf:
-                    doc = fitz.open(tmp_path)
-                    for page_num in range(len(doc)):
-                        page = doc[page_num]
-                        text = page.get_text("text")
-                        if text.strip():
-                            pages_by_file.setdefault(file.name, []).append(Document(
-                                page_content=text, metadata={"source": file.name, "page": page_num + 1}
-                            ))
-                    doc.close()
-                else:
-                    loader = PyPDFLoader(tmp_path)
-                    pages = loader.load()
-                    pages_by_file[file.name] = pages
-            except Exception as e:
-                logger.warning(f"Extraction failed for {file.name}: {e}")
-            finally:
-                try: os.unlink(tmp_path)
-                except: pass
-                
+                try:
+                    if use_pymupdf:
+                        doc = fitz.open(tmp_path)
+                        for page_num in range(len(doc)):
+                            page = doc[page_num]
+                            text = page.get_text("text")
+                            if text.strip():
+                                pages_by_file.setdefault(file.name, []).append(Document(
+                                    page_content=text, metadata={"source": file.name, "page": page_num + 1}
+                                ))
+                        doc.close()
+                    else:
+                        loader = PyPDFLoader(tmp_path)
+                        pages = loader.load()
+                        pages_by_file[file.name] = pages
+                except Exception as e:
+                    logger.warning(f"Extraction failed for {file.name}: {e}")
+                finally:
+                    try: os.unlink(tmp_path)
+                    except: pass
+        
         for filename, pages in pages_by_file.items():
             chunks = semantic_chunk_document(pages, filename)
             all_chunks.extend(chunks)
+        
         if progress_bar: progress_bar.progress(0.4, text="✅ Chunking complete.")
         chain.add_step("chunking", f"Extracted {len(all_chunks)} sections/chunks", {"file_count": len(self.raw_files)})
-
+        
         # Step 3: Build Vector Store
         if progress_bar: progress_bar.progress(0.5, text="🧠 Indexing embeddings...")
         texts = [c.page_content for c in all_chunks]
@@ -3438,7 +3513,7 @@ class QueryDrivenProcessor:
             batch = texts[i:i+batch_size]
             batch_embs = embed_model.embed_documents(batch)
             all_embeddings.extend(batch_embs)
-            
+        
         import faiss
         from langchain_community.vectorstores import FAISS
         from langchain_community.docstore.in_memory import InMemoryDocstore
@@ -3457,7 +3532,7 @@ class QueryDrivenProcessor:
         )
         if progress_bar: progress_bar.progress(0.65, text="✅ Vector index built.")
         chain.add_step("vector_index", "FAISS index constructed", {"chunk_count": len(all_chunks)})
-
+        
         # Step 4: Query-Biased Concept Extraction
         if progress_bar: progress_bar.progress(0.7, text="🔍 Extracting query-biased concepts...")
         extractor = FullTextConceptExtractor(embed_model)
@@ -3467,9 +3542,9 @@ class QueryDrivenProcessor:
             all_chunks, min_salience=0.35, query_embedding=query_emb
         )
         if progress_bar: progress_bar.progress(0.85, text=f"✅ Found {len(valid_concepts)} high-salience concepts.")
-        chain.add_step("concept_extraction", f"Extracted {len(valid_concepts)} concepts", 
+        chain.add_step("concept_extraction", f"Extracted {len(valid_concepts)} concepts",
                        {"query_bias_applied": True})
-
+        
         # Step 5: Build Knowledge Graph
         if progress_bar: progress_bar.progress(0.9, text="🕸️ Constructing dynamic knowledge graph...")
         graph = EnhancedCrossDocumentKnowledgeGraph()
@@ -3483,7 +3558,6 @@ class QueryDrivenProcessor:
             doc_chunks[src].append(chunk)
         for src, chunks in doc_chunks.items():
             graph.add_document_fast(src, chunks, dummy_bib, concept_metadata=concept_metadata)
-            
         if progress_bar: progress_bar.progress(1.0, text="✅ Processing complete.")
         chain.add_step("graph_construction", "Dynamic graph built", {"documents": len(doc_chunks)})
         self._processed = True
@@ -3700,6 +3774,7 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True):
         except ImportError:
             st.sidebar.warning("⚠️ bitsandbytes not installed.")
             use_4bit = False
+
     tokenizer = AutoTokenizer.from_pretrained(
         repo_id, trust_remote_code=True, padding_side="left", use_fast=True
     )
@@ -3778,7 +3853,7 @@ def load_pdf_chunks(uploaded_files, use_parallel: bool = True):
             pages = loader.load()
             chunks = semantic_chunk_document(pages, file.name)
             all_chunks.extend(chunks)
-        os.unlink(tmp.name)
+            os.unlink(tmp.name)
     return all_chunks
 
 def process_documents(uploaded_files):
@@ -3788,6 +3863,7 @@ def process_documents(uploaded_files):
     st.session_state.query_processor.register_files(uploaded_files)
     st.session_state.processed_files.update([f.name for f in uploaded_files])
     st.session_state.processing_complete = False  # Will be set to True after query triggers processing
+    st.session_state.query_cache = {}  # FIX: Clear cache on new file registration
     return True
 
 # =====================================================================
@@ -3809,11 +3885,13 @@ def retrieve_and_answer(
     score_threshold = score_threshold or LASER_DOMAIN_CONFIG["score_threshold"]
     emb_source = getattr(vectorstore, 'embedding_function', getattr(vectorstore, 'embeddings', vectorstore))
     emb_fn = EmbeddingWrapper(emb_source)
+    
     def llm_generate(prompt: str) -> str:
         return generate_local_response(
             tokenizer=tokenizer, model_or_tag=model, device_or_host=device_or_host,
             prompt=prompt, backend=backend, backend_type=backend_type
         )
+    
     thinker = CrossDocumentThinker(graph, vectorstore, emb_fn, llm_generate)
     answer, chain, retrieved_docs, meta = thinker.think_and_answer(query, k=k)
     avg_relevance = 0.0
@@ -3825,7 +3903,7 @@ def retrieve_and_answer(
             sim = float(np.dot(query_emb, doc_emb) / (np.linalg.norm(query_emb) * np.linalg.norm(doc_emb) + 1e-8))
             scores.append(sim)
         avg_relevance = np.mean(scores) if scores else 0.0
-    meta["avg_vector_score"] = avg_relevance
+        meta["avg_vector_score"] = avg_relevance
     return answer, retrieved_docs, avg_relevance, meta, chain
 
 def retrieve_and_answer_quantitative(
@@ -3846,14 +3924,17 @@ def retrieve_and_answer_quantitative(
             vectorstore, graph, tokenizer, model, device_or_host, backend, backend_type, query, k
         )
         return answer, pd.DataFrame(), meta, [], [], chain
+    
     extractor = QuantitativeDataExtractor(graph)
     df = extractor.extract(quantity_label, group_by=grouping_dim)
     summary = extractor.summarize(quantity_label)
+    
     def llm_generate(prompt: str) -> str:
         return generate_local_response(
             tokenizer=tokenizer, model_or_tag=model, device_or_host=device_or_host,
             prompt=prompt, backend=backend, backend_type=backend_type
         )
+    
     quant_prompt = f"""You are an expert scientific assistant analyzing quantitative data from multiple papers.
 Quantity: {quantity_label.replace('_', ' ').title()}
 Summary:
@@ -3865,6 +3946,7 @@ By Material:
 {json.dumps(summary.get('by_material', {}), indent=2, default=str)[:800]}
 By Document:
 {json.dumps(summary.get('by_document', {}), indent=2, default=str)[:800]}
+
 User Question: {query}
 Synthesize these findings rigorously. Discuss trends, outliers, agreements/discrepancies across materials/documents, and report uncertainty explicitly. Structure: Direct Answer, Evidence, Consensus/Variability, Limitations, Confidence.
 """
@@ -3877,6 +3959,7 @@ Synthesize these findings rigorously. Discuss trends, outliers, agreements/discr
         ply_figs.append(viz.plot_quantitative_sunburst(df, quantity_label, grouping_dim))
         ply_figs.append(viz.plot_quantitative_radar(df, quantity_label, grouping_dim))
         mpl_figs.append(viz.plot_quantitative_knowledge_graph(df, quantity_label, grouping_dim))
+        
         emb_src = getattr(vectorstore, 'embedding_function', getattr(vectorstore, 'embeddings', vectorstore))
         emb_fn = EmbeddingWrapper(emb_src)
         if len(df) >= 5:
@@ -3886,6 +3969,7 @@ Synthesize these findings rigorously. Discuss trends, outliers, agreements/discr
             if fig_pca: mpl_figs.append(fig_pca)
             fig_umap = viz.plot_quantitative_umap(df, emb_fn, quantity_label, grouping_dim)
             if fig_umap: mpl_figs.append(fig_umap)
+    
     meta = {
         "quantity_label": quantity_label,
         "grouping_dim": grouping_dim,
@@ -3923,6 +4007,7 @@ def generate_local_response_transformers(tokenizer, model, device: str, prompt: 
             formatted_prompt = f"<s>[INST] {prompt} [/INST]"
         else:
             formatted_prompt = prompt
+        
         inputs = tokenizer.encode(
             formatted_prompt, return_tensors='pt', truncation=True,
             max_length=LASER_DOMAIN_CONFIG["max_context_tokens"]
@@ -3973,8 +4058,8 @@ def generate_local_response_ollama(model_tag: str, ollama_host: str, prompt: str
                         full_response += chunk['message']['content']
                     elif 'content' in chunk:
                         full_response += chunk['content']
-                    elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                        full_response += chunk.message.content
+                elif hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                    full_response += chunk.message.content
         except TypeError:
             response = client.chat(
                 model=model_tag, messages=messages,
@@ -4009,10 +4094,13 @@ def render_sidebar():
             hf_models = [k for k in LOCAL_LLM_OPTIONS.keys() if not is_ollama_model(k)]
             model_choice = st.selectbox("🧠 Local LLM Backend (Hugging Face)", options=hf_models, index=2)
         st.session_state.llm_model_choice = model_choice
+        
         if backend_option == "Hugging Face Transformers" and not is_ollama_model(model_choice):
             st.session_state.use_4bit_quantization = st.checkbox("🗜️ Use 4-bit quantization", value=True)
+        
         if backend_option == "Ollama (if installed)" or is_ollama_model(model_choice):
             st.session_state.ollama_host = st.text_input("🌐 Ollama Host", value=st.session_state.ollama_host)
+            
         st.markdown("#### 🔬 Reasoning Settings")
         st.session_state.reasoning_mode = st.checkbox(
             "🧠 Cross-document reasoning", value=True,
@@ -4026,9 +4114,11 @@ def render_sidebar():
             "🔍 Show reasoning chain", value=True,
             help="Display the logical steps and evidence linking"
         )
+        
         st.markdown("#### 🔬 Laser Domain Settings")
         st.session_state.laser_domain_boost = st.checkbox("Boost laser-topic relevance", value=True)
         st.session_state.show_sources = st.checkbox("Show source citations", value=True)
+        
         st.markdown("#### ⭐ Core Pillars & Priority Concepts")
         st.markdown("**Always High Salience:** • LASER • MICROSTRUCTURE • INTERACTION • MULTICOMPONENT ALLOY")
         default_priority = [
@@ -4053,11 +4143,13 @@ def render_sidebar():
             key="custom_priority_concepts",
             help="These concepts will receive strong salience boost in extraction and visualization"
         )
+        
         st.markdown("#### 🤖 LLM-Enhanced Extraction")
         st.session_state.llm_extraction_enabled = st.checkbox(
             "Enable LLM-Influenced Concept Extraction", value=False,
             help="Uses the loaded LLM to rank, disambiguate, and validate extracted concepts. Slower but more accurate."
         )
+        
         st.markdown("#### 🎨 Visualization Customization")
         st.session_state.viz_font_family = st.selectbox(
             "Font Family",
@@ -4076,6 +4168,7 @@ def render_sidebar():
             "Network Layout", ["spring", "kamada_kawai", "circular"], index=0
         )
         st.session_state.viz_figure_dpi = st.slider("Figure DPI", 150, 600, 300, step=50)
+        
         st.markdown("#### 📊 Dynamic Concept Selection")
         if st.session_state.processing_complete and st.session_state.concept_selector:
             st.session_state.viz_top_n = st.slider(
@@ -4102,6 +4195,7 @@ def render_sidebar():
                     salience_thresh=st.session_state.viz_salience_threshold
                 )
                 st.success("Filters applied!")
+        
         st.markdown("#### 📝 Citation Format")
         st.session_state.citation_style = st.selectbox(
             "Citation display style", options=["apa", "doi", "full", "short"], index=0,
@@ -4109,6 +4203,7 @@ def render_sidebar():
                                    "full": "Full: Author (Year). Title. Journal, Vol(Issue), Pages", "short": "Short: [FirstAuthor Year] or [DOI]"}[x]
         )
         st.session_state.max_retrieved_chunks = st.slider("Chunks to retrieve", min_value=2, max_value=10, value=6)
+        
         st.markdown("---")
         st.markdown("### 🕸️ Visualisations")
         st.session_state.show_network = st.sidebar.checkbox("Show Knowledge Graph", value=False)
@@ -4123,6 +4218,7 @@ def render_sidebar():
                 )
             else:
                 st.session_state.selected_entity = None
+        
         st.markdown("---")
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
@@ -4145,6 +4241,56 @@ def render_document_uploader():
         help="Documents will be processed ONLY AFTER you submit your first query (Lazy Evaluation)."
     )
     return uploaded_files
+
+# =====================================================================
+# EXPANSION: RESPONSE QUALITY METRICS HELPER
+# =====================================================================
+def render_response_quality_metrics(answer_meta, retrieved_docs, is_quantitative):
+    """Displays a detailed analysis of the answer's quality and sources."""
+    with st.expander("📊 Response Diagnostics & Source Quality", expanded=False):
+        cols = st.columns(4)
+        with cols[0]:
+            if not is_quantitative:
+                rel = answer_meta.get('avg_vector_score', 0.0)
+                st.metric("Avg Vector Relevance", f"{rel:.2f}", delta=None)
+            else:
+                rows = answer_meta.get('dataframe_rows', 0)
+                st.metric("Data Rows Extracted", rows, delta=None)
+        
+        with cols[1]:
+            cons = answer_meta.get('consensus_found', 0)
+            st.metric("Cross-Doc Consensus", cons, delta=None)
+        
+        with cols[2]:
+            contr = answer_meta.get('contradictions_found', 0)
+            st.metric("Contradictions", contr, delta="Warning" if contr > 0 else "None", delta_color="inverse" if contr > 0 else "normal")
+
+        with cols[3]:
+            docs = len(retrieved_docs)
+            st.metric("Sources Used", docs, delta=None)
+
+        if not is_quantitative and retrieved_docs:
+            st.markdown("**Top 3 Sources:**")
+            for i, doc in enumerate(retrieved_docs[:3]):
+                src = doc.metadata.get('source', 'Unknown')
+                section = doc.metadata.get('section', 'Unknown')
+                st.caption(f"{i+1}. `{src}` | *{section}*")
+
+# =====================================================================
+# EXPANSION: QUANTITATIVE SUMMARY HELPER
+# =====================================================================
+def render_quantitative_data_summary(df: pd.DataFrame, meta: Dict):
+    """Displays a concise text summary of quantitative findings."""
+    if df.empty: return
+    col_name = meta.get('quantity_label', 'Parameter')
+    group_col = meta.get('grouping_dim', 'material')
+    st.markdown(f"**Key Findings for {col_name.replace('_', ' ').title()}:**")
+    if group_col == 'material':
+        st.markdown(f" - Found data across `{df['material'].nunique()}` unique materials.")
+        if 'value' in df.columns:
+            st.markdown(f" - Value Range: `{df['value'].min():.2f}` to `{df['value'].max():.2f}` {df['unit'].iloc[0]}")
+    elif group_col == 'document':
+        st.markdown(f" - Data aggregated from `{df['doc_stem'].nunique()}` documents.")
 
 def render_chat_interface():
     if not st.session_state.get('query_processor'):
@@ -4199,6 +4345,7 @@ def render_chat_interface():
                                 if bib.get('year'):
                                     st.markdown(f"**Year:** {bib['year']}")
                         st.markdown(f"> {src.page_content[:300]}...")
+
             if message.get("reasoning_meta") and st.session_state.show_reasoning_chain and message["role"] == "assistant":
                 meta = message["reasoning_meta"]
                 with st.expander("🧠 Reasoning Chain"):
@@ -4208,6 +4355,7 @@ def render_chat_interface():
                     st.markdown(f"**Multi-hop expansion:** {'Yes' if meta.get('multi_hop_expansion') else 'No'}")
                     if meta.get('relevance'):
                         st.markdown(f"**Response relevance:** {meta['relevance']:.2f}/1.0")
+
             if message.get("reasoning_chain") and st.session_state.show_reasoning_chain and message["role"] == "assistant":
                 with st.expander("🧠 Full Thinking Trace", expanded=False):
                     st.markdown(message["reasoning_chain"].to_markdown())
@@ -4221,24 +4369,36 @@ def render_chat_interface():
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
+        
         with st.chat_message("assistant"):
             with st.spinner("⏳ Triggering query-driven processing..."):
                 progress = st.progress(0.0, text="Initializing pipeline...")
-                # Check cache first
                 q_hash = compute_text_hash(prompt)
-                if q_hash in st.session_state.query_cache and not st.session_state.query_processor._processed:
+                
+                # FIX: Remove 'and not ...' check to allow cache hits after first query
+                if q_hash in st.session_state.query_cache:
                     cached = st.session_state.query_cache[q_hash]
                     graph, vectorstore, emb_fn, concept_metadata, chain = cached
                     st.session_state.processing_complete = True
+                    st.session_state.knowledge_graph = graph
+                    st.session_state.concept_selector = DynamicConceptSelector(graph)
+                    # FIX: Persist vectorstore from cache
+                    st.session_state.vectorstore = vectorstore
                 else:
                     graph, vectorstore, emb_fn, concept_metadata, chain = st.session_state.query_processor.process_for_query(prompt, progress)
                     st.session_state.query_cache[q_hash] = (graph, vectorstore, emb_fn, concept_metadata, chain)
                     st.session_state.processing_complete = True
                     st.session_state.knowledge_graph = graph
                     st.session_state.concept_selector = DynamicConceptSelector(graph)
-
+                    st.session_state.vectorstore = vectorstore  # FIX: Persist vectorstore
+                
             with st.spinner("🔍 Running cross-document reasoning..."):
                 is_quantitative = QuantitativeQueryEngine.detect_quantity(prompt) is not None
+                
+                # FIX: Initialize reasoning_meta to prevent UnboundLocalError
+                reasoning_meta = {}
+                retrieved_docs = []
+                
                 if is_quantitative and st.session_state.knowledge_graph:
                     answer, df, meta, mpl_figs, ply_figs, chain = retrieve_and_answer_quantitative(
                         vectorstore, st.session_state.knowledge_graph,
@@ -4248,19 +4408,22 @@ def render_chat_interface():
                         prompt, k=st.session_state.max_retrieved_chunks
                     )
                     st.markdown(answer)
+                    reasoning_meta = meta # FIX: Assign meta from quantitative result
+                    render_quantitative_data_summary(df, meta)
+
                     if not df.empty:
                         st.markdown(f"**📊 Extracted {len(df)} `{meta['quantity_label']}` values "
                                     f"across {df['doc_stem'].nunique()} documents**")
                         with st.expander("📈 Quantitative Visualizations", expanded=True):
                             tabs = st.tabs(["Histogram", "Sunburst", "Radar", "Knowledge Graph", "t-SNE / PCA / UMAP"])
                             with tabs[0]:
-                                for fig in [f for f in ply_figs if "Histogram" in f.layout.title.text]:
+                                for fig in [f for f in ply_figs if "Histogram" in (f.layout.title.text or "")]:
                                     st.plotly_chart(fig, use_container_width=True)
                             with tabs[1]:
-                                for fig in [f for f in ply_figs if "Sunburst" in f.layout.title.text]:
+                                for fig in [f for f in ply_figs if "Sunburst" in (f.layout.title.text or "")]:
                                     st.plotly_chart(fig, use_container_width=True)
                             with tabs[2]:
-                                for fig in [f for f in ply_figs if "Radar" in f.layout.title.text]:
+                                for fig in [f for f in ply_figs if "Radar" in (f.layout.title.text or "")]:
                                     st.plotly_chart(fig, use_container_width=True)
                             with tabs[3]:
                                 for fig in mpl_figs:
@@ -4282,6 +4445,7 @@ def render_chat_interface():
                                                            buf.getvalue(), file_name=f"{meta['quantity_label']}_dr.png",
                                                            mime="image/png",
                                                            key=f"quant_dr_dl_{meta['quantity_label']}_{title[:10]}")
+                        
                         with st.expander("🔢 Raw Extracted Data"):
                             st.dataframe(df, use_container_width=True)
                             csv = df.to_csv(index=False).encode('utf-8')
@@ -4298,6 +4462,8 @@ def render_chat_interface():
                     )
                     reasoning_meta['relevance'] = avg_relevance
                     st.markdown(answer)
+
+                # FIX: Use defined reasoning_meta variable
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": answer,
@@ -4305,6 +4471,9 @@ def render_chat_interface():
                     "reasoning_meta": reasoning_meta,
                     "reasoning_chain": chain
                 })
+                
+                # Expansion: Show quality metrics
+                render_response_quality_metrics(reasoning_meta, retrieved_docs, is_quantitative)
 
 def render_footer():
     st.markdown("---")
@@ -4390,9 +4559,10 @@ All visualizations are <strong>publication-quality</strong> with 50+ colormaps, 
 Dynamic top-N filtering allows precise control over visualized concepts.
 </div>
 """, unsafe_allow_html=True)
+
     initialize_session_state()
     render_sidebar()
-
+    
     if st.session_state.llm_model_choice and not is_ollama_model(st.session_state.llm_model_choice):
         mem_info = estimate_model_memory(st.session_state.llm_model_choice, st.session_state.get('use_4bit_quantization', True))
         available_vram = get_available_gpu_memory()
@@ -4419,7 +4589,6 @@ You have ~{available_vram:.1f}GB available.
             st.warning("⏳ Click 'Register Files' to prepare for query-driven processing")
         else:
             st.info("📁 Upload full-text PDF files to start")
-
         if st.session_state.processed_files:
             if st.button("🗑️ Clear All", use_container_width=True):
                 st.session_state.clear()
@@ -4470,6 +4639,7 @@ You have ~{available_vram:.1f}GB available.
     if st.session_state.processing_complete and st.session_state.knowledge_graph:
         st.markdown("---")
         st.markdown("## 🔬 Publication-Quality Scientific Visualization Dashboard")
+        
         if st.session_state.visualization_engine is None:
             st.session_state.visualization_engine = PublicationQualityVisualizationEngine(
                 st.session_state.knowledge_graph,
@@ -4495,6 +4665,7 @@ You have ~{available_vram:.1f}GB available.
                                    list(PublicationQualityVisualizationEngine.COLORMAP_OPTIONS.keys()),
                                    index=list(PublicationQualityVisualizationEngine.COLORMAP_OPTIONS.keys()).index(cmap),
                                    key="active_cmap")
+        
         selector = st.session_state.concept_selector
         if selector:
             filtered = selector.get_filtered_concepts()
@@ -4512,6 +4683,7 @@ You have ~{available_vram:.1f}GB available.
             "🔬 Embedding Spaces (t-SNE/UMAP/PCA)",
             "🔢 Quantitative Explorer"  # NEW
         ])
+
         with tab1:
             c1, c2 = st.columns(2)
             with c1:
@@ -4531,6 +4703,7 @@ You have ~{available_vram:.1f}GB available.
             with c2:
                 st.plotly_chart(viz.plot_consensus_waterfall(top_n=10, colormap=active_cmap), use_container_width=True)
                 st.plotly_chart(viz.plot_entity_treemap(filtered_concepts=filtered, colormap=active_cmap), use_container_width=True)
+        
         with tab2:
             c1, c2 = st.columns(2)
             with c1:
@@ -4556,6 +4729,7 @@ You have ~{available_vram:.1f}GB available.
                         st.download_button("📥 Download Bokeh HTML", data=html.encode('utf-8'),
                                            file_name="bokeh_chord.html", mime="text/html",
                                            key="bokeh_chord_dl")
+
         with tab3:
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -4564,12 +4738,14 @@ You have ~{available_vram:.1f}GB available.
                 st.plotly_chart(viz.plot_materials_sunburst(filtered_concepts=filtered, top_n_per_category=20, colormap=active_cmap), use_container_width=True)
             with c3:
                 st.plotly_chart(viz.plot_topics_sunburst(colormap=active_cmap), use_container_width=True)
+
         with tab4:
             c1, c2 = st.columns(2)
             with c1:
                 st.plotly_chart(viz.plot_document_radar(filtered_concepts=filtered, colormap=active_cmap), use_container_width=True)
             with c2:
                 st.plotly_chart(viz.plot_temporal_timeline(colormap=active_cmap), use_container_width=True)
+
         with tab5:
             st.markdown("**Cross-Document Contradiction Matrix**")
             st.plotly_chart(viz.plot_contradiction_matrix(colormap=active_cmap), use_container_width=True)
@@ -4577,6 +4753,7 @@ You have ~{available_vram:.1f}GB available.
             if contrs:
                 df_contr = pd.DataFrame(contrs)
                 st.dataframe(df_contr, use_container_width=True)
+
         with tab6:
             st.markdown("### Dimensionality Reduction of Entity Embeddings")
             emb_source = getattr(st.session_state.vectorstore, 'embedding_function',
@@ -4593,8 +4770,8 @@ You have ~{available_vram:.1f}GB available.
                         fig_tsne.savefig(buf, format="png", dpi=viz.figure_dpi, bbox_inches="tight")
                         st.download_button("📥 Download t-SNE", data=buf.getvalue(),
                                            file_name="entity_tsne.png", mime="image/png", key="tsne_dl")
-                else:
-                    st.info("Install scikit-learn for t-SNE")
+                    else:
+                        st.info("Install scikit-learn for t-SNE")
             with dr_col2:
                 st.markdown("**UMAP**")
                 if UMAP_AVAILABLE:
@@ -4605,8 +4782,8 @@ You have ~{available_vram:.1f}GB available.
                         fig_umap.savefig(buf, format="png", dpi=viz.figure_dpi, bbox_inches="tight")
                         st.download_button("📥 Download UMAP", data=buf.getvalue(),
                                            file_name="entity_umap.png", mime="image/png", key="umap_dl")
-                else:
-                    st.info("Install umap-learn: `pip install umap-learn`")
+                    else:
+                        st.info("Install umap-learn: `pip install umap-learn`")
             with dr_col3:
                 st.markdown("**PCA**")
                 if SKLEARN_AVAILABLE:
@@ -4617,14 +4794,16 @@ You have ~{available_vram:.1f}GB available.
                         fig_pca.savefig(buf, format="png", dpi=viz.figure_dpi, bbox_inches="tight")
                         st.download_button("📥 Download PCA", data=buf.getvalue(),
                                            file_name="entity_pca.png", mime="image/png", key="pca_dl")
-                else:
-                    st.info("Install scikit-learn for PCA")
+                    else:
+                        st.info("Install scikit-learn for PCA")
+
         with tab7:
             st.markdown("## 🔢 Quantitative Data Explorer")
             st.markdown("Browse all numerically extracted parameters across the corpus without typing a query.")
             qty_options = list(QUANTITY_PATTERNS.keys())
             selected_qty = st.selectbox("Select quantitative parameter", qty_options, index=qty_options.index("laser_power") if "laser_power" in qty_options else 0)
             group_opt = st.radio("Group by", ["material", "document", "method"], horizontal=True)
+            
             if st.session_state.knowledge_graph:
                 extractor = QuantitativeDataExtractor(st.session_state.knowledge_graph)
                 df_qty = extractor.extract(selected_qty, group_by=group_opt)
@@ -4658,6 +4837,7 @@ You have ~{available_vram:.1f}GB available.
                 else:
                     st.warning(f"No `{selected_qty}` values were extracted from the uploaded documents. "
                                f"Ensure the PDFs contain explicit numeric statements (e.g. 'laser power of 200 W').")
+    
     render_footer()
 
 if __name__ == "__main__":

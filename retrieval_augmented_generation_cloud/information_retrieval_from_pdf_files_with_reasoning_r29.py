@@ -3776,7 +3776,15 @@ class PublicationQualityVisualizationEngine:
             return fig
         df = df.copy()
         n_bins = min(5, max(2, len(df) // 3))
-        df["value_range"] = pd.cut(df["value"], bins=n_bins, precision=1).astype(str)
+        # FIX: Handle infinite values that break pd.cut
+        clean_values = df["value"].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(clean_values) == 0:
+            df["value_range"] = "N/A"
+        else:
+            n_bins = min(5, max(2, len(clean_values) // 3))
+            if n_bins >= len(clean_values):
+                n_bins = max(2, len(clean_values) - 1) if len(clean_values) > 2 else 2
+            df["value_range"] = pd.cut(clean_values.reindex(df.index), bins=n_bins, precision=1).astype(str)
         column_map = {
             "material": "material",
             "document": "doc_stem",

@@ -5034,7 +5034,12 @@ You have ~{available_vram:.1f}GB available.
         with tab8:
             col_emb, col_manifold = st.columns(2)
             with col_emb:
-                emb_fn = st.session_state.vectorstore.embedding_function if st.session_state.vectorstore else None
+                # FIX: Wrap the embedding object to make it callable
+                emb_obj = st.session_state.vectorstore.embedding_function if st.session_state.vectorstore else None
+                if emb_obj is not None:
+                    emb_fn = EmbeddingWrapper(emb_obj)   # <-- KEY FIX
+                else:
+                    emb_fn = None
                 if emb_fn:
                     if SKLEARN_AVAILABLE:
                         fig1 = viz.plot_entity_pca(emb_fn, filtered_concepts=filtered, top_n=80, colormap=active_cmap)

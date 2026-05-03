@@ -1671,105 +1671,63 @@ class EnhancedCrossDocumentKnowledgeGraph:
                         self.concept_metadata[concept] = meta
         if llm_ranked:
             self.llm_ranked_concepts.extend(llm_ranked)
-    #
-    def _extract_entities_from_chunk_fast(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificEntity]:
-    """
-    Fast entity extraction using enhanced quantity patterns, material/method aliases,
-    and laser keywords. Returns a list of EnhancedScientificEntity objects.
-    """
-    text = chunk.page_content
-    doc = chunk.metadata.get("source", "unknown")
-    entities = []
-    text_lower = text.lower()
 
-    # -----------------------------------------------------------------
-    # 1. Extract numeric quantities with units using ENHANCED patterns
-    # -----------------------------------------------------------------
-    for param_name, config in ENHANCED_QUANTITY_PATTERNS.items():
-        for pattern in config["patterns"]:
-            for match in re.finditer(pattern, text, re.IGNORECASE):
+    def _extract_entities_from_chunk_fast(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificEntity]:
+        text = chunk.page_content
+        doc = chunk.metadata.get("source", "unknown")
+        entities = []
+        text_lower = text.lower()
+        for param_name, pattern in QUANTITY_PATTERNS.items():
+            for match in pattern.finditer(text):
                 val_str = match.group(1)
                 try:
                     val = float(val_str)
                 except Exception:
                     val = None
-                # Extract unit from the matched text (simple heuristic)
-                unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ|mm/s|mm/min|m/s|%)',
-                                       match.group(0), re.I)
+                unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ)', match.group(0), re.I)
                 unit = unit_match.group(1) if unit_match else None
                 start = max(0, match.start() - 100)
                 end = min(len(text), match.end() + 100)
                 context = text[start:end].replace('\n', ' ')
                 entities.append(EnhancedScientificEntity(
-                    text=match.group(0),
-                    label=param_name,
-                    value=val,
-                    unit=unit,
-                    doc_source=doc,
-                    chunk_id=chunk_id,
-                    context=context,
-                    confidence=0.85
+                    text=match.group(0), label=param_name, value=val, unit=unit,
+                    doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.85
                 ))
+        combined_aliases = {**MATERIAL_ALIASES, **METHOD_ALIASES}
+        for canonical, aliases in combined_aliases.items():
+            for alias in aliases:
+                alias_lower = alias.lower()
+                pos = text_lower.find(alias_lower)
+                while pos != -1:
+                    before = pos == 0 or not text_lower[pos-1].isalnum()
+                    after = pos + len(alias_lower) >= len(text_lower) or not text_lower[pos + len(alias_lower)].isalnum()
+                    if before and after:
+                        start = max(0, pos - 80)
+                        end = min(len(text), pos + len(alias_lower) + 80)
+                        context = text[start:end]
+                        lbl = "MATERIAL" if canonical in MATERIAL_ALIASES else "METHOD"
+                        entities.append(EnhancedScientificEntity(
+                            text=alias, label=lbl, value=None, unit=None,
+                            doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.9
+                        ))
+                    pos = text_lower.find(alias_lower, pos + 1)
+        for topic, keywords in LASER_KEYWORDS.items():
+            for kw in keywords:
+                kw_lower = kw.lower()
+                pos = text_lower.find(kw_lower)
+                while pos != -1:
+                    before = pos == 0 or not text_lower[pos-1].isalnum()
+                    after = pos + len(kw_lower) >= len(text_lower) or not text_lower[pos + len(kw_lower)].isalnum()
+                    if before and after:
+                        start = max(0, pos - 80)
+                        end = min(len(text), pos + len(kw_lower) + 80)
+                        entities.append(EnhancedScientificEntity(
+                            text=kw, label="TOPIC", value=None, unit=None,
+                            doc_source=doc, chunk_id=chunk_id, context=text[start:end], confidence=0.8
+                        ))
+                    pos = text_lower.find(kw_lower, pos + 1)
+        return entities
 
-    # -----------------------------------------------------------------
-    # 2. Extract materials and methods using aliases
-    # -----------------------------------------------------------------
-    combined_aliases = {**MATERIAL_ALIASES, **METHOD_ALIASES}
-    for canonical, aliases in combined_aliases.items():
-        for alias in aliases:
-            alias_lower = alias.lower()
-            pos = text_lower.find(alias_lower)
-            while pos != -1:
-                # Ensure word boundary (non‑alnum before/after)
-                before_ok = (pos == 0 or not text_lower[pos-1].isalnum())
-                after_ok = (pos + len(alias_lower) >= len(text_lower) or
-                            not text_lower[pos + len(alias_lower)].isalnum())
-                if before_ok and after_ok:
-                    start = max(0, pos - 80)
-                    end = min(len(text), pos + len(alias_lower) + 80)
-                    context = text[start:end]
-                    lbl = "MATERIAL" if canonical in MATERIAL_ALIASES else "METHOD"
-                    entities.append(EnhancedScientificEntity(
-                        text=alias,
-                        label=lbl,
-                        value=None,
-                        unit=None,
-                        doc_source=doc,
-                        chunk_id=chunk_id,
-                        context=context,
-                        confidence=0.9
-                    ))
-                # Continue searching after current match
-                pos = text_lower.find(alias_lower, pos + 1)
-
-    # -----------------------------------------------------------------
-    # 3. Extract laser topic keywords
-    # -----------------------------------------------------------------
-    for topic, keywords in LASER_KEYWORDS.items():
-        for kw in keywords:
-            kw_lower = kw.lower()
-            pos = text_lower.find(kw_lower)
-            while pos != -1:
-                before_ok = (pos == 0 or not text_lower[pos-1].isalnum())
-                after_ok = (pos + len(kw_lower) >= len(text_lower) or
-                            not text_lower[pos + len(kw_lower)].isalnum())
-                if before_ok and after_ok:
-                    start = max(0, pos - 80)
-                    end = min(len(text), pos + len(kw_lower) + 80)
-                    entities.append(EnhancedScientificEntity(
-                        text=kw,
-                        label="TOPIC",
-                        value=None,
-                        unit=None,
-                        doc_source=doc,
-                        chunk_id=chunk_id,
-                        context=text[start:end],
-                        confidence=0.8
-                    ))
-                pos = text_lower.find(kw_lower, pos + 1)
-
-    return entities
-        
     def _extract_claims_from_chunk_fast(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificClaim]:
         text = chunk.page_content
         doc = chunk.metadata.get("source", "unknown")

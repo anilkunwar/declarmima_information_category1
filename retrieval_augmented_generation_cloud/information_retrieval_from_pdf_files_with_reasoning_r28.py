@@ -1769,7 +1769,7 @@ class EnhancedCrossDocumentKnowledgeGraph:
                 pos = text_lower.find(kw_lower, pos + 1)
 
     return entities
-    
+        
     def _extract_claims_from_chunk_fast(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificClaim]:
         text = chunk.page_content
         doc = chunk.metadata.get("source", "unknown")

@@ -3817,6 +3817,13 @@ class PublicationQualityVisualizationEngine:
             "document": "doc_stem",
             "method": "method"
         }
+        # FIX: Ensure doc_stem exists by deriving from doc_source if needed
+        if "doc_stem" not in df.columns and "doc_source" in df.columns:
+            df = df.copy()
+            df["doc_stem"] = df["doc_source"].apply(lambda x: Path(x).stem if pd.notna(x) else "unknown")
+        elif "doc_stem" not in df.columns:
+            df = df.copy()
+            df["doc_stem"] = "unknown"
         group_col = column_map.get(group_by, "material")
         groups = []
         if group_col in df.columns:
@@ -3825,12 +3832,12 @@ class PublicationQualityVisualizationEngine:
                 G.add_node(grp, node_type="group", domain=group_col.upper())
                 count = len(df[df[group_col] == grp])
                 G.add_edge(hub, grp, weight=count)
-        
+
         docs = sorted(df["doc_stem"].unique())
         for doc in docs:
             G.add_node(doc, node_type="document", domain="DOCUMENT")
             G.add_edge(hub, doc, weight=len(df[df["doc_stem"] == doc]))
-        
+
         top = df.nlargest(min(25, len(df)), "value")
         for _, row in top.iterrows():
             val_node = f"{row['value']:.1f} {row['unit']}"
@@ -3839,7 +3846,7 @@ class PublicationQualityVisualizationEngine:
             if group_col in df.columns:
                 G.add_edge(row[group_col], val_node, weight=1)
             G.add_edge(row["doc_stem"], val_node, weight=1)
-        
+
         fig, ax = plt.subplots(figsize=figsize)
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
         nx.draw_networkx_nodes(G, pos, nodelist=[hub], node_color="#dc2626", node_size=2500, ax=ax)

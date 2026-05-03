@@ -1598,10 +1598,10 @@ class EnhancedCrossDocumentKnowledgeGraph:
             for ent in entities:
                 self.entities[ent.normalized].append(ent)
                 self.entity_index[ent.normalized].add(doc_id)
-            self.documents[doc_id]["topics"].add(ent.label)
-        claims = self._extract_claims_from_chunk_fast(chunk, i)
-        for claim in claims:
-            self.claims.append(claim)
+                self.documents[doc_id]["topics"].add(ent.label)
+            claims = self._extract_claims_from_chunk_fast(chunk, i)
+            for claim in claims:
+                self.claims.append(claim)
         if concept_metadata:
             for concept, meta in concept_metadata.items():
                 if concept not in self.concept_metadata:

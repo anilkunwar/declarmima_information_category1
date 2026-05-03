@@ -5001,7 +5001,7 @@ def render_sidebar():
             )
         st.info("ℹ️ QBQE uses soft pattern matching + query biasing to find ALL relevant values")
 
-st.markdown("#### 🎨 Visualization Customization")
+        st.markdown("#### 🎨 Visualization Customization")
         st.session_state.viz_font_family = st.selectbox(
             "Font Family",
             ["DejaVu Sans", "Arial", "Helvetica", "Times New Roman", "Computer Modern", "serif", "sans-serif"],

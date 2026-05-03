@@ -1677,22 +1677,28 @@ class EnhancedCrossDocumentKnowledgeGraph:
         doc = chunk.metadata.get("source", "unknown")
         entities = []
         text_lower = text.lower()
-        for param_name, pattern in QUANTITY_PATTERNS.items():
-            for match in pattern.finditer(text):
-                val_str = match.group(1)
-                try:
-                    val = float(val_str)
-                except Exception:
-                    val = None
-                unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ)', match.group(0), re.I)
-                unit = unit_match.group(1) if unit_match else None
-                start = max(0, match.start() - 100)
-                end = min(len(text), match.end() + 100)
-                context = text[start:end].replace('\n', ' ')
-                entities.append(EnhancedScientificEntity(
-                    text=match.group(0), label=param_name, value=val, unit=unit,
-                    doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.85
-                ))
+    
+        # Use ENHANCED_QUANTITY_PATTERNS instead of old QUANTITY_PATTERNS
+        for param_name, config in ENHANCED_QUANTITY_PATTERNS.items():
+            for pattern in config["patterns"]:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    val_str = match.group(1)
+                    try:
+                        val = float(val_str)
+                    except Exception:
+                        val = None
+                    # Extract unit from match (first capture group of unit pattern, or fallback)
+                    unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ|mm/s|mm/min|m/s|%|J|mJ|µJ|nJ)', match.group(0), re.I)
+                    unit = unit_match.group(1) if unit_match else None
+                    start = max(0, match.start() - 100)
+                    end = min(len(text), match.end() + 100)
+                    context = text[start:end].replace('\n', ' ')
+                    entities.append(EnhancedScientificEntity(
+                        text=match.group(0), label=param_name, value=val, unit=unit,
+                        doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.85
+                    ))
+    
+        # Material and method aliases (unchanged)
         combined_aliases = {**MATERIAL_ALIASES, **METHOD_ALIASES}
         for canonical, aliases in combined_aliases.items():
             for alias in aliases:
@@ -1711,6 +1717,8 @@ class EnhancedCrossDocumentKnowledgeGraph:
                             doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.9
                         ))
                     pos = text_lower.find(alias_lower, pos + 1)
+    
+        # Laser keywords (unchanged)
         for topic, keywords in LASER_KEYWORDS.items():
             for kw in keywords:
                 kw_lower = kw.lower()
@@ -1726,8 +1734,9 @@ class EnhancedCrossDocumentKnowledgeGraph:
                             doc_source=doc, chunk_id=chunk_id, context=text[start:end], confidence=0.8
                         ))
                     pos = text_lower.find(kw_lower, pos + 1)
+    
         return entities
-
+    
     def _extract_claims_from_chunk_fast(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificClaim]:
         text = chunk.page_content
         doc = chunk.metadata.get("source", "unknown")

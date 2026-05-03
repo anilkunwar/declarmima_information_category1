@@ -1671,7 +1671,7 @@ class EnhancedCrossDocumentKnowledgeGraph:
                         self.concept_metadata[concept] = meta
         if llm_ranked:
             self.llm_ranked_concepts.extend(llm_ranked)
-
+    #
     def _extract_entities_from_chunk_fast(self, chunk: Document, chunk_id: int) -> List[EnhancedScientificEntity]:
         text = chunk.page_content
         doc = chunk.metadata.get("source", "unknown")

@@ -96,17 +96,32 @@ v24-v26 : Both Document Processing and Query-time Reasoning Depend on the Choice
 
 v27-v29 : Both Document Processing and Query-time Reasoning Depend on the Choice of LLMs models, but Document Processing Occurs After Query is Asked (QBQE). Tested on Laser Power. Still unable to extract numerical quantities. developed upon v26
 
-[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v27.0-orange)](https://information-retrieval-reasoning-visualization27.streamlit.app/) (v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v27.0-orange)](https://information-retrieval-reasoning-visualization27.streamlit.app/) (Excellentv17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v28.0-orange)](https://information-retrieval-reasoning-visualization28.streamlit.app/) (Fully debugged, v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
-[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v29.0-orange)](https://information-retrieval-reasoning-visualization29.streamlit.app/) (v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v29.0-orange)](https://information-retrieval-reasoning-visualization29.streamlit.app/) (Excellent, v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v30.0-orange)](https://information-retrieval-reasoning-visualization30.streamlit.app/) (Excellent, v17 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+
+v31-v33 : Both Document Processing and Query-time Reasoning Depend on the Choice of LLMs models, but Document Processing Occurs After Query is Asked (QBQE). Tested on Laser Power. Still unable to extract numerical quantities. developed upon v27, v29 and v30
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v31.0-indigo)](https://information-retrieval-reasoning-visualization31.streamlit.app/) (Excellent, v29 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v32.0-indigo)](https://information-retrieval-reasoning-visualization32.streamlit.app/) (Excellent, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v33.0-indigo)](https://information-retrieval-reasoning-visualization33.streamlit.app/) (Excellent, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
 
 Multicomponent Alloy Microstructure Focus :
 
 [![meaningtowords](https://img.shields.io/badge/microstructurecloud-v1.0-brown)](https://information-retrieval-reasoning-alloy1.streamlit.app/) (chat-driven visualization, v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, NOT YET COMPLETED)
 
 [![meaningtowords](https://img.shields.io/badge/microstructurecloud-v2.0-brown)](https://information-retrieval-reasoning-alloy2.streamlit.app/) (chat-driven visualization, v11 with quantification metrics, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, initialization and use of GPU)
+
+
+
 
 Laser Heat Source Focus :
 

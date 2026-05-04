@@ -3,20 +3,11 @@
 """
 LASER MICROSTRUCTURE RAG CHATBOT - CROSS-DOCUMENT SCIENTIFIC REASONING & VISUALIZATION
 ========================================================================================
-UPGRADED VERSION (CODE 20.3): FULLY FIXED QUANTITATIVE EXTRACTION
-- All quantity patterns expanded (ranges, tables, scientific notation)
-- Table extraction added
-- Positional salience implemented
-- Associated entities inference improved
-- Confidence threshold lowered
-- `QUANTITY_PATTERNS` undefined error fixed
-- `plot_static_knowledge_network` verified
-
-NEW FEATURES ADDED:
-- User-defined document renaming (display names)
-- Editable entity labels in visualizations
-- Top-N control for static & PyVis graphs (respects dynamic concept selector)
-- Percentage display alongside counts in Plotly charts
+UPGRADED VERSION (CODE 21.0): DOCUMENT ALIASES, ENHANCED DISAMBIGUATION, PERCENTAGE VIZ
+- Custom document display names for publication-ready citations.
+- Physical quantity disambiguation (hardness vs stress, etc.) using ontology + context.
+- Visualizations support percentages (instead of raw counts) and interactive Top‑N filtering.
+- PyVis network now user‑controllable (Top‑N, physics, colormap).
 """
 
 import streamlit as st
@@ -182,6 +173,161 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
 
 # =====================================================================
+# NEW: DOCUMENT ALIAS SYSTEM
+# =====================================================================
+@dataclass
+class DocumentAlias:
+    """User-editable display names for publications."""
+    original_name: str
+    display_name: str = ""      # Main name used in citations & visualizations
+    short_label: str = ""       # Short version for graphs (e.g. "Wang2025")
+    custom_alias: str = ""      # Full user override
+
+    def get_label(self, style: str = "display") -> str:
+        if self.custom_alias:
+            return self.custom_alias
+        if style == "short" and self.short_label:
+            return self.short_label
+        return self.display_name or Path(self.original_name).stem
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "original": self.original_name,
+            "display": self.display_name,
+            "short": self.short_label,
+            "custom": self.custom_alias
+        }
+
+# =====================================================================
+# NEW: PHYSICAL QUANTITY ONTOLOGY & DISAMBIGUATOR
+# =====================================================================
+PHYSICAL_QUANTITY_ONTOLOGY = {
+    "hardness": {
+        "units": ["HV", "HRC", "HB", "Vickers", "Rockwell", "microhardness"],
+        "keywords": ["hardness", "microhardness", "vickers", "hv", "indentation", "hardness value"],
+        "anti_keywords": ["stress", "yield", "tensile", "von mises", "mpa", "gpa", "ultimate"],
+        "range": (30, 2500),
+        "domain": "mechanical"
+    },
+    "yield_strength": {
+        "units": ["MPa", "GPa"],
+        "keywords": ["yield strength", "yield stress", "ys", "σ_y", "0.2%", "yield point"],
+        "anti_keywords": ["hardness", "vickers", "hv", "hrc", "indentation"],
+        "range": (50, 3000),
+        "domain": "mechanical"
+    },
+    "ultimate_tensile_strength": {
+        "units": ["MPa", "GPa"],
+        "keywords": ["ultimate tensile strength", "uts", "tensile strength", "σ_uts"],
+        "anti_keywords": ["hardness", "yield"],
+        "range": (100, 3500),
+        "domain": "mechanical"
+    },
+    "von_mises_stress": {
+        "units": ["MPa", "GPa"],
+        "keywords": ["von mises", "mises", "equivalent stress", "σ_vm", "von-Mises"],
+        "anti_keywords": ["hardness", "yield strength", "ultimate"],
+        "range": (10, 4000),
+        "domain": "mechanical"
+    },
+    "youngs_modulus": {
+        "units": ["GPa", "MPa"],
+        "keywords": ["young's modulus", "elastic modulus", "e modulus", "stiffness"],
+        "anti_keywords": ["hardness", "strength"],
+        "range": (10, 800),
+        "domain": "mechanical"
+    },
+    "fluence": {
+        "units": ["J/cm²", "J/cm2", "mJ/cm²", "J/mm²"],
+        "keywords": ["fluence", "energy density", "ablation threshold", "fluence threshold"],
+        "anti_keywords": ["stress", "strength", "hardness", "temperature"],
+        "range": (0.01, 200),
+        "domain": "laser"
+    },
+    "laser_power": {
+        "units": ["W", "kW", "MW"],
+        "keywords": ["laser power", "power", "output power", "average power"],
+        "anti_keywords": ["wt.%", "weight percent", "composition", "fluence", "energy density"],
+        "range": (1, 100000),
+        "domain": "laser"
+    },
+    "enthalpy": {
+        "units": ["J/mol", "kJ/mol", "J/g", "kJ/kg"],
+        "keywords": ["enthalpy", "ΔH", "latent heat", "heat of fusion"],
+        "domain": "thermodynamic"
+    },
+    "gibbs_free_energy": {
+        "units": ["J/mol", "kJ/mol"],
+        "keywords": ["gibbs free energy", "ΔG", "free energy"],
+        "domain": "thermodynamic"
+    },
+    "temperature": {
+        "units": ["°C", "K", "°C/s", "K/s"],
+        "keywords": ["temperature", "heating", "cooling", "substrate temperature", "melt temperature"],
+        "range": (-50, 5000),
+        "domain": "thermal"
+    },
+    "scan_speed": {
+        "units": ["mm/s", "m/s", "mm/min"],
+        "keywords": ["scan speed", "scanning speed", "travel speed", "hatch speed"],
+        "domain": "laser"
+    },
+    "porosity": {
+        "units": ["%", "percent"],
+        "keywords": ["porosity", "pore fraction", "void fraction", "density"],
+        "range": (0, 50),
+        "domain": "microstructure"
+    }
+}
+
+class PhysicalQuantityDisambiguator:
+    """
+    Disambiguates extracted (value, unit, context) into a physical quantity type
+    using ontology, context keywords, anti‑keywords, and range checking.
+    """
+    @staticmethod
+    def disambiguate(value: float, unit: str, context: str, query: str = "") -> Dict[str, Any]:
+        best_qty = "unknown"
+        best_score = -1.0
+        reasons = []
+        ctx_lower = context.lower()
+        query_lower = query.lower()
+
+        for qty_name, spec in PHYSICAL_QUANTITY_ONTOLOGY.items():
+            score = 0.0
+            # Unit match
+            if any(u.lower() in unit.lower() for u in spec.get("units", [])):
+                score += 0.65
+            # Positive keywords
+            if any(kw in ctx_lower for kw in spec.get("keywords", [])):
+                score += 0.55
+            # Anti-keywords (strong penalty)
+            if any(kw in ctx_lower for kw in spec.get("anti_keywords", [])):
+                score -= 1.2
+            # Range check
+            if "range" in spec:
+                if spec["range"][0] <= value <= spec["range"][1]:
+                    score += 0.25
+                else:
+                    score -= 0.4
+            # Query boost
+            if any(kw in query_lower for kw in spec.get("keywords", [])):
+                score += 0.4
+
+            if score > best_score:
+                best_score = score
+                best_qty = qty_name
+                reasons = [f"Score: {score:.2f}"]
+
+        return {
+            "quantity": best_qty,
+            "confidence": max(0.0, best_score),
+            "reasons": reasons,
+            "unit": unit,
+            "domain": PHYSICAL_QUANTITY_ONTOLOGY.get(best_qty, {}).get("domain", "unknown")
+        }
+
+# =====================================================================
 # CONFIGURATION MANAGEMENT
 # =====================================================================
 class AppConfig:
@@ -224,7 +370,7 @@ class AppConfig:
         "qbesa_zeta": 0.05,
         "qbesa_lambda_diffusion": 0.65,
         "qbesa_tau_temperature": 0.5,
-        "qbesa_confidence_threshold": 0.15,   # LOWERED from 0.35
+        "qbesa_confidence_threshold": 0.15,
         "qbesa_unit_tolerance": 0.20
     }
 
@@ -376,20 +522,17 @@ ENHANCED_QUANTITY_PATTERNS = {
             r'(\d+(?:\.\d+)?)\s*(?:W|watts?)\s*(?:laser|beam|fiber|diode|CO2|Nd:YAG|fiber)',
             r'(?:using|with|at)\s+a\s*(\d+(?:\.\d+)?)\s*(?:W|watts?)\s*(?:laser|source)',
             r'(?:Laser\s+power|Power)\s*[:\|]\s*(\d+(?:\.\d+)?)\s*(?:W|watts?)',
-            # ADDITIONS for ranges, tables, scientific notation
             r'(?:power|output)\s*[:=]\s*(\d+(?:\.\d+)?)\s*(?:±|\+/-)\s*\d+\.?\d*\s*(?:W|watts?)',
-            r'(\d+(?:\.\d+)?)\s*-\s*\d+\.?\d*\s*(?:W|watts?)',  # ranges
+            r'(\d+(?:\.\d+)?)\s*-\s*\d+\.?\d*\s*(?:W|watts?)',
             r'(?:from|between)\s*(\d+(?:\.\d+)?)\s*(?:to|and)\s*\d+\.?\d*\s*(?:W|watts?)',
             r'P\s*=\s*(\d+(?:\.\d+)?)\s*(?:W|watts?)',
             r'(\d+(?:\.\d+)?)\s*(?:W|watts?)\s*(?:was|were|is)\s*(?:applied|used|set|selected)',
-            r'(\d+(?:\.\d+)?)(?:\s*×\s*10\^([-+]?\d+))?\s*(?:W|watts?)',  # scientific notation
+            r'(\d+(?:\.\d+)?)(?:\s*×\s*10\^([-+]?\d+))?\s*(?:W|watts?)',
         ],
-        "context_keywords": ["laser", "beam", "processing", "ablation", "melting", 
-                            "sintering", "welding", "cutting", "drilling", "surface"],
+        "context_keywords": ["laser", "beam", "processing", "ablation", "melting", "sintering", "welding", "cutting", "drilling", "surface"],
         "unit": "W",
         "typical_range": (1, 10000),
-        "synonyms": ["power", "output power", "laser output", "beam power", 
-                    "incident power", "applied power", "nominal power"]
+        "synonyms": ["power", "output power", "laser output", "beam power", "incident power", "applied power", "nominal power"]
     },
     "scan_speed": {
         "patterns": [
@@ -400,12 +543,10 @@ ENHANCED_QUANTITY_PATTERNS = {
             r'(?:scan\s*speed|velocity)\s*[:=]\s*(\d+(?:\.\d+)?)\s*(?:mm/s|mm/min|m/s)',
             r'(\d+(?:\.\d+)?)(?:\s*×\s*10\^([-+]?\d+))?\s*(?:mm/s|mm/min|m/s)',
         ],
-        "context_keywords": ["scan", "scanning", "hatch", "raster", "speed", "velocity", 
-                            "feed", "traversal", "beam path"],
+        "context_keywords": ["scan", "scanning", "hatch", "raster", "speed", "velocity", "feed", "traversal", "beam path"],
         "unit": "mm/s",
         "typical_range": (0.1, 5000),
-        "synonyms": ["scan speed", "scanning speed", "travel speed", "feed rate", 
-                    "scanning velocity", "hatch speed"]
+        "synonyms": ["scan speed", "scanning speed", "travel speed", "feed rate", "scanning velocity", "hatch speed"]
     },
     "fluence": {
         "patterns": [
@@ -415,8 +556,7 @@ ENHANCED_QUANTITY_PATTERNS = {
             r'(\d+(?:\.\d+)?)\s*(?:J/cm²|J/cm2)\s*(?:pulse|laser|beam)',
             r'(\d+(?:\.\d+)?)(?:\s*×\s*10\^([-+]?\d+))?\s*(?:J/cm²|J/cm2)',
         ],
-        "context_keywords": ["fluence", "threshold", "ablation", "energy density", 
-                            "laser", "pulse", "damage"],
+        "context_keywords": ["fluence", "threshold", "ablation", "energy density", "laser", "pulse", "damage"],
         "unit": "J/cm²",
         "typical_range": (0.01, 100),
         "synonyms": ["fluence", "energy density", "laser fluence", "pulse fluence"]
@@ -429,8 +569,7 @@ ENHANCED_QUANTITY_PATTERNS = {
             r'(\d+(?:\.\d+)?)\s*(?:nm|nanometers?)\s*(?:laser|beam|source|fiber|diode)',
             r'(\d+(?:\.\d+)?)(?:\s*×\s*10\^([-+]?\d+))?\s*(?:nm|nanometers?)',
         ],
-        "context_keywords": ["wavelength", "laser", "emission", "spectral", "IR", 
-                            "UV", "visible", "infrared", "ultraviolet"],
+        "context_keywords": ["wavelength", "laser", "emission", "spectral", "IR", "UV", "visible", "infrared", "ultraviolet"],
         "unit": "nm",
         "typical_range": (100, 11000),
         "synonyms": ["wavelength", "emission wavelength", "laser wavelength", "operating wavelength"]
@@ -442,8 +581,7 @@ ENHANCED_QUANTITY_PATTERNS = {
             r'τ\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:fs|ps|ns|μs|ms)',
             r'(\d+(?:\.\d+)?)(?:\s*×\s*10\^([-+]?\d+))?\s*(?:fs|ps|ns|μs|ms)',
         ],
-        "context_keywords": ["pulse", "duration", "width", "fwhm", "temporal", 
-                            "femtosecond", "picosecond", "nanosecond"],
+        "context_keywords": ["pulse", "duration", "width", "fwhm", "temporal", "femtosecond", "picosecond", "nanosecond"],
         "unit": "fs",
         "typical_range": (1, 1e9),
         "synonyms": ["pulse duration", "pulse width", "pulse length", "fwhm", "temporal width"]
@@ -534,10 +672,44 @@ ENHANCED_QUANTITY_PATTERNS = {
         "typical_range": (0, 50),
         "synonyms": ["porosity", "pore fraction", "void fraction", "porous fraction"]
     },
+    # New: mechanical properties
+    "yield_strength": {
+        "patterns": [
+            r'(\d+(?:\.\d+)?)\s*(?:MPa|GPa)\s*(?:yield\s*strength|yield\s*stress|σ_y|yield point|[Yy]ield)',
+            r'(?:yield\s*strength|σ_y)\s*(?:of\s*|[:=]\s*)(\d+(?:\.\d+)?)\s*(?:MPa|GPa)',
+            r'(\d+(?:\.\d+)?)\s*(?:MPa|GPa)\s*(?:0\.2%\s*offset|proof\s*stress)',
+        ],
+        "context_keywords": ["yield", "yield strength", "yield stress", "σ_y", "0.2% offset"],
+        "unit": "MPa",
+        "typical_range": (50, 3000),
+        "synonyms": ["yield strength", "yield stress", "ys", "proof stress"]
+    },
+    "hardness": {
+        "patterns": [
+            r'(\d+(?:\.\d+)?)\s*(?:HV|HRC|HB)\s*(?:hardness|microhardness|Vickers|Rockwell|Brinell)',
+            r'(?:hardness|microhardness|Vickers)\s*(?:of\s*|[:=]\s*)(\d+(?:\.\d+)?)\s*(?:HV|HRC|HB)',
+            r'(\d+(?:\.\d+)?)\s*(?:HV|HRC|HB)',
+        ],
+        "context_keywords": ["hardness", "microhardness", "vickers", "hv", "indentation"],
+        "unit": "HV",
+        "typical_range": (30, 2500),
+        "synonyms": ["hardness", "vickers hardness", "microhardness", "hvn"]
+    },
+    "youngs_modulus": {
+        "patterns": [
+            r'(\d+(?:\.\d+)?)\s*(?:GPa|MPa)\s*(?:Young\'?s\s*modulus|elastic\s*modulus|E\s*modulus|stiffness)',
+            r'(?:Young\'?s\s*modulus|elastic\s*modulus)\s*(?:of\s*|[:=]\s*)(\d+(?:\.\d+)?)\s*(?:GPa|MPa)',
+            r'E\s*[=:]\s*(\d+(?:\.\d+)?)\s*(?:GPa|MPa)',
+        ],
+        "context_keywords": ["young's modulus", "elastic modulus", "young modulus", "stiffness"],
+        "unit": "GPa",
+        "typical_range": (10, 800),
+        "synonyms": ["young's modulus", "elastic modulus", "e modulus"]
+    }
 }
 
 # =====================================================================
-# UNIT CONVERSION ENGINE
+# UNIT CONVERSION ENGINE (unchanged, but enhanced)
 # =====================================================================
 class UnitConversionEngine:
     """
@@ -556,7 +728,10 @@ class UnitConversionEngine:
         "roughness": {"base_unit": "nm", "factors": {"nm": 1.0, "µm": 1e3, "um": 1e3, "mm": 1e6}},
         "component_fraction": {"base_unit": "at%", "factors": {"at%": 1.0, "wt%": 1.0, "at.%": 1.0, "wt.%": 1.0}},
         "interfacial_energy": {"base_unit": "mJ/m2", "factors": {"J/m2": 1000.0, "mJ/m2": 1.0, "J/m²": 1000.0, "mJ/m²": 1.0}},
-        "thermal_conductivity": {"base_unit": "W/(m·K)", "factors": {"W/(m·K)": 1.0, "W/mK": 1.0}}
+        "thermal_conductivity": {"base_unit": "W/(m·K)", "factors": {"W/(m·K)": 1.0, "W/mK": 1.0}},
+        "yield_strength": {"base_unit": "MPa", "factors": {"MPa": 1.0, "GPa": 1000.0}},
+        "hardness": {"base_unit": "HV", "factors": {"HV": 1.0, "HRC": 0.1, "HB": 0.1}},
+        "youngs_modulus": {"base_unit": "GPa", "factors": {"GPa": 1.0, "MPa": 0.001}}
     }
 
     @classmethod
@@ -573,7 +748,6 @@ class UnitConversionEngine:
 
     @classmethod
     def validate_plausibility(cls, value: float, quantity_label: str, tolerance: float = 0.20) -> bool:
-        """Checks if value falls within physically plausible bounds for the quantity."""
         plausible_ranges = {
             "laser_power": (1e-3, 1e5),
             "pulse_energy": (1e-12, 10),
@@ -586,7 +760,10 @@ class UnitConversionEngine:
             "roughness": (0.01, 100000),
             "component_fraction": (0.01, 100),
             "interfacial_energy": (1e-4, 5),
-            "thermal_conductivity": (0.01, 400)
+            "thermal_conductivity": (0.01, 400),
+            "yield_strength": (50, 3000),
+            "hardness": (30, 2500),
+            "youngs_modulus": (10, 800)
         }
         if quantity_label in plausible_ranges:
             low, high = plausible_ranges[quantity_label]
@@ -594,7 +771,7 @@ class UnitConversionEngine:
         return True
 
 # =====================================================================
-# QUANTITATIVE QUERY INTENT ENGINE
+# QUANTITATIVE QUERY INTENT ENGINE (extended)
 # =====================================================================
 class QuantitativeQueryEngine:
     """
@@ -612,11 +789,10 @@ class QuantitativeQueryEngine:
         "hatch_distance": ["hatch distance", "hatch spacing", "line spacing", "hatch"],
         "pulse_energy": ["pulse energy", "energy per pulse", "single pulse energy", "pulse power"],
         "roughness": ["roughness", "surface roughness", "ra", "rms", "rq", "surface finish"],
-        "periodicity": ["periodicity", "period", "spacing", "lsfl", "hsfl", "periodic spacing"],
-        "threshold": ["threshold", "ablation threshold", "damage threshold", "threshold fluence"],
-        "interfacial_energy": ["interfacial energy", "surface tension", "interfacial tension", "surface energy"],
-        "thermal_conductivity": ["thermal conductivity", "heat conductivity", "thermal diffusivity"],
-        "component_fraction": ["composition", "at%", "wt%", "atomic percent", "weight percent", "concentration", "fraction"],
+        "porosity": ["porosity", "pore fraction", "void fraction", "density"],
+        "yield_strength": ["yield strength", "yield stress", "ys", "σ_y", "0.2% offset", "proof stress"],
+        "hardness": ["hardness", "microhardness", "vickers", "hv"],
+        "youngs_modulus": ["young's modulus", "elastic modulus", "e modulus", "stiffness"]
     }
 
     @classmethod
@@ -813,7 +989,7 @@ def classify_entity(normalized: str) -> Tuple[str, str, str]:
     return "UNKNOWN", "UNKNOWN", "UNKNOWN"
 
 # =====================================================================
-# BIBLIOGRAPHIC METADATA
+# BIBLIOGRAPHIC METADATA (unchanged, but we inject aliases later)
 # =====================================================================
 class BibliographicMetadata:
     DOI_PATTERN = re.compile(r'\b(10\.\d{4,9}/[-._;()/:A-Z0-9]+)\b', re.IGNORECASE)
@@ -846,7 +1022,13 @@ class BibliographicMetadata:
         self.extraction_method: str = "none"
         self.confidence: float = 0.0
 
-    def format_citation(self, style: str = "apa") -> str:
+    def format_citation(self, style: str = "apa", alias_map: Dict[str, DocumentAlias] = None) -> str:
+        # Override with alias if available
+        if alias_map and self.source_filename in alias_map:
+            alias = alias_map[self.source_filename]
+            custom = alias.get_label(style="display")
+            if custom:
+                return custom
         if self.doi and self.confidence > 0.8:
             if style == "doi":
                 return f"DOI:{self.doi}"
@@ -1109,7 +1291,7 @@ def compute_file_hash(filepath: str) -> str:
         return ""
 
 # =====================================================================
-# ENHANCED SCIENTIFIC ENTITY & CLAIM (with associated_entities)
+# ENHANCED SCIENTIFIC ENTITY & CLAIM (with associated_entities and disambiguation)
 # =====================================================================
 @dataclass
 class EnhancedScientificEntity:
@@ -1129,7 +1311,9 @@ class EnhancedScientificEntity:
     subcategory: str = field(init=False)
     query_relevance_score: float = 0.0
     positional_salience: float = 0.5   # default mid
-    associated_entities: List[str] = field(default_factory=list)  # NEW
+    associated_entities: List[str] = field(default_factory=list)
+    disambiguated_quantity: str = ""   # NEW: from PhysicalQuantityDisambiguator
+    disambig_confidence: float = 0.0
 
     def __post_init__(self):
         self.normalized = self._normalize()
@@ -1155,7 +1339,9 @@ class EnhancedScientificEntity:
             "llm_validated": self.llm_validated, "llm_importance_score": self.llm_importance_score,
             "context": self.context[:200], "query_relevance_score": self.query_relevance_score,
             "positional_salience": self.positional_salience,
-            "associated_entities": self.associated_entities
+            "associated_entities": self.associated_entities,
+            "disambiguated_quantity": self.disambiguated_quantity,
+            "disambig_confidence": self.disambig_confidence
         }
 
 @dataclass
@@ -1454,7 +1640,7 @@ class FullTextConceptExtractor:
         return scores
 
 # =====================================================================
-# LLM-INFLUENCED CONCEPT EXTRACTOR
+# LLM-INFLUENCED CONCEPT EXTRACTOR (unchanged)
 # =====================================================================
 class LLMEnhancedConceptExtractor:
     """
@@ -1622,10 +1808,10 @@ class ReasoningChain:
         return "\n".join(lines)
 
 # =====================================================================
-# ENHANCED CROSS-DOCUMENT KNOWLEDGE GRAPH
+# ENHANCED CROSS-DOCUMENT KNOWLEDGE GRAPH (with alias support and disambiguation)
 # =====================================================================
 class EnhancedCrossDocumentKnowledgeGraph:
-    def __init__(self):
+    def __init__(self, alias_map: Dict[str, DocumentAlias] = None):
         self.entities: Dict[str, List[EnhancedScientificEntity]] = defaultdict(list)
         self.claims: List[EnhancedScientificClaim] = []
         self.documents: Dict[str, Dict[str, Any]] = {}
@@ -1637,6 +1823,12 @@ class EnhancedCrossDocumentKnowledgeGraph:
         self.dgl_node_maps: Dict[str, Dict[str, int]] = {}
         self.entity_embeddings: Optional[np.ndarray] = None
         self._entity_list: List[str] = []
+        self.alias_map = alias_map or {}   # Store document aliases
+
+    def get_doc_label(self, doc_name: str) -> str:
+        if doc_name in self.alias_map:
+            return self.alias_map[doc_name].get_label("display")
+        return Path(doc_name).stem
 
     def add_document(self, doc_id: str, chunks: List[Document], bib_meta: Any,
                      concept_metadata: Optional[Dict[str, Dict]] = None,
@@ -1741,18 +1933,25 @@ class EnhancedCrossDocumentKnowledgeGraph:
                     except Exception:
                         continue
                     # Extract unit from match
-                    unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ|mm/s|mm/min|m/s|%|J|mJ|µJ|nJ|watts?)', match.group(0), re.I)
+                    unit_match = re.search(r'(nm|µm|um|fs|ps|ns|J/cm²|J/cm2|kHz|MHz|W|mW|mJ|µJ|uJ|mm/s|mm/min|m/s|%|J|mJ|µJ|nJ|watts?|MPa|GPa|HV|HRC|HB)', match.group(0), re.I)
                     unit = unit_match.group(1) if unit_match else config.get("unit", "")
                     start = max(0, match.start() - 100)
                     end = min(len(text), match.end() + 100)
                     context = text[start:end].replace('\n', ' ')
-                    # positional salience already set in chunk metadata
                     pos_sal = chunk.metadata.get("positional_salience", 0.5)
-                    entities.append(EnhancedScientificEntity(
+                    # Disambiguate quantity
+                    disambig = PhysicalQuantityDisambiguator.disambiguate(val, unit, context, "")
+                    entity = EnhancedScientificEntity(
                         text=match.group(0), label=param_name, value=val, unit=unit,
                         doc_source=doc, chunk_id=chunk_id, context=context, confidence=0.85,
-                        positional_salience=pos_sal, associated_entities=[]
-                    ))
+                        positional_salience=pos_sal, associated_entities=[],
+                        disambiguated_quantity=disambig["quantity"],
+                        disambig_confidence=disambig["confidence"]
+                    )
+                    # If disambiguation confidence high, update label
+                    if disambig["confidence"] > 0.7:
+                        entity.label = disambig["quantity"]
+                    entities.append(entity)
         
         # 2. Table extraction
         for param_name in ENHANCED_QUANTITY_PATTERNS:
@@ -2089,10 +2288,6 @@ class QueryBiasedQuantitativeExtractor:
     """
     Implements the QB-QESA mathematical framework with enhanced multi-factor pattern confidence,
     value clustering, and consensus boost.
-
-    Mathematical details:
-    R(c) = α·cos(E_W, E_Q) + β·Σ cos(E_e, E_Q) + γ·UnitNorm + δ·Proximity + ε·CrossDoc + ζ·LLMConf
-    Then modulated by pattern confidence and consensus boost.
     """
     def __init__(self, graph: EnhancedCrossDocumentKnowledgeGraph, embedding_fn: Callable):
         self.graph = graph
@@ -2105,7 +2300,7 @@ class QueryBiasedQuantitativeExtractor:
         self.zeta = app_config.get("qbesa_zeta", 0.05)
         self.lambda_diffusion = app_config.get("qbesa_lambda_diffusion", 0.65)
         self.tau_temperature = app_config.get("qbesa_tau_temperature", 0.5)
-        self.confidence_threshold = app_config.get("qbesa_confidence_threshold", 0.15)  # lowered
+        self.confidence_threshold = app_config.get("qbesa_confidence_threshold", 0.15)
         self.unit_converter = UnitConversionEngine()
         self.patterns = ENHANCED_QUANTITY_PATTERNS
 
@@ -2114,7 +2309,9 @@ class QueryBiasedQuantitativeExtractor:
         candidates = []
         for norm, ent_list in self.graph.entities.items():
             for ent in ent_list:
-                if ent.label != quantity_label or ent.value is None:
+                if ent.label != quantity_label and ent.disambiguated_quantity != quantity_label:
+                    continue
+                if ent.value is None:
                     continue
                 conf = self._classify_quantity_confidence(ent.value, ent.unit, ent.context, quantity_label)
                 candidates.append((ent, conf))
@@ -2147,7 +2344,11 @@ class QueryBiasedQuantitativeExtractor:
             'khz': ['khz', 'kilohertz'],
             'mhz': ['mhz', 'megahertz'],
             'j/cm²': ['j/cm²', 'j/cm2', 'j/cm^2'],
-            '%': ['%', 'percent', 'percentage']
+            '%': ['%', 'percent', 'percentage'],
+            'mpa': ['mpa', 'megapascal'],
+            'gpa': ['gpa', 'gigapascal'],
+            'hv': ['hv', 'vickers'],
+            'hrc': ['hrc', 'rockwell']
         }
         for base, alias_list in aliases.items():
             if expected in alias_list or expected == base:
@@ -2158,6 +2359,9 @@ class QueryBiasedQuantitativeExtractor:
             return 0.7
         length_units = ['nm', 'um', 'µm', 'mm', 'cm', 'm']
         if expected in length_units and found in length_units:
+            return 0.7
+        pressure_units = ['mpa', 'gpa', 'kpa']
+        if expected in pressure_units and found in pressure_units:
             return 0.7
         return 0.0
 
@@ -2196,7 +2400,6 @@ class QueryBiasedQuantitativeExtractor:
         unit_penalty = 1.0
         if candidate.value and candidate.unit:
             norm_val, _ = self.unit_converter.normalize_unit(candidate.value, candidate.unit, candidate.label)
-            # Avoid log of zero or negative
             safe_val = max(norm_val, 1e-9)
             unit_penalty = np.exp(-np.abs(np.log10(safe_val / 100.0)))
         proximity = 0.5 + 0.5 * (1.0 - candidate.positional_salience)
@@ -2215,7 +2418,7 @@ class QueryBiasedQuantitativeExtractor:
         all_vals = []
         for ent_list in self.graph.entities.values():
             for e in ent_list:
-                if e.label == quantity_label and e.value is not None:
+                if (e.label == quantity_label or e.disambiguated_quantity == quantity_label) and e.value is not None:
                     all_vals.append(e.value)
         if len(all_vals) < 2:
             return 1.0
@@ -2223,7 +2426,7 @@ class QueryBiasedQuantitativeExtractor:
         mean = np.mean(all_vals)
         std = np.std(all_vals)
         unique_docs = len(set(e.doc_source for ent_list in self.graph.entities.values()
-                                for e in ent_list if e.label == quantity_label and e.value == value))
+                                for e in ent_list if (e.label == quantity_label or e.disambiguated_quantity == quantity_label) and e.value == value))
         eta = 0.3
         if mean > 0:
             cv = std / mean
@@ -2328,7 +2531,9 @@ class QueryBiasedQuantitativeExtractor:
                 "context": c.context[:250],
                 "chunk_id": c.chunk_id,
                 "confidence": round(c.query_relevance_score, 3),
-                "llm_validated": c.llm_validated
+                "llm_validated": c.llm_validated,
+                "disambiguated": c.disambiguated_quantity,
+                "disambig_conf": c.disambig_confidence
             })
         df = pd.DataFrame(records_dicts)
         if not df.empty:
@@ -2372,7 +2577,7 @@ class QueryBiasedQuantitativeExtractor:
         }
 
 # =====================================================================
-# GRAPH DIFFUSION RETRIEVER
+# GRAPH DIFFUSION RETRIEVER (unchanged)
 # =====================================================================
 class GraphDiffusionRetriever:
     def __init__(self, graph: EnhancedCrossDocumentKnowledgeGraph, embedding_fn: Optional[Callable] = None):
@@ -2384,12 +2589,12 @@ class GraphDiffusionRetriever:
     def _build_nx_fallback(self):
         G = nx.Graph()
         for doc_id in self.graph.documents:
-            G.add_node(doc_id, node_type="doc", bipartite=0)
+            G.add_node(self.graph.get_doc_label(doc_id), node_type="doc", bipartite=0)
         for ent_norm, ents in self.graph.entities.items():
             G.add_node(ent_norm, node_type="entity", bipartite=1,
                        domain=ents[0].domain if ents else "UNKNOWN")
             for e in ents:
-                G.add_edge(e.doc_source, ent_norm, weight=e.confidence)
+                G.add_edge(self.graph.get_doc_label(e.doc_source), ent_norm, weight=e.confidence)
         self.nx_graph = G
 
     def retrieve(self, query: str, query_entities: List[str], chunks: List[Document],
@@ -2429,7 +2634,7 @@ class GraphDiffusionRetriever:
         chunk_scores = {}
         for chunk in chunks:
             cidx = chunk.metadata.get("chunk_index", -1)
-            doc = chunk.metadata.get("source", "unknown")
+            doc = self.graph.get_doc_label(chunk.metadata.get("source", "unknown"))
             score = pr.get(doc, 0.0) * 0.3
             for ent in query_entities:
                 score += pr.get(ent, 0.0) * 0.7
@@ -2440,7 +2645,7 @@ class GraphDiffusionRetriever:
         return self._nx_diffusion(query_entities, chunks)
 
 # =====================================================================
-# CROSS-DOCUMENT THINKER
+# CROSS-DOCUMENT THINKER (updated to use aliases)
 # =====================================================================
 class CrossDocumentThinker:
     def __init__(self, graph: EnhancedCrossDocumentKnowledgeGraph,
@@ -2537,10 +2742,8 @@ class CrossDocumentThinker:
     def _build_reasoning_prompt(self, retrieved_docs, query, consensus_data, contradictions, claims) -> str:
         context_parts = []
         for i, chunk in enumerate(retrieved_docs, 1):
-            citation = chunk.metadata.get("citation_display")
-            if not citation:
-                source = chunk.metadata.get("source", "unknown")
-                citation = f"[Source {i} - {source}]"
+            source = chunk.metadata.get("source", "unknown")
+            citation = self.graph.get_doc_label(source)
             section = chunk.metadata.get("section", "UNKNOWN")
             content = chunk.page_content[:500] + "..." if len(chunk.page_content) > 500 else chunk.page_content
             context_parts.append(f"---\n[{i}] {citation} | Section: {section}\n{content}\n")
@@ -2555,14 +2758,16 @@ class CrossDocumentThinker:
         if contradictions:
             contradiction_text = "\nDetected Contradictions:\n"
             for contr in contradictions[:3]:
-                contradiction_text += (f"- {contr['entity']}: {Path(contr['doc_a']).stem}={contr['mean_a']:.2f} vs "
-                                       f"{Path(contr['doc_b']).stem}={contr['mean_b']:.2f} "
+                doc_a_label = self.graph.get_doc_label(contr['doc_a'])
+                doc_b_label = self.graph.get_doc_label(contr['doc_b'])
+                contradiction_text += (f"- {contr['entity']}: {doc_a_label}={contr['mean_a']:.2f} vs "
+                                       f"{doc_b_label}={contr['mean_b']:.2f} "
                                        f"(ratio {contr['ratio']:.1f}x, {contr['severity']})\n")
         claim_text = ""
         if claims:
             claim_text = "\nRelevant Claims from Literature:\n"
             for c in claims[:5]:
-                claim_text += f"- [{c.doc_source}] {c.subject} → {c.predicate} → {c.object_val}\n"
+                claim_text += f"- [{self.graph.get_doc_label(c.doc_source)}] {c.subject} → {c.predicate} → {c.object_val}\n"
         system = """You are an expert scientific research assistant specializing in laser-microstructure interactions, multicomponent alloys, and physics-informed digital twins.
 SYNTHESIZE across documents. Identify CONSENSUS and CONTRADICTIONS explicitly.
 Report UNCERTAINTY: use ranges, standard deviations, and confidence statements.
@@ -2578,7 +2783,7 @@ OUTPUT STRUCTURE:
         return system + "\n" + user
 
 # =====================================================================
-# DYNAMIC CONCEPT SELECTOR & VISUALIZATION MANAGER
+# DYNAMIC CONCEPT SELECTOR & VISUALIZATION MANAGER (extended with percentage option)
 # =====================================================================
 class DynamicConceptSelector:
     """Manages user-defined top-N filtering, domain filtering, and visualization state."""
@@ -2637,7 +2842,7 @@ class DynamicConceptSelector:
         }
 
 # =====================================================================
-# PUBLICATION-QUALITY VISUALIZATION ENGINE
+# PUBLICATION-QUALITY VISUALIZATION ENGINE (with aliases, percentage mode, Top-N for PyVis)
 # =====================================================================
 class PublicationQualityVisualizationEngine:
     """
@@ -2647,9 +2852,10 @@ class PublicationQualityVisualizationEngine:
     - Customizable fonts (family, size, weight)
     - UMAP, t-SNE, PCA embeddings
     - Bokeh + HoloViews chord diagrams
-    - PyVis interactive networks
+    - PyVis interactive networks with user-controlled Top-N and physics
     - Hierarchical sunbursts, radar charts, contradiction matrices
     - Dynamic top-N concept filtering
+    - Percentage vs count display option
     """
     COLORMAP_OPTIONS = {
         "viridis": "viridis", "plasma": "plasma", "inferno": "inferno", "magma": "magma", "cividis": "cividis",
@@ -2680,7 +2886,8 @@ class PublicationQualityVisualizationEngine:
                  label_font_size: int = 9,
                  default_colormap: str = "viridis",
                  figure_dpi: int = 300,
-                 figure_format: str = "png"):
+                 figure_format: str = "png",
+                 show_percentages: bool = False):
         self.graph = graph
         self.font_family = font_family
         self.font_size = font_size
@@ -2689,6 +2896,7 @@ class PublicationQualityVisualizationEngine:
         self.default_colormap = default_colormap
         self.figure_dpi = figure_dpi
         self.figure_format = figure_format
+        self.show_percentages = show_percentages   # NEW: toggle between counts and percentages
         plt.rcParams['font.family'] = font_family
         plt.rcParams['font.size'] = font_size
         plt.rcParams['axes.titlesize'] = title_font_size
@@ -2723,18 +2931,6 @@ class PublicationQualityVisualizationEngine:
     def is_core_pillar(self, concept: str) -> bool:
         return self.graph.concept_metadata.get(concept, {}).get("is_core_pillar", False)
 
-    # -----------------------------------------------------------------
-    # NEW: Helper to get display name for entity (user-editable labels)
-    # -----------------------------------------------------------------
-    def _get_display_label(self, original: str) -> str:
-        return st.session_state.entity_label_mapping.get(original, original)
-
-    def _get_display_doc_name(self, doc_source: str) -> str:
-        return st.session_state.doc_name_mapping.get(doc_source, Path(doc_source).stem)
-
-    # -----------------------------------------------------------------
-    # PLOT: Static Knowledge Network (with display names)
-    # -----------------------------------------------------------------
     def plot_static_knowledge_network(self, filtered_concepts: Optional[List[str]] = None,
                                       top_n: int = 25, figsize: Tuple[int, int] = (14, 12),
                                       layout: str = "spring", colormap: Optional[str] = None,
@@ -2747,23 +2943,19 @@ class PublicationQualityVisualizationEngine:
             ent_counts = Counter({k: len(v) for k, v in self.graph.entities.items()})
             scored = [(ent, self.get_salience(ent) * ent_counts.get(ent, 1)) for ent in self.graph.entities.keys()]
             top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
-        # Add document nodes with display names
         for doc_id in self.graph.documents:
-            display_name = self._get_display_doc_name(doc_id)
-            G.add_node(display_name, node_type="doc", bipartite=0, original=doc_id)
-        # Add entity nodes with display labels
+            G.add_node(self.graph.get_doc_label(doc_id), node_type="doc", bipartite=0)
         for ent in top_entities:
             ents = self.graph.entities.get(ent, [])
             if not ents:
                 continue
             domain = ents[0].domain if ents else "UNKNOWN"
             salience = self.get_salience(ent)
-            display_ent = self._get_display_label(ent)
-            G.add_node(display_ent, node_type="entity", domain=domain, bipartite=1, salience=salience, original=ent)
+            G.add_node(ent, node_type="entity", domain=domain, bipartite=1, salience=salience)
             for e in ents:
-                doc_display = self._get_display_doc_name(e.doc_source)
-                if doc_display in G:
-                    G.add_edge(doc_display, display_ent, weight=e.confidence * (0.5 + 0.5 * salience))
+                doc_node = self.graph.get_doc_label(e.doc_source)
+                if doc_node in G:
+                    G.add_edge(doc_node, ent, weight=e.confidence * (0.5 + 0.5 * salience))
         fig, ax = plt.subplots(figsize=figsize)
         if layout == "spring":
             pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
@@ -2814,8 +3006,584 @@ class PublicationQualityVisualizationEngine:
         plt.tight_layout()
         return fig
 
+    def plot_chord_cooccurrence(self, filtered_concepts: Optional[List[str]] = None,
+                                top_n: int = 14, colormap: Optional[str] = None) -> go.Figure:
+        if filtered_concepts:
+            top_entities = filtered_concepts[:top_n]
+        else:
+            scored = [(ent, self.get_salience(ent) * len(self.graph.entities.get(ent, []))) for ent in self.graph.entities]
+            top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
+        if not top_entities:
+            fig = go.Figure()
+            fig.update_layout(title="No entity co-occurrence data")
+            return fig
+        n = len(top_entities)
+        node_to_idx = {node: i for i, node in enumerate(top_entities)}
+        adj = np.zeros((n, n))
+        for doc in self.graph.documents:
+            present = [ent for ent in top_entities if ent in self.graph.entity_index and doc in self.graph.entity_index[ent]]
+            for i, e1 in enumerate(present):
+                for j, e2 in enumerate(present):
+                    if i != j:
+                        adj[node_to_idx[e1]][node_to_idx[e2]] += 1
+        angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        fig = go.Figure()
+        for i, ent in enumerate(top_entities):
+            domain = self.graph.entities[ent][0].domain if self.graph.entities.get(ent) else "UNKNOWN"
+            color_idx = list(self.DOMAIN_COLORS.keys()).index(domain) if domain in self.DOMAIN_COLORS else 0
+            color = mcolors.to_hex(cmap(color_idx / max(len(self.DOMAIN_COLORS) - 1, 1)))
+            fig.add_trace(go.Barpolar(
+                r=[1], theta=[np.degrees(angles[i])],
+                width=[10], marker_color=color,
+                name=ent, opacity=0.9, showlegend=False,
+                hoverinfo="text", text=[f"{ent}<br>Salience: {self.get_salience(ent):.2f}<br>Count: {len(self.graph.entities.get(ent, []))}"]
+            ))
+        for i in range(n):
+            for j in range(i+1, n):
+                if adj[i][j] > 0:
+                    fig.add_trace(go.Scatterpolar(
+                        r=[0.2, 0.6, 0.2],
+                        theta=[np.degrees(angles[i]), np.degrees((angles[i] + angles[j]) / 2), np.degrees(angles[j])],
+                        mode='lines', line=dict(color='rgba(100,100,100,0.3)', width=min(adj[i][j], 3)),
+                        showlegend=False, hoverinfo='skip'
+                    ))
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=False), angularaxis=dict(visible=False)),
+            title=f"Salience-Aware Chord Diagram (Top {n} Concepts)",
+            height=700, width=700,
+            font=dict(family=self.font_family, size=self.font_size)
+        )
+        return fig
+
+    def plot_bokeh_chord(self, filtered_concepts: Optional[List[str]] = None,
+                         top_n: int = 20, colormap: str = "Category20",
+                         width: int = 800, height: int = 800) -> Optional[Any]:
+        if not BOKEH_AVAILABLE:
+            return None
+        if filtered_concepts:
+            top_entities = filtered_concepts[:top_n]
+        else:
+            scored = [(ent, self.get_salience(ent) * len(self.graph.entities.get(ent, []))) for ent in self.graph.entities]
+            top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
+        if len(top_entities) < 3:
+            return None
+        n = len(top_entities)
+        node_to_idx = {node: i for i, node in enumerate(top_entities)}
+        adj = np.zeros((n, n))
+        for doc in self.graph.documents:
+            present = [ent for ent in top_entities if ent in self.graph.entity_index and doc in self.graph.entity_index[ent]]
+            for i, e1 in enumerate(present):
+                for j, e2 in enumerate(present):
+                    if i != j:
+                        adj[node_to_idx[e1]][node_to_idx[e2]] += 1
+        edge_list = []
+        edge_weights = []
+        for i in range(n):
+            for j in range(i+1, n):
+                if adj[i][j] > 0:
+                    edge_list.append((i, j))
+                    edge_weights.append(adj[i][j])
+        if not edge_list:
+            return None
+        node_colors = []
+        node_sizes = []
+        for ent in top_entities:
+            domain = self.graph.entities[ent][0].domain if self.graph.entities.get(ent) else "UNKNOWN"
+            color = self.DOMAIN_COLORS.get(domain, "#6b7280")
+            node_colors.append(color)
+            node_sizes.append(15 + self.get_salience(ent) * 35)
+        G = nx.Graph()
+        G.add_nodes_from(range(n))
+        for (i, j), w in zip(edge_list, edge_weights):
+            G.add_edge(i, j, weight=w)
+        pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
+        p = figure(title="Interactive Chord-Style Co-occurrence Network (Bokeh)",
+                   width=width, height=height,
+                   x_range=(-1.2, 1.2), y_range=(-1.2, 1.2),
+                   tools="pan,wheel_zoom,box_zoom,reset,save",
+                   active_scroll="wheel_zoom")
+        edge_xs = []
+        edge_ys = []
+        edge_alphas = []
+        max_w = max(edge_weights) if edge_weights else 1
+        for (i, j), w in zip(edge_list, edge_weights):
+            x0, y0 = pos[i]
+            x1, y1 = pos[j]
+            edge_xs.append([x0, x1])
+            edge_ys.append([y0, y1])
+            edge_alphas.append(0.2 + 0.6 * (w / max_w))
+        p.multi_line(edge_xs, edge_ys, line_color="#888888", line_alpha=edge_alphas, line_width=1.5)
+        node_x = [pos[i][0] for i in range(n)]
+        node_y = [pos[i][1] for i in range(n)]
+        source = ColumnDataSource(data=dict(
+            x=node_x, y=node_y,
+            color=node_colors,
+            size=node_sizes,
+            name=top_entities,
+            salience=[self.get_salience(e) for e in top_entities],
+            domain=[self.graph.entities[e][0].domain if self.graph.entities.get(e) else "UNKNOWN" for e in top_entities]
+        ))
+        p.circle('x', 'y', size='size', color='color', alpha=0.8, source=source,
+                 hover_color='red', hover_alpha=1.0)
+        labels = LabelSet(x='x', y='y', text='name', level='glyph',
+                          x_offset=5, y_offset=5, source=source,
+                          text_font_size=f"{self.label_font_size}pt",
+                          text_font=self.font_family)
+        p.add_layout(labels)
+        hover = HoverTool(tooltips=[
+            ("Entity", "@name"),
+            ("Domain", "@domain"),
+            ("Salience", "@salience{0.00}"),
+        ])
+        p.add_tools(hover)
+        p.axis.visible = False
+        p.grid.visible = False
+        p.outline_line_color = None
+        return p
+
+    def plot_holoviews_chord(self, filtered_concepts: Optional[List[str]] = None, top_n: int = 20) -> Optional[Any]:
+        if not HOLOVIEWS_AVAILABLE:
+            return None
+        if filtered_concepts:
+            top_entities = filtered_concepts[:top_n]
+        else:
+            scored = [(ent, self.get_salience(ent) * len(self.graph.entities.get(ent, []))) for ent in self.graph.entities]
+            top_entities = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
+        if len(top_entities) < 3:
+            return None
+        edges_df = []
+        for doc in self.graph.documents:
+            present = [ent for ent in top_entities if ent in self.graph.entity_index and doc in self.graph.entity_index[ent]]
+            for i, e1 in enumerate(present):
+                for j, e2 in enumerate(present):
+                    if i < j:
+                        edges_df.append({'source': e1, 'target': e2, 'weight': 1})
+        if not edges_df:
+            return None
+        edges_df = pd.DataFrame(edges_df).groupby(['source', 'target']).sum().reset_index()
+        chord = hv.Chord(edges_df).opts(
+            opts.Chord(cmap='Category20', edge_cmap='Category20',
+                       edge_color='source', node_color='index',
+                       labels='index', node_size='salience',
+                       width=800, height=800,
+                       title='HoloViews Chord Diagram (Entity Co-occurrence)')
+        )
+        return chord
+
+    def _build_sunburst_df(self, domain_filter: str, filtered_concepts: Optional[List[str]] = None) -> pd.DataFrame:
+        rows = []
+        target_ents = set(filtered_concepts) if filtered_concepts else None
+        for norm, ents in self.graph.entities.items():
+            if target_ents and norm not in target_ents:
+                continue
+            if not ents:
+                continue
+            e = ents[0]
+            if e.domain != domain_filter:
+                continue
+            salience = self.get_salience(norm)
+            count = len(ents)
+            # If showing percentages, we will compute later; for now we store count
+            rows.append({
+                "domain": e.domain,
+                "category": e.category,
+                "subcategory": e.subcategory,
+                "entity": norm,
+                "value": count * (0.5 + 0.5 * salience) if not self.show_percentages else count,  # will be converted to percentage after grouping
+                "doc_count": len(set(x.doc_source for x in ents)),
+                "salience": salience,
+                "raw_count": count
+            })
+        df = pd.DataFrame(rows)
+        if self.show_percentages and not df.empty:
+            # Compute percentages across the whole dataset
+            total_count = df["raw_count"].sum()
+            if total_count > 0:
+                df["value"] = (df["raw_count"] / total_count) * 100
+                # Keep original counts for tooltip
+        return df
+
+    def plot_methods_sunburst(self, filtered_concepts: Optional[List[str]] = None,
+                              top_n_per_category: int = 20, colormap: Optional[str] = None) -> go.Figure:
+        df = self._build_sunburst_df("METHOD", filtered_concepts)
+        if df.empty:
+            fig = go.Figure()
+            fig.update_layout(title="No METHOD entities found")
+            return fig
+        def keep_top_n(group):
+            return group.nlargest(top_n_per_category, 'salience')
+        df = df.groupby(['domain', 'category', 'subcategory'], group_keys=False).apply(keep_top_n)
+        colorscale = colormap or "Blues"
+        value_label = "Percentage (%)" if self.show_percentages else "Weighted Count"
+        fig = px.sunburst(df, path=["domain", "category", "subcategory", "entity"],
+                          values="value", color="salience", color_continuous_scale=colorscale,
+                          title=f"Hierarchical Methods Taxonomy<br>Colored by Salience, Sized by {value_label}")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size),
+                          hovermode='closest')
+        fig.update_traces(hovertemplate='<b>%{label}</b><br>%{value:.2f} ' + ('%' if self.show_percentages else '') + '<extra></extra>')
+        return fig
+
+    def plot_materials_sunburst(self, filtered_concepts: Optional[List[str]] = None,
+                                top_n_per_category: int = 20, colormap: Optional[str] = None) -> go.Figure:
+        df = self._build_sunburst_df("MATERIAL", filtered_concepts)
+        if df.empty:
+            fig = go.Figure()
+            fig.update_layout(title="No MATERIAL entities found")
+            return fig
+        def keep_top_n(group):
+            return group.nlargest(top_n_per_category, 'salience')
+        df = df.groupby(['domain', 'category', 'subcategory'], group_keys=False).apply(keep_top_n)
+        colorscale = colormap or "Greens"
+        value_label = "Percentage (%)" if self.show_percentages else "Weighted Count"
+        fig = px.sunburst(df, path=["domain", "category", "subcategory", "entity"],
+                          values="value", color="salience", color_continuous_scale=colorscale,
+                          title=f"Material System Hierarchy<br>Colored by Salience, Sized by {value_label}")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        fig.update_traces(hovertemplate='<b>%{label}</b><br>%{value:.2f} ' + ('%' if self.show_percentages else '') + '<extra></extra>')
+        return fig
+
+    def plot_topics_sunburst(self, colormap: Optional[str] = None) -> go.Figure:
+        rows = []
+        for topic, keywords in LASER_KEYWORDS.items():
+            count = sum(1 for norm, ents in self.graph.entities.items()
+                        if any(kw in norm for kw in keywords) or any(kw in e.text.lower() for e in ents for kw in keywords))
+            if count > 0:
+                rows.append({"topic": topic, "count": count})
+        df = pd.DataFrame(rows)
+        if df.empty:
+            fig = go.Figure()
+            fig.update_layout(title="No topic entities found")
+            return fig
+        if self.show_percentages:
+            total = df["count"].sum()
+            if total > 0:
+                df["count"] = (df["count"] / total) * 100
+        colorscale = colormap or "Oranges"
+        value_label = "Percentage (%)" if self.show_percentages else "Count"
+        fig = px.sunburst(df, path=["topic"], values="count",
+                          color="count", color_continuous_scale=colorscale,
+                          title=f"Study Topics Distribution ({value_label})")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        fig.update_traces(hovertemplate='<b>%{label}</b><br>%{value:.2f} ' + ('%' if self.show_percentages else '') + '<extra></extra>')
+        return fig
+
+    def plot_document_radar(self, filtered_concepts: Optional[List[str]] = None, colormap: Optional[str] = None) -> go.Figure:
+        categories = ["Laser Parameters", "Materials", "Exp. Methods", "Simulation", "Phenomena", "Properties"]
+        cat_map = {
+            "Laser Parameters": ["PARAMETER"],
+            "Materials": ["MATERIAL"],
+            "Exp. Methods": ["METHOD:Experimental"],
+            "Simulation": ["METHOD:Computational"],
+            "Phenomena": ["PHENOMENON"],
+            "Properties": ["PARAMETER:Outcome"]
+        }
+        cmap = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        target_ents = set(filtered_concepts) if filtered_concepts else None
+        fig = go.Figure()
+        docs = list(self.graph.documents.keys())
+        for idx, doc_id in enumerate(docs):
+            doc_label = self.graph.get_doc_label(doc_id)
+            values = []
+            for cat in categories:
+                count = 0
+                target_domains = cat_map[cat]
+                for norm, ents in self.graph.entities.items():
+                    if target_ents and norm not in target_ents:
+                        continue
+                    if any(e.doc_source == doc_id for e in ents):
+                        e = ents[0]
+                        if e.domain in target_domains or f"{e.domain}:{e.category}" in target_domains:
+                            count += len([x for x in ents if x.doc_source == doc_id]) * self.get_salience(norm)
+                # Convert to percentage if needed
+                if self.show_percentages:
+                    total = sum(values_temp)  # cannot yet, we'll normalize later; better to keep raw
+                values.append(count)
+            # Normalize to percentages across categories for this document
+            if self.show_percentages:
+                total = sum(values)
+                if total > 0:
+                    values = [v / total * 100 for v in values]
+            values += values[:1]
+            color = mcolors.to_hex(cmap(idx / max(len(docs) - 1, 1))) if cmap else None
+            fig.add_trace(go.Scatterpolar(
+                r=values,
+                theta=categories + [categories[0]],
+                fill='toself',
+                name=doc_label,
+                line_color=color
+            ))
+        y_title = "Percentage (%)" if self.show_percentages else "Weighted Count"
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, max(5, max([max(t.r) for t in fig.data] or [5]))])),
+            showlegend=True, title=f"Document Coverage Profiles (Radar) - {y_title}",
+            font=dict(family=self.font_family, size=self.font_size)
+        )
+        return fig
+
+    def plot_contradiction_matrix(self, colormap: Optional[str] = None) -> go.Figure:
+        contrs = self.graph.find_all_contradictions(threshold_factor=1.5)
+        if not contrs:
+            fig = go.Figure()
+            fig.update_layout(title="No contradictions detected")
+            return fig
+        docs = sorted(list(self.graph.documents.keys()))
+        doc_labels = [self.graph.get_doc_label(d) for d in docs]
+        n = len(docs)
+        mat = np.zeros((n, n))
+        annotations = [["" for _ in range(n)] for _ in range(n)]
+        for c in contrs:
+            i, j = docs.index(c["doc_a"]), docs.index(c["doc_b"])
+            severity_score = {"moderate": 1, "high": 2, "critical": 3}[c["severity"]]
+            mat[i][j] = max(mat[i][j], severity_score)
+            mat[j][i] = mat[i][j]
+            annotations[i][j] += f"{c['entity'][:15]}({c['ratio']:.1f}x)<br>"
+            annotations[j][i] = annotations[i][j]
+        colorscale = colormap or [[0, "white"], [0.33, "#fcd34d"], [0.66, "#f97316"], [1, "#dc2626"]]
+        fig = go.Figure(data=go.Heatmap(
+            z=mat, x=doc_labels, y=doc_labels,
+            colorscale=colorscale,
+            text=annotations, texttemplate="%{text}", hoverinfo="text"
+        ))
+        fig.update_layout(title="Cross-Document Contradiction Severity Matrix",
+                          height=600, width=600,
+                          font=dict(family=self.font_family, size=self.font_size))
+        return fig
+
+    def plot_consensus_waterfall(self, top_n: int = 10, colormap: Optional[str] = None) -> go.Figure:
+        consensus = self.graph.find_all_consensus(min_docs=2)[:top_n]
+        if not consensus:
+            fig = go.Figure()
+            fig.update_layout(title="No consensus data available")
+            return fig
+        entities = [c["entity"] for c in consensus]
+        means = [c["mean"] for c in consensus]
+        stds = [c["std"] for c in consensus]
+        doc_counts = [c["doc_count"] for c in consensus]
+        order = np.argsort(doc_counts)[::-1]
+        entities = [entities[i] for i in order]
+        means = [means[i] for i in order]
+        stds = [stds[i] for i in order]
+        doc_counts = [doc_counts[i] for i in order]
+        fig = go.Figure()
+        if colormap:
+            cmap = plt.get_cmap(self._get_colormap(colormap))
+            bar_colors = [mcolors.to_hex(cmap(i / max(len(entities) - 1, 1))) for i in range(len(entities))]
+        else:
+            bar_colors = ["#059669" if d >= 3 else "#3b82f6" for d in doc_counts]
+        fig.add_trace(go.Bar(
+            x=entities, y=means,
+            error_y=dict(type='data', array=stds, visible=True, color="black"),
+            marker_color=bar_colors,
+            text=[f"μ={m:.2f}<br>σ={s:.2f}<br>n={d} docs" for m, s, d in zip(means, stds, doc_counts)],
+            textposition="outside"
+        ))
+        fig.update_layout(
+            title="Cross-Document Consensus Waterfall\nGreen = strong consensus (≥3 docs), Blue = emerging",
+            yaxis_title="Mean Value", xaxis_tickangle=-45, height=500,
+            font=dict(family=self.font_family, size=self.font_size)
+        )
+        return fig
+
+    def plot_reasoning_chain(self, chain: ReasoningChain, figsize: Tuple[int, int] = (12, 8),
+                             colormap: Optional[str] = None) -> plt.Figure:
+        G = chain.build_thinking_graph()
+        fig, ax = plt.subplots(figsize=figsize)
+        pos = nx.multipartite_layout(G, subset_key="layer")
+        cmap = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        color_map = {
+            "query": "#1e40af", "entity_extraction": "#3b82f6", "vector_retrieval": "#8b5cf6",
+            "graph_diffusion": "#a855f7", "claim_analysis": "#f59e0b", "cross_doc_analysis": "#10b981",
+            "synthesis": "#ec4899", "answer": "#059669", "entity": "#60a5fa", "chunk": "#c084fc"
+        }
+        if cmap:
+            node_types = list(set(nx.get_node_attributes(G, "node_type").values()))
+            type_to_color = {t: mcolors.to_hex(cmap(i / max(len(node_types) - 1, 1)))
+                             for i, t in enumerate(node_types)}
+            node_colors = [type_to_color.get(G.nodes[n].get("node_type", "query"), "#6b7280") for n in G.nodes()]
+        else:
+            node_colors = [color_map.get(G.nodes[n].get("node_type", "query"), "#6b7280") for n in G.nodes()]
+        node_sizes = [1200 if G.nodes[n].get("node_type") in ["query", "answer"] else 600 for n in G.nodes()]
+        nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_sizes, alpha=0.9, ax=ax)
+        nx.draw_networkx_edges(G, pos, arrows=True, arrowsize=15, alpha=0.5, ax=ax,
+                               connectionstyle="arc3,rad=0.1", edge_color="#4b5563")
+        nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax,
+                                font_family=self.font_family)
+        ax.set_title("Explicit Reasoning Chain (Thinking Graph)",
+                     fontsize=self.title_font_size, fontweight='bold',
+                     fontfamily=self.font_family)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+
+    def _get_entity_embeddings(self, embedding_fn: Callable, filtered_concepts: Optional[List[str]] = None,
+                               top_n: int = 80) -> Tuple[List[str], np.ndarray, List[str]]:
+        target = filtered_concepts or list(self.graph.entities.keys())
+        scored = [(ent, self.get_salience(ent) * len(self.graph.entities.get(ent, []))) for ent in target]
+        top = [e for e, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:top_n]]
+        if len(top) < 5:
+            return [], np.array([]), []
+        embs = []
+        domains = []
+        for ent in top:
+            vec = embedding_fn(ent)
+            embs.append(vec)
+            domains.append(self.graph.entities[ent][0].domain if self.graph.entities.get(ent) else "UNKNOWN")
+        embs = np.stack(embs)
+        return top, embs, domains
+
+    def plot_entity_tsne(self, embedding_fn: Callable, filtered_concepts: Optional[List[str]] = None,
+                         top_n: int = 80, perplexity: int = 30, colormap: Optional[str] = None,
+                         figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        if not SKLEARN_AVAILABLE:
+            return None
+        top, embs, domains = self._get_entity_embeddings(embedding_fn, filtered_concepts, top_n)
+        if len(top) < 5:
+            return None
+        tsne = TSNE(n_components=2, perplexity=min(perplexity, len(top)-1), random_state=42)
+        coords = tsne.fit_transform(embs)
+        fig, ax = plt.subplots(figsize=figsize)
+        unique_domains = list(set(domains))
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        for i, domain in enumerate(unique_domains):
+            mask = [d == domain for d in domains]
+            x = coords[mask, 0]
+            y = coords[mask, 1]
+            color = mcolors.to_hex(cmap(i / max(len(unique_domains) - 1, 1)))
+            ax.scatter(x, y, c=color, label=domain, alpha=0.8, s=80, edgecolors='white')
+        for i, ent in enumerate(top):
+            ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
+                        fontsize=self.label_font_size - 1, alpha=0.8,
+                        fontfamily=self.font_family)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        ax.set_title("Entity Embedding Space (t-SNE)",
+                     fontsize=self.title_font_size, fontweight='bold',
+                     fontfamily=self.font_family)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+
+    def plot_entity_umap(self, embedding_fn: Callable, filtered_concepts: Optional[List[str]] = None,
+                         top_n: int = 80, n_neighbors: int = 15, min_dist: float = 0.1,
+                         colormap: Optional[str] = None, figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        if not UMAP_AVAILABLE:
+            return None
+        top, embs, domains = self._get_entity_embeddings(embedding_fn, filtered_concepts, top_n)
+        if len(top) < 5:
+            return None
+        reducer = umap.UMAP(n_neighbors=min(n_neighbors, len(top)-1), min_dist=min_dist, random_state=42)
+        coords = reducer.fit_transform(embs)
+        fig, ax = plt.subplots(figsize=figsize)
+        unique_domains = list(set(domains))
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        for i, domain in enumerate(unique_domains):
+            mask = [d == domain for d in domains]
+            x = coords[mask, 0]
+            y = coords[mask, 1]
+            color = mcolors.to_hex(cmap(i / max(len(unique_domains) - 1, 1)))
+            ax.scatter(x, y, c=color, label=domain, alpha=0.8, s=80, edgecolors='white')
+        for i, ent in enumerate(top):
+            ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
+                        fontsize=self.label_font_size - 1, alpha=0.8,
+                        fontfamily=self.font_family)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        ax.set_title("Entity Embedding Space (UMAP)",
+                     fontsize=self.title_font_size, fontweight='bold',
+                     fontfamily=self.font_family)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+
+    def plot_entity_pca(self, embedding_fn: Callable, filtered_concepts: Optional[List[str]] = None,
+                        top_n: int = 80, colormap: Optional[str] = None,
+                        figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        if not SKLEARN_AVAILABLE:
+            return None
+        top, embs, domains = self._get_entity_embeddings(embedding_fn, filtered_concepts, top_n)
+        if len(top) < 5:
+            return None
+        pca = PCA(n_components=2)
+        coords = pca.fit_transform(embs)
+        var_ratio = pca.explained_variance_ratio_
+        fig, ax = plt.subplots(figsize=figsize)
+        unique_domains = list(set(domains))
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        for i, domain in enumerate(unique_domains):
+            mask = [d == domain for d in domains]
+            x = coords[mask, 0]
+            y = coords[mask, 1]
+            color = mcolors.to_hex(cmap(i / max(len(unique_domains) - 1, 1)))
+            ax.scatter(x, y, c=color, label=domain, alpha=0.8, s=80, edgecolors='white')
+        for i, ent in enumerate(top):
+            ax.annotate(ent[:20], (coords[i, 0], coords[i, 1]),
+                        fontsize=self.label_font_size - 1, alpha=0.8,
+                        fontfamily=self.font_family)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        ax.set_title(f"Entity Embedding Space (PCA)\nPC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}",
+                     fontsize=self.title_font_size, fontweight='bold',
+                     fontfamily=self.font_family)
+        ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%})", fontfamily=self.font_family)
+        ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})", fontfamily=self.font_family)
+        plt.tight_layout()
+        return fig
+
+    def plot_temporal_timeline(self, colormap: Optional[str] = None) -> go.Figure:
+        rows = []
+        for doc_id, meta in self.graph.documents.items():
+            year = meta.get("years") or meta.get("bib_meta", {}).get("year")
+            if year:
+                for topic in meta.get("topics", []):
+                    rows.append({"year": int(year), "topic": topic, "doc": self.graph.get_doc_label(doc_id)})
+        df = pd.DataFrame(rows)
+        if df.empty:
+            fig = go.Figure()
+            fig.update_layout(title="No temporal metadata available")
+            return fig
+        colorscale = colormap or "Set1"
+        fig = px.scatter(df, x="year", y="topic", color="doc", symbol="doc",
+                         title="Research Topic Timeline by Document",
+                         labels={"year": "Publication Year", "topic": "Topic"},
+                         height=500, color_discrete_sequence=px.colors.qualitative.__dict__.get(colorscale, px.colors.qualitative.Set1))
+        fig.update_traces(marker=dict(size=12))
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+
+    def plot_entity_treemap(self, filtered_concepts: Optional[List[str]] = None, colormap: Optional[str] = None) -> go.Figure:
+        target = set(filtered_concepts) if filtered_concepts else None
+        rows = []
+        for norm, ents in self.graph.entities.items():
+            if target and norm not in target:
+                continue
+            if not ents:
+                continue
+            rows.append({
+                "domain": ents[0].domain,
+                "category": ents[0].category,
+                "subcategory": ents[0].subcategory,
+                "entity": norm,
+                "value": len(ents) * (0.5 + 0.5 * self.get_salience(norm)),
+                "docs": len(set(e.doc_source for e in ents))
+            })
+        df = pd.DataFrame(rows)
+        if df.empty:
+            fig = go.Figure()
+            fig.update_layout(title="No entity data")
+            return fig
+        if self.show_percentages:
+            total = df["value"].sum()
+            if total > 0:
+                df["value"] = (df["value"] / total) * 100
+        colorscale = colormap or "Viridis"
+        value_label = "Percentage (%)" if self.show_percentages else "Weighted Count"
+        fig = px.treemap(df, path=["domain", "category", "subcategory", "entity"],
+                         values="value", color="docs", color_continuous_scale=colorscale,
+                         title=f"Hierarchical Entity Treemap ({value_label})")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        fig.update_traces(hovertemplate='<b>%{label}</b><br>%{value:.2f} ' + ('%' if self.show_percentages else '') + '<extra></extra>')
+        return fig
+
     # -----------------------------------------------------------------
-    # PLOT: Quantitative Histogram with percentages
+    # QUANTITATIVE VISUALIZATION METHODS (extended with percentage)
     # -----------------------------------------------------------------
     def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str,
                                     group_by: str = "material",
@@ -2837,40 +3605,46 @@ class PublicationQualityVisualizationEngine:
         fig = go.Figure()
         groups = sorted(df[group_col].unique())
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
-        total_values = df['value'].sum()
         for i, grp in enumerate(groups):
             subset = df[df[group_col] == grp]
-            mean_val = subset["value"].mean()
-            pct = (mean_val / total_values * 100) if total_values != 0 else 0
             color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            mean_val = subset["value"].mean()
+            std_val = subset["value"].std()
+            count = len(subset)
+            if self.show_percentages:
+                total = len(df)
+                percent = (count / total) * 100 if total > 0 else 0
+                y_val = percent
+                y_title = "Percentage of Values (%)"
+                hover_text = f"{grp}<br>Count: {count} ({percent:.1f}%)<br>Mean: {mean_val:.2f} ± {std_val:.2f}"
+            else:
+                y_val = mean_val
+                y_title = f"Mean {quantity_name.replace('_', ' ').title()} ({df['unit'].iloc[0]})"
+                hover_text = f"{grp}<br>n={count}, μ={mean_val:.2f} ± {std_val:.2f}"
             fig.add_trace(go.Bar(
                 name=grp,
                 x=[grp],
-                y=[mean_val],
-                customdata=[pct],
+                y=[y_val],
                 error_y=dict(
                     type='data',
-                    array=[subset["value"].std()] if len(subset) > 1 else [0],
+                    array=[std_val] if len(subset) > 1 else [0],
                     visible=True
                 ),
                 marker_color=color,
-                texttemplate='%{y:.2f} (%{customdata:.1f}%)',
+                text=[hover_text],
                 textposition="outside",
-                hovertemplate=f"<b>{grp}</b><br>Mean: %{{y:.2f}} {subset['unit'].iloc[0]}<br>Count: {len(subset)}<extra></extra>"
+                hovertemplate=f"<b>{grp}</b><br>%{{text}}<extra></extra>"
             ))
         fig.update_layout(
             barmode='group',
             title=f"{quantity_name.replace('_', ' ').title()} Values by {group_by.title()}",
             xaxis_title=group_by.title(),
-            yaxis_title=f"{quantity_name.replace('_', ' ').title()} ({df['unit'].iloc[0]})",
+            yaxis_title=y_title,
             font=dict(family=self.font_family, size=self.font_size),
             height=500
         )
         return fig
 
-    # -----------------------------------------------------------------
-    # PLOT: Quantitative Sunburst with percentage
-    # -----------------------------------------------------------------
     def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity_name: str,
                                    group_by: str = "material",
                                    colormap: Optional[str] = None) -> go.Figure:
@@ -2889,21 +3663,35 @@ class PublicationQualityVisualizationEngine:
         group_col = column_map.get(group_by, "material")
         path_cols = list(dict.fromkeys([group_col, "doc_stem", "value_range"]))
         path_cols = [c for c in path_cols if c in df.columns]
+        if self.show_percentages:
+            # Compute percentages based on count of entries in each leaf
+            # We can use values as counts and then convert after
+            value_col = "value"
+            value_label = "Percentage (%)"
+            total = len(df)
+            df["temp_count"] = 1
+            df_grouped = df.groupby(path_cols).size().reset_index(name="count")
+            df_grouped["percentage"] = (df_grouped["count"] / total) * 100
+            # Use percentage for values
+            values = df_grouped["percentage"]
+            title_suffix = " (Percentage of Total Values)"
+        else:
+            value_col = "value"
+            value_label = f"{quantity_name.replace('_', ' ').title()} ({df['unit'].iloc[0]})"
+            df_grouped = df
+            values = df_grouped["value"]
+            title_suffix = ""
         fig = px.sunburst(
-            df,
+            df_grouped,
             path=path_cols,
-            values="value",
+            values=values,
             color="value",
             color_continuous_scale=colormap or "Viridis",
-            title=f"{quantity_name.replace('_', ' ').title()} Distribution Hierarchy"
+            title=f"{quantity_name.replace('_', ' ').title()} Distribution Hierarchy{title_suffix}"
         )
-        fig.update_traces(textinfo='label+percent entry', texttemplate='%{label}<br>%{percentRoot:.1%}')
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
 
-    # -----------------------------------------------------------------
-    # PLOT: Quantitative Knowledge Graph (static matplotlib)
-    # -----------------------------------------------------------------
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity_name: str,
                                           group_by: str = "material",
                                           colormap: Optional[str] = None,
@@ -2921,44 +3709,212 @@ class PublicationQualityVisualizationEngine:
         groups = []
         if group_col in df.columns:
             groups = sorted(df[group_col].unique())
-        total_val = df['value'].sum()
         for i, grp in enumerate(groups):
             G.add_node(grp, node_type="group", domain=group_col.upper())
             count = len(df[df[group_col] == grp])
             G.add_edge(hub, grp, weight=count)
         docs = sorted(df["doc_stem"].unique())
         for doc in docs:
-            G.add_node(doc, node_type="document", domain="DOCUMENT")
-            G.add_edge(hub, doc, weight=len(df[df["doc_stem"] == doc]))
+            doc_label = self.graph.get_doc_label(doc) if doc in self.graph.alias_map else doc
+            G.add_node(doc_label, node_type="document", domain="DOCUMENT")
+            G.add_edge(hub, doc_label, weight=len(df[df["doc_stem"] == doc]))
         top = df.nlargest(min(25, len(df)), "value")
         for _, row in top.iterrows():
-            mean_val = row['value']
-            pct = (mean_val / total_val * 100) if total_val != 0 else 0
-            val_node = f"{mean_val:.1f} {row['unit']} ({pct:.1f}%)"
+            val_node = f"{row['value']:.1f} {row['unit']}"
             if val_node not in G:
-                G.add_node(val_node, node_type="value", domain="PARAMETER", value=mean_val)
+                G.add_node(val_node, node_type="value", domain="PARAMETER", value=row["value"])
             if group_col in df.columns:
                 G.add_edge(row[group_col], val_node, weight=1)
-            G.add_edge(row["doc_stem"], val_node, weight=1)
+            doc_label = self.graph.get_doc_label(row["doc_source"]) if row["doc_source"] in self.graph.alias_map else row["doc_stem"]
+            G.add_edge(doc_label, val_node, weight=1)
         fig, ax = plt.subplots(figsize=figsize)
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42)
         nx.draw_networkx_nodes(G, pos, nodelist=[hub], node_color="#dc2626", node_size=2500, ax=ax)
         if groups:
             nx.draw_networkx_nodes(G, pos, nodelist=groups, node_color="#3b82f6", node_size=900, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=docs, node_color="#10b981", node_size=700, ax=ax)
+        doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "document"]
+        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", node_size=700, ax=ax)
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#f59e0b", node_size=350, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.25, width=0.8, ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-        ax.set_title(f"{quantity_name.replace('_', ' ').title()} Quantitative Knowledge Graph",
-                     fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
+        title = f"{quantity_name.replace('_', ' ').title()} Quantitative Knowledge Graph"
+        if self.show_percentages:
+            title += " (Values sized by relative frequency)"
+        ax.set_title(title, fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
         ax.axis("off")
         plt.tight_layout()
         return fig
 
-    # -----------------------------------------------------------------
-    # RENDER PyVis with top-N and display names
-    # -----------------------------------------------------------------
+    def plot_quantitative_radar(self, df: pd.DataFrame, quantity_name: str,
+                                group_by: str = "material",
+                                colormap: Optional[str] = None) -> go.Figure:
+        if df.empty:
+            fig = go.Figure()
+            fig.update_layout(title=f"No {quantity_name} data extracted")
+            return fig
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            fig = go.Figure()
+            fig.update_layout(title=f"Cannot group by '{group_by}': column '{group_col}' not found")
+            return fig
+        stats = df.groupby(group_col)["value"].agg(["mean", "std", "min", "max", "count"])
+        categories = ["Mean", "Std", "Min", "Max", "Count"]
+        fig = go.Figure()
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        for i, (mat, row) in enumerate(stats.iterrows()):
+            if self.show_percentages:
+                # Convert count to percentage of total
+                total = len(df)
+                values = [row["mean"], row["std"], row["min"], row["max"], (row["count"] / total) * 100]
+            else:
+                values = [row["mean"], row["std"], row["min"], row["max"], float(row["count"])]
+            values += values[:1]
+            color = mcolors.to_hex(cmap_obj(i / max(len(stats) - 1, 1))) if cmap_obj else None
+            fig.add_trace(go.Scatterpolar(
+                r=values,
+                theta=categories + [categories[0]],
+                fill='toself',
+                name=mat,
+                line_color=color
+            ))
+        y_title = "Percentage (%)" if self.show_percentages else "Raw Value / Count"
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True)),
+            showlegend=True,
+            title=f"{quantity_name.replace('_', ' ').title()} Statistics by {group_by.title()} ({y_title})",
+            font=dict(family=self.font_family, size=self.font_size)
+        )
+        return fig
+
+    def plot_quantitative_tsne(self, df: pd.DataFrame, embedding_fn: Callable,
+                               quantity_name: str, group_by: str = "material",
+                               colormap: Optional[str] = None,
+                               figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        if not SKLEARN_AVAILABLE or len(df) < 5:
+            return None
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            group_col = "material"
+        embs = np.array([embedding_fn(c) for c in df["context"].tolist()])
+        coords = TSNE(n_components=2, perplexity=min(30, len(df) - 1), random_state=42).fit_transform(embs)
+        fig, ax = plt.subplots(figsize=figsize)
+        groups = df[group_col].unique()
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap))
+        total = len(df)
+        for i, grp in enumerate(groups):
+            mask = df[group_col] == grp
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
+        for idx, row in df.iterrows():
+            label = f"{row['value']:.0f}"
+            if self.show_percentages:
+                percent = (1 / total) * 100
+                label += f" ({percent:.0f}%)"
+            ax.annotate(label, (coords[idx, 0], coords[idx, 1]),
+                        fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        title = f"{quantity_name.replace('_', ' ').title()} Context Embeddings (t-SNE)"
+        if self.show_percentages:
+            title += " (Percentages indicate relative frequency)"
+        ax.set_title(title, fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+
+    def plot_quantitative_pca(self, df: pd.DataFrame, embedding_fn: Callable,
+                              quantity_name: str, group_by: str = "material",
+                              colormap: Optional[str] = None,
+                              figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        if not SKLEARN_AVAILABLE or len(df) < 5:
+            return None
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            group_col = "material"
+        embs = np.array([embedding_fn(c) for c in df["context"].tolist()])
+        pca = PCA(n_components=2)
+        coords = pca.fit_transform(embs)
+        var_ratio = pca.explained_variance_ratio_
+        fig, ax = plt.subplots(figsize=figsize)
+        groups = df[group_col].unique()
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap))
+        total = len(df)
+        for i, grp in enumerate(groups):
+            mask = df[group_col] == grp
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
+        for idx, row in df.iterrows():
+            label = f"{row['value']:.0f}"
+            if self.show_percentages:
+                percent = (1 / total) * 100
+                label += f" ({percent:.0f}%)"
+            ax.annotate(label, (coords[idx, 0], coords[idx, 1]),
+                        fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        title = f"{quantity_name.replace('_', ' ').title()} Context Embeddings (PCA)\nPC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}"
+        if self.show_percentages:
+            title += " (Percentages indicate relative frequency)"
+        ax.set_title(title, fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
+        ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%})", fontfamily=self.font_family)
+        ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})", fontfamily=self.font_family)
+        plt.tight_layout()
+        return fig
+
+    def plot_quantitative_umap(self, df: pd.DataFrame, embedding_fn: Callable,
+                               quantity_name: str, group_by: str = "material",
+                               colormap: Optional[str] = None,
+                               figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        if not UMAP_AVAILABLE or len(df) < 5:
+            return None
+        column_map = {
+            "material": "material",
+            "document": "doc_stem",
+            "method": "method"
+        }
+        group_col = column_map.get(group_by, "material")
+        if group_col not in df.columns:
+            group_col = "material"
+        embs = np.array([embedding_fn(c) for c in df["context"].tolist()])
+        coords = umap.UMAP(n_neighbors=min(15, len(df) - 1), min_dist=0.1, random_state=42).fit_transform(embs)
+        fig, ax = plt.subplots(figsize=figsize)
+        groups = df[group_col].unique()
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap))
+        total = len(df)
+        for i, grp in enumerate(groups):
+            mask = df[group_col] == grp
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=grp, alpha=0.85, s=120, edgecolors='white')
+        for idx, row in df.iterrows():
+            label = f"{row['value']:.0f}"
+            if self.show_percentages:
+                percent = (1 / total) * 100
+                label += f" ({percent:.0f}%)"
+            ax.annotate(label, (coords[idx, 0], coords[idx, 1]),
+                        fontsize=self.label_font_size - 1, alpha=0.85, fontfamily=self.font_family)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        title = f"{quantity_name.replace('_', ' ').title()} Context Embeddings (UMAP)"
+        if self.show_percentages:
+            title += " (Percentages indicate relative frequency)"
+        ax.set_title(title, fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+
     def render_pyvis_salience(self, nx_graph: nx.Graph, concept_abstract_map: Dict,
                               filtered_concepts: Optional[List[str]] = None,
                               top_n_nodes: int = 0, physics_enabled: bool = True,
@@ -2979,6 +3935,7 @@ class PublicationQualityVisualizationEngine:
         if cmap:
             for i, d in enumerate(domains):
                 domain_colors[d] = mcolors.to_hex(cmap(i / max(len(domains) - 1, 1)))
+        total_entities = sum(1 for node, data in nx_graph.nodes(data=True) if data.get("node_type") == "entity")
         for node in nx_graph.nodes():
             salience = self.get_salience(node)
             size = int(15 + salience * 55)
@@ -2990,33 +3947,35 @@ class PublicationQualityVisualizationEngine:
             else:
                 color = "#1e40af" if self.is_core_pillar(node) else "#3b82f6"
             freq = concept_abstract_map.get(node, [])
-            display_node = self._get_display_label(node)
+            label = node
+            if self.show_percentages and nx_graph.nodes[node].get("node_type") == "entity" and total_entities > 0:
+                percent = (len(freq) / total_entities) * 100
+                label = f"{node} ({percent:.1f}%)"
             net.add_node(
-                display_node, label=display_node[:25], size=size, color=color,
+                node, label=label[:30], size=size, color=color,
                 borderWidth=border,
-                title=f"{display_node}\nSalience: {salience:.2f}\nFrequency: {len(freq)}"
+                title=f"{node}\nSalience: {salience:.2f}\nFrequency: {len(freq)}"
             )
         for u, v in nx_graph.edges():
             w = nx_graph[u][v].get('weight', 1)
             salience_u = self.get_salience(u)
             salience_v = self.get_salience(v)
             edge_weight = w * (salience_u + salience_v) / 2
-            net.add_edge(self._get_display_label(u), self._get_display_label(v), value=edge_weight, width=max(1, int(edge_weight * 2)))
+            net.add_edge(u, v, value=edge_weight, width=max(1, int(edge_weight * 2)))
         html_content = net.generate_html()
         st.components.v1.html(html_content, height=750, scrolling=True)
         try:
             html_bytes = html_content.encode('utf-8')
             st.download_button("📥 Download Interactive Graph (HTML)", data=html_bytes,
                                file_name="declarmima_graph_salience.html", mime="text/html", key="pyvis_salience_download")
+            del html_content, html_bytes
+            import gc
+            gc.collect()
         except Exception as e:
             st.error(f"Download failed: {e}")
 
-    # --- Other methods (chord, sunburst, embedding, etc.) remain unchanged but should use display names where appropriate ---
-    # For brevity, I'm keeping them as in the original; but for completeness, similar _get_display_label calls would be added.
-    # The user can extend those analogously.
-
 # =====================================================================
-# EMBEDDING WRAPPER
+# EMBEDDING WRAPPER (unchanged)
 # =====================================================================
 class EmbeddingWrapper:
     """Optimized embedding wrapper with batching and caching."""
@@ -3055,7 +4014,7 @@ class EmbeddingWrapper:
         return results
 
 # =====================================================================
-# SEMANTIC CHUNKING WITH STRUCTURE AWARENESS AND POSITIONAL SALIENCE
+# SEMANTIC CHUNKING WITH STRUCTURE AWARENESS AND POSITIONAL SALIENCE (unchanged)
 # =====================================================================
 def detect_scientific_sections(text: str) -> List[Tuple[str, str]]:
     section_patterns = [
@@ -3113,7 +4072,6 @@ def semantic_chunk_document(pages: List[Document], filename: str) -> List[Docume
             })
         chunks.extend(section_chunks)
     total = len(chunks)
-    # Compute positional salience for each chunk
     for i, chunk in enumerate(chunks):
         relative_pos = i / max(total - 1, 1) if total > 1 else 0.5
         if chunk.metadata.get("section") == "ABSTRACT":
@@ -3129,7 +4087,7 @@ def semantic_chunk_document(pages: List[Document], filename: str) -> List[Docume
     return chunks
 
 # =====================================================================
-# QUERY-DRIVEN LAZY PROCESSING PIPELINE
+# QUERY-DRIVEN LAZY PROCESSING PIPELINE (updated with alias support)
 # =====================================================================
 class QueryDrivenProcessor:
     """
@@ -3137,10 +4095,11 @@ class QueryDrivenProcessor:
     Computes query-biased salience, builds dynamic knowledge graph, and returns
     tightly filtered context for the LLM.
     """
-    def __init__(self):
+    def __init__(self, alias_map: Dict[str, DocumentAlias] = None):
         self.raw_files: List = []
         self._cache_key: Optional[str] = None
         self._processed = False
+        self.alias_map = alias_map or {}
 
     def register_files(self, files: List) -> None:
         """Store uploaded file bytes without processing."""
@@ -3191,10 +4150,6 @@ class QueryDrivenProcessor:
                 except: pass
         for filename, pages in pages_by_file.items():
             chunks = semantic_chunk_document(pages, filename)
-            # Add display name to each chunk's metadata for later use
-            display_name = st.session_state.doc_name_mapping.get(filename, Path(filename).stem)
-            for ch in chunks:
-                ch.metadata["display_name"] = display_name
             all_chunks.extend(chunks)
         if progress_bar: progress_bar.progress(0.4, text="✅ Chunking complete.")
         chain.add_step("chunking", f"Extracted {len(all_chunks)} sections/chunks", {"file_count": len(self.raw_files)})
@@ -3234,7 +4189,7 @@ class QueryDrivenProcessor:
         chain.add_step("concept_extraction", f"Extracted {len(valid_concepts)} concepts",
                        {"query_bias_applied": True})
         if progress_bar: progress_bar.progress(0.9, text="🕸️ Constructing dynamic knowledge graph...")
-        graph = EnhancedCrossDocumentKnowledgeGraph()
+        graph = EnhancedCrossDocumentKnowledgeGraph(alias_map=self.alias_map)  # Pass alias map
         dummy_bib = BibliographicMetadata("query_batch")
         dummy_bib.title = "Query-Driven Batch"
         doc_chunks = {}
@@ -3251,7 +4206,7 @@ class QueryDrivenProcessor:
         return graph, vectorstore, emb_wrapper, concept_metadata, chain
 
 # =====================================================================
-# SESSION STATE INITIALIZATION (extended)
+# SESSION STATE INITIALIZATION (extended with new controls)
 # =====================================================================
 def initialize_session_state():
     defaults = {
@@ -3303,17 +4258,17 @@ def initialize_session_state():
         "query_processor": None,
         "last_query_hash": None,
         "query_cache": {},
-        # NEW: user-defined mappings
-        "doc_name_mapping": {},
-        "entity_label_mapping": {},
-        "show_percentages": True,
+        "document_aliases": {},                     # NEW: alias storage
+        "show_percentages": False,                  # NEW: toggle between counts and percentages
+        "pyvis_top_n": 50,                          # NEW: user-controlled Top-N for PyVis
+        "pyvis_physics": True,                      # NEW: toggle physics
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 # =====================================================================
-# MEMORY MANAGEMENT UTILITIES
+# MEMORY MANAGEMENT UTILITIES (unchanged)
 # =====================================================================
 def cleanup_memory():
     """Force garbage collection and clear CUDA cache if available."""
@@ -3330,7 +4285,7 @@ def get_memory_usage():
     return process.memory_info().rss / (1024 * 1024)
 
 # =====================================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS (unchanged)
 # =====================================================================
 def is_ollama_model(model_key: str) -> bool:
     return model_key.startswith("ollama:") or model_key.startswith("[Ollama]")
@@ -3371,7 +4326,7 @@ def compute_text_hash(text: str) -> str:
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 # =====================================================================
-# LOCAL MODEL LOADING
+# LOCAL MODEL LOADING (unchanged)
 # =====================================================================
 @st.cache_resource(show_spinner="Loading local embedding model (~80MB)...")
 def load_local_embeddings():
@@ -3484,7 +4439,7 @@ def _load_transformers_model(model_key: str, use_4bit: bool = True):
     return tokenizer, model, device, "transformers"
 
 # =====================================================================
-# DOCUMENT PROCESSING (legacy, kept for compatibility)
+# DOCUMENT PROCESSING (legacy, but we keep)
 # =====================================================================
 def extract_laser_metadata(text: str, filename: str) -> Dict[str, any]:
     metadata = {
@@ -3548,7 +4503,7 @@ def load_pdf_chunks(uploaded_files, use_parallel: bool = True):
 def process_documents(uploaded_files):
     """Legacy wrapper for backward compatibility, now delegates to QueryDrivenProcessor."""
     if st.session_state.query_processor is None:
-        st.session_state.query_processor = QueryDrivenProcessor()
+        st.session_state.query_processor = QueryDrivenProcessor(alias_map=st.session_state.document_aliases)
     st.session_state.query_processor.register_files(uploaded_files)
     st.session_state.processed_files.update([f.name for f in uploaded_files])
     st.session_state.processing_complete = False
@@ -3556,7 +4511,7 @@ def process_documents(uploaded_files):
     return True
 
 # =====================================================================
-# RETRIEVAL & ANSWER GENERATION
+# RETRIEVAL & ANSWER GENERATION (updated with alias map)
 # =====================================================================
 def retrieve_and_answer(
     vectorstore,
@@ -3636,7 +4591,16 @@ User Question: {query}
 Synthesize these findings rigorously. Discuss trends, outliers, agreements/discrepancies across materials/documents, and report uncertainty explicitly. Structure: Direct Answer, Evidence, Consensus/Variability, Limitations, Confidence.
 """
     answer = llm_generate(quant_prompt)
-    viz = PublicationQualityVisualizationEngine(graph)
+    viz = PublicationQualityVisualizationEngine(
+        graph,
+        font_family=st.session_state.viz_font_family,
+        font_size=st.session_state.viz_font_size,
+        title_font_size=st.session_state.viz_title_font_size,
+        label_font_size=st.session_state.viz_label_font_size,
+        default_colormap=st.session_state.viz_colormap,
+        figure_dpi=st.session_state.viz_figure_dpi,
+        show_percentages=st.session_state.show_percentages
+    )
     mpl_figs: List[plt.Figure] = []
     ply_figs: List[go.Figure] = []
     if not df.empty:
@@ -3757,8 +4721,42 @@ def generate_local_response_ollama(model_tag: str, ollama_host: str, prompt: str
         return f"Error generating response via Ollama: {str(e)[:200]}..."
 
 # =====================================================================
-# STREAMLIT UI (Extended with Salience Dropdown & Visualization Customization)
+# STREAMLIT UI (Extended with Document Alias Manager, Percentage Toggle, PyVis Controls)
 # =====================================================================
+def render_document_alias_manager():
+    """Sidebar UI for editing document display names."""
+    if not st.session_state.get("knowledge_graph"):
+        return
+    st.sidebar.markdown("### 📝 Publication Labels")
+    aliases = st.session_state.document_aliases
+    for orig_name in list(st.session_state.knowledge_graph.documents.keys()):
+        if orig_name not in aliases:
+            aliases[orig_name] = DocumentAlias(original_name=orig_name)
+        alias = aliases[orig_name]
+        col1, col2 = st.sidebar.columns([3, 2])
+        with col1:
+            new_display = st.text_input(
+                f"Display Name", 
+                value=alias.display_name or Path(orig_name).stem,
+                key=f"display_{orig_name}",
+                help="Used in citations and tables"
+            )
+        with col2:
+            new_short = st.text_input(
+                "Short Label", 
+                value=alias.short_label or new_display[:15],
+                key=f"short_{orig_name}",
+                help="For graphs"
+            )
+        alias.display_name = new_display
+        alias.short_label = new_short
+        if st.sidebar.button("Custom Alias", key=f"custom_btn_{orig_name}"):
+            alias.custom_alias = st.sidebar.text_input(
+                "Custom Citation", value=alias.custom_alias, 
+                key=f"custom_{orig_name}"
+            )
+        st.sidebar.markdown("---")
+
 def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
@@ -3841,39 +4839,6 @@ def render_sidebar():
             "Network Layout", ["spring", "kamada_kawai", "circular"], index=0
         )
         st.session_state.viz_figure_dpi = st.slider("Figure DPI", 150, 600, 300, step=50)
-
-        # NEW: Document renaming UI
-        with st.expander("📄 Rename Documents", expanded=False):
-            if st.session_state.processed_files:
-                for fname in st.session_state.processed_files:
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        new_name = st.text_input(f"Rename `{fname[:20]}...`", 
-                                                 value=st.session_state.doc_name_mapping.get(fname, Path(fname).stem),
-                                                 key=f"rename_{fname}")
-                    with col2:
-                        if st.button("✓", key=f"apply_rename_{fname}"):
-                            st.session_state.doc_name_mapping[fname] = new_name
-                            st.success(f"Updated to {new_name}")
-            else:
-                st.info("Upload files first to rename them.")
-
-        # NEW: Entity label editing UI
-        with st.expander("✏️ Edit Entity Labels", expanded=False):
-            if st.session_state.knowledge_graph:
-                entities = list(st.session_state.knowledge_graph.entities.keys())
-                if entities:
-                    selected_ent = st.selectbox("Select entity to rename", entities, key="rename_entity_select")
-                    new_label = st.text_input("New display label", 
-                                             value=st.session_state.entity_label_mapping.get(selected_ent, selected_ent))
-                    if st.button("Apply rename"):
-                        st.session_state.entity_label_mapping[selected_ent] = new_label
-                        st.success(f"Entity '{selected_ent}' will be shown as '{new_label}'")
-                else:
-                    st.info("No entities extracted yet.")
-            else:
-                st.info("Process a query first to populate entities.")
-
         st.markdown("#### 📊 Dynamic Concept Selection")
         if st.session_state.processing_complete and st.session_state.concept_selector:
             st.session_state.viz_top_n = st.slider(
@@ -3900,10 +4865,19 @@ def render_sidebar():
                     salience_thresh=st.session_state.viz_salience_threshold
                 )
                 st.success("Filters applied!")
-
-        # NEW: Percentage display toggle
-        st.session_state.show_percentages = st.checkbox("📊 Show percentages alongside values", value=True)
-
+        st.markdown("#### 📊 Percentage Display & PyVis Controls")
+        st.session_state.show_percentages = st.checkbox(
+            "Show percentages instead of counts", value=st.session_state.show_percentages,
+            help="When enabled, pie/sunburst/histogram values become percentages of total."
+        )
+        st.session_state.pyvis_top_n = st.slider(
+            "PyVis Network Top N Nodes", min_value=10, max_value=200, value=st.session_state.pyvis_top_n,
+            step=10, help="Limit number of nodes in interactive graph"
+        )
+        st.session_state.pyvis_physics = st.checkbox(
+            "Enable PyVis Physics (force layout)", value=st.session_state.pyvis_physics,
+            help="Toggle physics engine for node positioning"
+        )
         st.markdown("#### 📝 Citation Format")
         st.session_state.citation_style = st.selectbox(
             "Citation display style", options=["apa", "doi", "full", "short"], index=0,
@@ -3925,6 +4899,8 @@ def render_sidebar():
                 )
             else:
                 st.session_state.selected_entity = None
+        # Render document alias manager
+        render_document_alias_manager()
         st.markdown("---")
         gpu_info = "CUDA" if torch.cuda.is_available() else "CPU"
         vram_info = f"{get_available_gpu_memory():.1f}GB free" if torch.cuda.is_available() and get_available_gpu_memory() else "N/A"
@@ -3948,9 +4924,6 @@ def render_document_uploader():
     )
     return uploaded_files
 
-# =====================================================================
-# EXPANSION: RESPONSE QUALITY METRICS HELPER
-# =====================================================================
 def render_response_quality_metrics(answer_meta, retrieved_docs, is_quantitative):
     """Displays a detailed analysis of the answer's quality and sources."""
     with st.expander("📊 Response Diagnostics & Source Quality", expanded=False):
@@ -4074,6 +5047,12 @@ def render_chat_interface():
                     st.session_state.concept_selector = DynamicConceptSelector(graph)
                     st.session_state.vectorstore = vectorstore
                 else:
+                    # Create alias map from session state
+                    alias_map = st.session_state.document_aliases
+                    if st.session_state.query_processor is None:
+                        st.session_state.query_processor = QueryDrivenProcessor(alias_map=alias_map)
+                    else:
+                        st.session_state.query_processor.alias_map = alias_map
                     graph, vectorstore, emb_fn, concept_metadata, chain = st.session_state.query_processor.process_for_query(prompt, progress)
                     st.session_state.query_cache[q_hash] = (graph, vectorstore, emb_fn, concept_metadata, chain)
                     st.session_state.processing_complete = True
@@ -4236,6 +5215,7 @@ This ensures <strong>salience & visualizations are tightly aligned to your speci
 <strong>Core Pillars:</strong> LASER, MICROSTRUCTURE, INTERACTION, <span style="color:#dc2626;font-weight:bold">MULTICOMPONENT ALLOY</span>.<br>
 All visualizations are <strong>publication-quality</strong> with 50+ colormaps, UMAP, PCA, t‑SNE, Bokeh chord, and PyVis networks.
 Dynamic top-N filtering allows precise control over visualized concepts.
+<strong>NEW:</strong> Editable document labels, percentage display, improved disambiguation, interactive PyVis controls.
 </div>
 """, unsafe_allow_html=True)
     initialize_session_state()
@@ -4257,7 +5237,9 @@ You have ~{available_vram:.1f}GB available.
         uploaded_files = render_document_uploader()
         if uploaded_files and st.button("📥 Register Files", type="primary", use_container_width=True):
             if st.session_state.query_processor is None:
-                st.session_state.query_processor = QueryDrivenProcessor()
+                st.session_state.query_processor = QueryDrivenProcessor(alias_map=st.session_state.document_aliases)
+            else:
+                st.session_state.query_processor.alias_map = st.session_state.document_aliases
             st.session_state.query_processor.register_files(uploaded_files)
             st.session_state.processed_files.update([f.name for f in uploaded_files])
             st.success(f"✅ Registered {len(uploaded_files)} files. Ready for query-driven processing!")
@@ -4288,6 +5270,10 @@ You have ~{available_vram:.1f}GB available.
 <li><strong>Full-Text Processing:</strong> section‑aware chunking (Abstract, Methods, Results, Discussion, Conclusion)</li>
 <li><strong>Multi-Factor Salience:</strong> frequency, cross‑doc, section importance, quantitative signal, proposal similarity, semantic similarity</li>
 <li><strong>Publication-Quality Viz:</strong> 50+ colormaps, customizable fonts, UMAP, PCA, t-SNE, Bokeh/HoloViews chord, PyVis</li>
+<li><strong>NEW: Document Aliases</strong> – Rename papers for publication-ready citations</li>
+<li><strong>NEW: Percentage Display</strong> – Toggle between raw counts and percentages</li>
+<li><strong>NEW: Enhanced Disambiguation</strong> – Better handling of hardness vs stress, etc.</li>
+<li><strong>NEW: Interactive PyVis Controls</strong> – Top-N node limit, physics toggle</li>
 </ul>
 <p><strong>Getting started:</strong></p>
 <ol>
@@ -4321,7 +5307,8 @@ You have ~{available_vram:.1f}GB available.
                 title_font_size=st.session_state.viz_title_font_size,
                 label_font_size=st.session_state.viz_label_font_size,
                 default_colormap=st.session_state.viz_colormap,
-                figure_dpi=st.session_state.viz_figure_dpi
+                figure_dpi=st.session_state.viz_figure_dpi,
+                show_percentages=st.session_state.show_percentages
             )
         else:
             st.session_state.visualization_engine.font_family = st.session_state.viz_font_family
@@ -4330,6 +5317,7 @@ You have ~{available_vram:.1f}GB available.
             st.session_state.visualization_engine.label_font_size = st.session_state.viz_label_font_size
             st.session_state.visualization_engine.default_colormap = st.session_state.viz_colormap
             st.session_state.visualization_engine.figure_dpi = st.session_state.viz_figure_dpi
+            st.session_state.visualization_engine.show_percentages = st.session_state.show_percentages
         viz = st.session_state.visualization_engine
         cmap = st.session_state.viz_colormap
         layout = st.session_state.viz_layout
@@ -4426,28 +5414,32 @@ You have ~{available_vram:.1f}GB available.
             st.plotly_chart(fig_timeline, use_container_width=True)
             fig_treemap = viz.plot_entity_treemap(filtered_concepts=filtered, colormap=active_cmap)
             st.plotly_chart(fig_treemap, use_container_width=True)
-        # PyVis interactive network
+        # PyVis interactive network (enhanced with user controls)
         if PYVIS_AVAILABLE and st.session_state.knowledge_graph:
-            st.markdown("### 🕸️ Interactive PyVis Network (Salience-Aware)")
+            st.markdown("### 🕸️ Interactive PyVis Network (Salience-Aware, User-Controlled)")
             nx_graph = nx.Graph()
             for doc_id in st.session_state.knowledge_graph.documents:
-                display_doc = st.session_state.doc_name_mapping.get(doc_id, Path(doc_id).stem)
-                nx_graph.add_node(display_doc, node_type="doc", original=doc_id)
+                doc_label = st.session_state.knowledge_graph.get_doc_label(doc_id)
+                nx_graph.add_node(doc_label, node_type="doc")
             for ent_norm, ents in st.session_state.knowledge_graph.entities.items():
                 domain = ents[0].domain if ents else "UNKNOWN"
-                display_ent = st.session_state.entity_label_mapping.get(ent_norm, ent_norm)
-                nx_graph.add_node(display_ent, node_type="entity", domain=domain, original=ent_norm)
+                nx_graph.add_node(ent_norm, node_type="entity", domain=domain)
                 for e in ents:
-                    doc_node = st.session_state.doc_name_mapping.get(e.doc_source, Path(e.doc_source).stem)
+                    doc_node = st.session_state.knowledge_graph.get_doc_label(e.doc_source)
                     if doc_node in nx_graph:
-                        nx_graph.add_edge(doc_node, display_ent, weight=len([x for x in ents if x.doc_source == e.doc_source]))
-            concept_abstract = {ent_norm: [] for ent_norm in st.session_state.knowledge_graph.entities}
+                        nx_graph.add_edge(doc_node, ent_norm, weight=len([x for x in ents if x.doc_source == e.doc_source]))
+            concept_abstract = {ent: [] for ent in st.session_state.knowledge_graph.entities}
             for ent_norm, ents in st.session_state.knowledge_graph.entities.items():
                 for e in ents:
                     concept_abstract[ent_norm].append(e.context[:100])
+            with st.expander("⚙️ PyVis Controls", expanded=False):
+                top_n_pyvis = st.slider("Maximum nodes to show", 10, 200, st.session_state.pyvis_top_n, step=10, key="pyvis_top_n_slider")
+                physics_pyvis = st.checkbox("Enable physics", value=st.session_state.pyvis_physics, key="pyvis_physics_check")
+                st.session_state.pyvis_top_n = top_n_pyvis
+                st.session_state.pyvis_physics = physics_pyvis
             viz.render_pyvis_salience(nx_graph, concept_abstract, filtered_concepts=filtered,
-                                      top_n_nodes=st.session_state.viz_top_n,
-                                      physics_enabled=True, colormap=active_cmap)
+                                      top_n_nodes=st.session_state.pyvis_top_n,
+                                      physics_enabled=st.session_state.pyvis_physics, colormap=active_cmap)
 
     render_footer()
 

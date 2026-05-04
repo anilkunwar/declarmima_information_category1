@@ -3774,6 +3774,44 @@ def process_documents(uploaded_files):
     st.session_state.processing_complete = False
     st.session_state.query_cache = {}
     return True
+# =====================================================================
+# EMBEDDING WRAPPER (define EARLY)
+# =====================================================================
+class EmbeddingWrapper:
+    """Optimized embedding wrapper with batching and caching."""
+    def __init__(self, embedding_source):
+        self.source = embedding_source
+        self._cache = {}
+        self._max_cache_size = 1000
+
+    def __call__(self, text: str) -> np.ndarray:
+        text_hash = hash(text[:200])
+        if text_hash in self._cache:
+            return self._cache[text_hash]
+        result = self._embed_single(text)
+        if len(self._cache) >= self._max_cache_size:
+            self._cache = dict(list(self._cache.items())[self._max_cache_size//2:])
+        self._cache[text_hash] = result
+        return result
+
+    def _embed_single(self, text: str) -> np.ndarray:
+        if hasattr(self.source, 'embed_query'):
+            return np.array(self.source.embed_query(text))
+        elif hasattr(self.source, 'embed_documents'):
+            return np.array(self.source.embed_documents([text])[0])
+        else:
+            raise ValueError("Embedding source has no embed_query or embed_documents method")
+
+    def embed_batch(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
+        results = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i+batch_size]
+            if hasattr(self.source, 'embed_documents'):
+                batch_embs = self.source.embed_documents(batch)
+                results.extend([np.array(e) for e in batch_embs])
+            else:
+                results.extend([self._embed_single(t) for t in batch])
+        return results
 
 # =====================================================================
 # QUERY-DRIVEN LAZY PROCESSING PIPELINE
@@ -4615,44 +4653,6 @@ def render_footer():
 # EMBEDDING WRAPPER (repeated here for completeness)
 # =====================================================================
 #
-# =====================================================================
-# EMBEDDING WRAPPER (define EARLY)
-# =====================================================================
-class EmbeddingWrapper:
-    """Optimized embedding wrapper with batching and caching."""
-    def __init__(self, embedding_source):
-        self.source = embedding_source
-        self._cache = {}
-        self._max_cache_size = 1000
-
-    def __call__(self, text: str) -> np.ndarray:
-        text_hash = hash(text[:200])
-        if text_hash in self._cache:
-            return self._cache[text_hash]
-        result = self._embed_single(text)
-        if len(self._cache) >= self._max_cache_size:
-            self._cache = dict(list(self._cache.items())[self._max_cache_size//2:])
-        self._cache[text_hash] = result
-        return result
-
-    def _embed_single(self, text: str) -> np.ndarray:
-        if hasattr(self.source, 'embed_query'):
-            return np.array(self.source.embed_query(text))
-        elif hasattr(self.source, 'embed_documents'):
-            return np.array(self.source.embed_documents([text])[0])
-        else:
-            raise ValueError("Embedding source has no embed_query or embed_documents method")
-
-    def embed_batch(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
-        results = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            if hasattr(self.source, 'embed_documents'):
-                batch_embs = self.source.embed_documents(batch)
-                results.extend([np.array(e) for e in batch_embs])
-            else:
-                results.extend([self._embed_single(t) for t in batch])
-        return results
 
 
 # =====================================================================

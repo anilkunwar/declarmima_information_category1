@@ -2543,8 +2543,10 @@ class QueryBiasedQuantitativeExtractor:
                         except (IndexError, ValueError):
                             continue
                         # Determine unit from matched string
+                        #unit_match = re.search(r'(?:MPa|GPa|Pa|J/mm³|J/cm³|MJ/m³|kJ/mol|J/mol|HV|HRC|K/s|°C/s|Pa·s|mPa·s|W/m·K|W|kW|mm/s|J/cm²|nm|µm|fs|ps|ns|kHz|MHz|%)', match.group(0), re.I)
+                        #unit = unit_match.group(1) if unit_match else config.get("unit", "")
                         unit_match = re.search(r'(?:MPa|GPa|Pa|J/mm³|J/cm³|MJ/m³|kJ/mol|J/mol|HV|HRC|K/s|°C/s|Pa·s|mPa·s|W/m·K|W|kW|mm/s|J/cm²|nm|µm|fs|ps|ns|kHz|MHz|%)', match.group(0), re.I)
-                        unit = unit_match.group(1) if unit_match else config.get("unit", "")
+                        unit = unit_match.group(0) if unit_match else config.get("unit", "")
                         context_window = self._get_context_window(text, match.start(), window=250)
                         
                         # Compute confidence using unit match, keywords, range

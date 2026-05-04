@@ -4614,7 +4614,12 @@ def render_footer():
 # =====================================================================
 # EMBEDDING WRAPPER (repeated here for completeness)
 # =====================================================================
+#
+# =====================================================================
+# EMBEDDING WRAPPER (define EARLY)
+# =====================================================================
 class EmbeddingWrapper:
+    """Optimized embedding wrapper with batching and caching."""
     def __init__(self, embedding_source):
         self.source = embedding_source
         self._cache = {}
@@ -4648,6 +4653,7 @@ class EmbeddingWrapper:
             else:
                 results.extend([self._embed_single(t) for t in batch])
         return results
+
 
 # =====================================================================
 # SEMANTIC CHUNKING

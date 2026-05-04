@@ -1488,7 +1488,44 @@ class QuantitativeDataExtractor:
 # Actually we defined it at the top after imports. Let's ensure it's available.
 # It's there: from Pydantic schemas to LLMStructuredExtractor. So we can use it.
 # =====================================================================
+# =====================================================================
+# EMBEDDING WRAPPER
+# =====================================================================
+class EmbeddingWrapper:
+    """Optimized embedding wrapper with batching and caching."""
+    def __init__(self, embedding_source):
+        self.source = embedding_source
+        self._cache = {}
+        self._max_cache_size = 1000
 
+    def __call__(self, text: str) -> np.ndarray:
+        text_hash = hash(text[:200])
+        if text_hash in self._cache:
+            return self._cache[text_hash]
+        result = self._embed_single(text)
+        if len(self._cache) >= self._max_cache_size:
+            self._cache = dict(list(self._cache.items())[self._max_cache_size//2:])
+        self._cache[text_hash] = result
+        return result
+
+    def _embed_single(self, text: str) -> np.ndarray:
+        if hasattr(self.source, 'embed_query'):
+            return np.array(self.source.embed_query(text))
+        elif hasattr(self.source, 'embed_documents'):
+            return np.array(self.source.embed_documents([text])[0])
+        else:
+            raise ValueError("Embedding source has no embed_query or embed_documents method")
+
+    def embed_batch(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
+        results = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i+batch_size]
+            if hasattr(self.source, 'embed_documents'):
+                batch_embs = self.source.embed_documents(batch)
+                results.extend([np.array(e) for e in batch_embs])
+            else:
+                results.extend([self._embed_single(t) for t in batch])
+        return results
 # =====================================================================
 # QUERY-DRIVEN PROCESSOR (UPDATED TO USE LLM EXTRACTION)
 # =====================================================================
@@ -1507,14 +1544,14 @@ class QueryDrivenProcessor:
     def process_for_query(self, query: str, progress_bar: Any = None,
                           llm_generate_fn: Callable = None,
                           tokenizer=None, model=None, backend_type="transformers") -> Tuple[
-        EnhancedCrossDocumentKnowledgeGraph, FAISS, EmbeddingWrapper, Dict[str, Any], ReasoningChain]:
+        EnhancedCrossDocumentKnowledgeGraph, FAISS, , Dict[str, Any], ReasoningChain]:
         chain = ReasoningChain(query)
         if not self.raw_files:
             raise ValueError("No files registered for processing.")
         
         # Step 1: Embed query for later concept extraction
         embed_model = load_local_embeddings()
-        emb_wrapper = EmbeddingWrapper(embed_model)
+        emb_wrapper = (embed_model)
         query_emb = emb_wrapper(query)
         chain.add_step("query_embedding", "Generated query embedding for bias calculation", {"dim": len(query_emb)})
         
@@ -1640,44 +1677,7 @@ class QueryDrivenProcessor:
         self._processed = True
         return graph, vectorstore, emb_wrapper, concept_metadata, chain
 
-# =====================================================================
-# EMBEDDING WRAPPER
-# =====================================================================
-class EmbeddingWrapper:
-    """Optimized embedding wrapper with batching and caching."""
-    def __init__(self, embedding_source):
-        self.source = embedding_source
-        self._cache = {}
-        self._max_cache_size = 1000
 
-    def __call__(self, text: str) -> np.ndarray:
-        text_hash = hash(text[:200])
-        if text_hash in self._cache:
-            return self._cache[text_hash]
-        result = self._embed_single(text)
-        if len(self._cache) >= self._max_cache_size:
-            self._cache = dict(list(self._cache.items())[self._max_cache_size//2:])
-        self._cache[text_hash] = result
-        return result
-
-    def _embed_single(self, text: str) -> np.ndarray:
-        if hasattr(self.source, 'embed_query'):
-            return np.array(self.source.embed_query(text))
-        elif hasattr(self.source, 'embed_documents'):
-            return np.array(self.source.embed_documents([text])[0])
-        else:
-            raise ValueError("Embedding source has no embed_query or embed_documents method")
-
-    def embed_batch(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
-        results = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i+batch_size]
-            if hasattr(self.source, 'embed_documents'):
-                batch_embs = self.source.embed_documents(batch)
-                results.extend([np.array(e) for e in batch_embs])
-            else:
-                results.extend([self._embed_single(t) for t in batch])
-        return results
 
 # =====================================================================
 # SEMANTIC CHUNKING WITH STRUCTURE AWARENESS

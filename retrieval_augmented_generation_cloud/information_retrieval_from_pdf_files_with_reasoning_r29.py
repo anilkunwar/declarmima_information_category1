@@ -2331,6 +2331,7 @@ class QueryBiasedQuantitativeExtractor:
                     'confidence': confidence,
                     'salience': salience,
                     'doc_source': doc_source,
+                    'doc_stem': Path(doc_source).stem if doc_source else 'unknown',
                     'section': section,
                     'context': context_window[:300],
                     'material': associated.get('material', 'Unknown'),
@@ -5156,7 +5157,9 @@ def render_quantitative_data_summary(df: pd.DataFrame, meta: Dict):
         if 'value' in df.columns:
             st.markdown(f" - Value Range: `{df['value'].min():.2f}` to `{df['value'].max():.2f}` {df['unit'].iloc[0]}")
     elif group_col == 'document':
-        st.markdown(f" - Data aggregated from `{df['doc_stem'].nunique()}` documents.")
+        # FIX: Use doc_stem if available, fall back to doc_source
+        doc_col = 'doc_stem' if 'doc_stem' in df.columns else 'doc_source'
+        st.markdown(f" - Data aggregated from `{df[doc_col].nunique()}` documents.")
 
 def render_chat_interface():
     if not st.session_state.get('query_processor'):
@@ -5278,8 +5281,10 @@ def render_chat_interface():
                     render_quantitative_data_summary(df, meta)
 
                     if not df.empty:
+                        # FIX: Use doc_stem if available, fall back to doc_source
+                        doc_count_col = 'doc_stem' if 'doc_stem' in df.columns else 'doc_source'
                         st.markdown(f"**📊 Extracted {len(df)} `{meta['quantity_label']}` values "
-                                    f"across {df['doc_stem'].nunique()} documents**")
+                                    f"across {df[doc_count_col].nunique()} documents**")
                         with st.expander("📈 Quantitative Visualizations", expanded=True):
                             tabs = st.tabs(["Histogram", "Sunburst", "Radar", "Knowledge Graph", "t-SNE / PCA / UMAP"])
                             with tabs[0]:

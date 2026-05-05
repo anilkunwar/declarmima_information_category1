@@ -163,7 +163,7 @@ class AppConfig:
         "query_driven_processing": True,
         "query_similarity_weight": 0.65,
         "base_salience_weight": 0.35,
-        "cache_ttl_minutes": 60
+        "cache_ttl_minutes": 60,
         # NEW: Inverted pipeline settings
         "max_chunks_for_llm_extraction": 15,  # ONLY extract from top 15 chunks
         "skip_llm_extraction_for_broad_queries": True,  # Skip if no specific entity requested

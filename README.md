@@ -113,11 +113,17 @@ v31-v33 : Both Document Processing and Query-time Reasoning Depend on the Choice
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v33.0-indigo)](https://information-retrieval-reasoning-visualization33.streamlit.app/) (Excellent, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
-V34- : Regex-free LLM Scientific Reasoning
+V34-V35 : Regex-free LLM Scientific Reasoning
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v34.0-indigo)](https://information-retrieval-reasoning-visualization34.streamlit.app/) (Excellent but slow, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v35.0-indigo)](https://information-retrieval-reasoning-visualization35.streamlit.app/) (Excellent, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+V36-V37: Regex-Free, QBQE + Query Attention
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v36.0-yellow)](https://information-retrieval-reasoning-visualization36.streamlit.app/) (Excellent but too slow as the LLM processes every document for every query, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
+
+[![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v37.0-yellow)](https://information-retrieval-reasoning-visualization37.streamlit.app/) (Excellent and faster than V36, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
 
 Multicomponent Alloy Microstructure Focus :

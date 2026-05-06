@@ -992,7 +992,7 @@ class PageNode:
         }
     
     @classmethod
-    def from_dict(cls,  Dict[str, Any], pdf_path: str = None) -> 'PageNode':
+    def from_dict(cls, data: Dict[str, Any], pdf_path: str = None) -> 'PageNode':
         """Reconstruct from dictionary (for cache loading)."""
         node = cls(
             id=data["id"],
@@ -1004,13 +1004,13 @@ class PageNode:
             level=data.get("level", 0),
             doc_id=data.get("doc_id", ""),
             section_type=data.get("section_type", "BODY"),
-            metadata=data.get("metadata", {})
         )
         node._pdf_path = pdf_path
         # Reconstruct children
         for child_data in data.get("children", []):
             node.children.append(cls.from_dict(child_data, pdf_path))
         return node
+    
     
     def get_text(self, doc_cache: Optional[Dict[str, Any]] = None) -> str:
         """Lazy-load text from PDF if not already cached."""

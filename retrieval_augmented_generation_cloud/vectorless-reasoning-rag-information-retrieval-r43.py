@@ -34,7 +34,7 @@ import torch
 import numpy as np
 import pandas as pd
 from io import BytesIO
-from typing import List, Dict, Optional, Tuple, Union, Any, Set, Callable, AsyncGenerator
+from typing import List, Dict, Optional, Tuple, Union, Any, Set, Callable
 from datetime import datetime
 import sys
 import subprocess
@@ -50,6 +50,7 @@ import warnings
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pickle
+from contextlib import contextmanager
 
 warnings.filterwarnings('ignore')
 
@@ -90,7 +91,7 @@ def reset_timer_metrics():
 # =====================================================================
 # PYDANTIC SCHEMAS FOR STRUCTURED EXTRACTION
 # =====================================================================
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import Optional, List as ListType
 
 class QuantitativeMeasurement(BaseModel):
@@ -410,7 +411,7 @@ class HierarchicalPDFIndex:
             id=f"{doc_id}_root", title="Document Root",
             page_start=1, page_end=len(doc),
             full_text="", summary=f"Full document: {doc_id}",
-            level=0, doc_id= doc_id,
+            level=0, doc_id=doc_id,
             _pdf_path=pdf_path
         )
         

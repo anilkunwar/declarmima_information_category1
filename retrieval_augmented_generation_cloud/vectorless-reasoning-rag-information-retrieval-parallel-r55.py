@@ -1,23 +1,25 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v8.0-PAGEINDEX - COMPLETE INTEGRATED STREAMLIT APPLICATION
-=====================================================================
-UNIVERSAL VECTORLESS HIERARCHICAL RAG WITH PAGEINDEX-STYLE TREE NAVIGATION
-AND LLM-POWERED QUANTITATIVE REASONING
+DECLARMIMA v12.0-VECTORLESS - COMPLETE INTEGRATED STREAMLIT APPLICATION
+=======================================================================
+UNIVERSAL VECTORLESS HIERARCHICAL RAG WITH OLLAMA INTEGRATION & HIERARCHICAL TREE NAVIGATION
 
 FEATURES:
-- PageIndex-style JSON tree structure with node_id, summary, prefix_summary
-- Async parallel PDF indexing with LLM-validated TOC extraction
-- Fast orjson serialization (10x faster than pickle)
-- Quantitative knowledge graph attached to tree nodes
-- LLM tree reasoning for cross-document parameter retrieval
-- Multi-model support: Qwen14B, Mistral7B, Falcon10B, Llama8B
-- Streamlit UI with real-time progress, JSON export, tree navigation trace
+- Vectorless hierarchical document indexing (tree navigation, no vectors)
+- Dropdown of all Ollama models (qwen2.5, llama3.1, mistral, gemma2, falcon3)
+- HybridLLM fallback chain: Ollama → Transformers (4-bit optional) → CPU
+- HierarchicalTreeRetriever: dynamic keyword routing + tree navigation (no vector DB)
+- UniversalLLMExtractor: batch LLM extraction with anti-hallucination validation
+- LLM Reasoning Synthesizer: generates natural language answer with citations, consensus, contradictions
+- Streamlit UI: file upload, chat interface, JSON export, reasoning trace, performance metrics
+- RTX 5080 optimized: GPU offload, 4-bit quantization, batch inference, memory pooling
+- Table + JSON display toggle for quantitative results
+- Human-readable consensus analysis with statistics
 
 AUTHOR: DECLARMIMA Team
 LICENSE: MIT
-VERSION: 8.0-PAGEINDEX-FINAL
+VERSION: 12.0-VECTORLESS-FINAL
 DATE: 2026-05-06
 """
 
@@ -29,13 +31,10 @@ import time
 import re
 import json
 import hashlib
-import pickle
 import asyncio
 import logging
 import warnings
-import contextlib
 import requests
-import functools
 import textwrap
 import math
 import copy
@@ -45,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any, Set, Callable, Literal
 from collections import defaultdict, Counter, OrderedDict
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 import numpy as np
 import torch
@@ -97,6 +96,7 @@ except ImportError:
 # ============================================================================
 from pydantic import BaseModel, Field, field_validator
 
+
 class UniversalExtractionItem(BaseModel):
     item_type: Literal["quantitative", "qualitative", "definition", "comparison", "relationship", "process", "material", "method"]
     content: str
@@ -130,6 +130,36 @@ class UniversalExtractionItem(BaseModel):
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
+
+
+class ExtractedValue(BaseModel):
+    query: str
+    value: float
+    unit: str
+    quantity_type: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    context: str
+    doc_name: str
+    page: int
+    section_title: Optional[str] = None
+
+    @field_validator('value')
+    def non_zero(cls, v):
+        if v == 0.0:
+            raise ValueError("Zero values ignored")
+        return v
+
+
+class QueryReport(BaseModel):
+    query: str
+    total_docs: int
+    docs_with_results: int
+    all_values: List[ExtractedValue]
+    consensus: Dict[str, Any]
+    processing_time_sec: float
+
+    def to_json(self):
+        return json.dumps(self.model_dump(), indent=2, ensure_ascii=False, default=str)
 
 
 class CrossDocumentQueryReport(BaseModel):
@@ -215,7 +245,6 @@ MODEL_PROMPT_TEMPLATES = {
 
 
 def get_model_template(model_name: str) -> Dict[str, Any]:
-    """Get model-specific prompt template."""
     for key, template in MODEL_PROMPT_TEMPLATES.items():
         if key in model_name.lower():
             return template
@@ -285,7 +314,6 @@ response_cache = LRUCache(max_size=2000, ttl=7200)
 # 4. FAST JSON UTILITIES
 # ============================================================================
 def fast_json_dumps(obj: Any, indent: bool = False) -> bytes:
-    """Use orjson if available, fallback to standard json."""
     if ORJSON_AVAILABLE:
         option = orjson.OPT_INDENT_2 if indent else 0
         return orjson.dumps(obj, option=option, default=str)
@@ -293,7 +321,6 @@ def fast_json_dumps(obj: Any, indent: bool = False) -> bytes:
         return json.dumps(obj, indent=2 if indent else None, ensure_ascii=False, default=str).encode()
 
 def fast_json_loads(data: Union[bytes, str]) -> Any:
-    """Use orjson if available, fallback to standard json."""
     if ORJSON_AVAILABLE:
         if isinstance(data, str):
             data = data.encode()
@@ -305,7 +332,7 @@ def fast_json_loads(data: Union[bytes, str]) -> Any:
 
 
 # ============================================================================
-# 5. PAGEINDEX-STYLE HIERARCHICAL PDF INDEX (VECTORLESS)
+# 5. HIERARCHICAL PDF INDEX (VECTORLESS)
 # ============================================================================
 @dataclass
 class PageNode:
@@ -319,8 +346,8 @@ class PageNode:
     children: List['PageNode'] = field(default_factory=list)
     doc_id: str = ""
     section_type: str = "BODY"
-    node_id: str = ""           # PageIndex-style: "0001", "0001.0002"
-    prefix_summary: str = ""     # Summary of this node + all children
+    node_id: str = ""
+    prefix_summary: str = ""
     text_token_count: int = 0
     _pdf_path: Optional[str] = None
 
@@ -360,8 +387,7 @@ class PageNode:
             "children": [c.to_dict() for c in self.children]
         }
 
-    def to_pageindex_format(self) -> Dict[str, Any]:
-        """Export to PageIndex-compatible JSON structure."""
+    def to_tree_format(self) -> Dict[str, Any]:
         result = {
             "title": self.title,
             "node_id": self.node_id,
@@ -372,7 +398,7 @@ class PageNode:
             "text_token_count": self.text_token_count,
         }
         if self.children:
-            result["nodes"] = [c.to_pageindex_format() for c in self.children]
+            result["nodes"] = [c.to_tree_format() for c in self.children]
         if self.full_text:
             result["text"] = self.full_text[:500] + "..." if len(self.full_text) > 500 else self.full_text
         return result
@@ -424,7 +450,6 @@ class HierarchicalIndex:
             doc_hash = self._doc_hash(buf)
             cache_path = self._cache_path(doc_name, doc_hash)
             
-            # Try fast orjson cache first
             if cache_path.exists():
                 try:
                     with open(cache_path, "rb") as f:
@@ -438,7 +463,6 @@ class HierarchicalIndex:
                 except Exception as e:
                     logger.warning(f"Cache load failed for {doc_name}: {e}")
             
-            # Build fresh
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 buf.seek(0)
                 tmp.write(buf.getbuffer())
@@ -447,7 +471,6 @@ class HierarchicalIndex:
             root = self._build_tree(doc, doc_name, tmp_path)
             doc.close()
             
-            # Save with orjson
             try:
                 cache_root = self._clone_for_cache(root)
                 with open(cache_path, "wb") as f:
@@ -471,8 +494,8 @@ class HierarchicalIndex:
 
     def _build_tree(self, doc, doc_id, pdf_path):
         root = PageNode(
-            f"{doc_id}_root", "Document Root", 1, len(doc), "", 
-            f"Document {doc_id} root covering pages 1-{len(doc)}", 
+            f"{doc_id}_root", "Document Root", 1, len(doc), "",
+            f"Document {doc_id} root covering pages 1-{len(doc)}",
             0, doc_id=doc_id, _pdf_path=pdf_path, node_id="0000"
         )
         
@@ -485,7 +508,7 @@ class HierarchicalIndex:
                 end = min(page + 3, len(doc))
                 text = self._extract_range(doc, page, end)
                 node = PageNode(
-                    f"{doc_id}_toc_{level}_{title[:20]}", 
+                    f"{doc_id}_toc_{level}_{title[:20]}",
                     title.strip(), page, end,
                     text, text[:200], level, doc_id=doc_id, _pdf_path=pdf_path
                 )
@@ -503,7 +526,7 @@ class HierarchicalIndex:
                 end = min(page + 3, len(doc))
                 text = self._extract_range(doc, page, end)
                 node = PageNode(
-                    f"{doc_id}_h{i}", title, page, end, text, text[:200], 
+                    f"{doc_id}_h{i}", title, page, end, text, text[:200],
                     2, doc_id=doc_id, _pdf_path=pdf_path
                 )
                 root.children.append(node)
@@ -515,7 +538,7 @@ class HierarchicalIndex:
             if not text.strip():
                 continue
             node = PageNode(
-                f"{doc_id}_p{p}", f"Page {p}", p, p, text, text[:200], 
+                f"{doc_id}_p{p}", f"Page {p}", p, p, text, text[:200],
                 3, doc_id=doc_id, _pdf_path=pdf_path
             )
             root.children.append(node)
@@ -544,7 +567,6 @@ class HierarchicalIndex:
         return min(candidates, key=lambda n: abs(n.page_start - page_hint))
 
     def _assign_node_ids(self, root: PageNode):
-        """Assign PageIndex-style node IDs: 0001, 0001.0001, etc."""
         def assign(node: PageNode, prefix: str = "", index: int = 1):
             if not prefix:
                 node.node_id = str(index).zfill(4)
@@ -577,29 +599,25 @@ class HierarchicalIndex:
 
 
 # ============================================================================
-# 6. FAST ASYNC INDEX BUILDER (PageIndex-Style LLM TOC)
+# 6. FAST ASYNC INDEX BUILDER (LLM TOC VALIDATION)
 # ============================================================================
 class FastHierarchicalIndex(HierarchicalIndex):
-    """Enhanced index builder with async LLM TOC validation and parallel processing."""
-    
     def __init__(self, cache_dir=".declarmima_cache", llm=None):
         super().__init__(cache_dir)
         self.llm = llm
-        self._page_cache = LRUCache(max_size=500, ttl=3600)
 
     async def build_from_pdfs_fast(self, files: List, max_workers: int = 4) -> Dict[str, PageNode]:
-        """Async parallel build with PageIndex-style LLM TOC extraction."""
         loop = asyncio.get_event_loop()
         
-        # Stage 1: Extract raw pages in process pool (CPU-bound)
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        # Stage 1: Extract raw pages using ThreadPoolExecutor (NOT ProcessPoolExecutor - avoids pickle issues)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 loop.run_in_executor(pool, self._extract_pages_raw, f)
                 for f in files
             ]
             raw_docs = await asyncio.gather(*futures)
         
-        # Stage 2: LLM-based TOC extraction for docs without clear TOC
+        # Stage 2: LLM-based TOC extraction
         if self.llm:
             toc_tasks = [
                 self._llm_extract_toc(doc_name, pages)
@@ -609,7 +627,7 @@ class FastHierarchicalIndex(HierarchicalIndex):
         else:
             toc_results = [{"has_toc": False, "headings_detected": []} for _ in raw_docs]
         
-        # Stage 3: Build trees from validated TOC
+        # Stage 3: Build trees
         trees = {}
         for (doc_name, pages), toc in zip(raw_docs, toc_results):
             tree = self._build_tree_from_toc(doc_name, pages, toc)
@@ -627,7 +645,6 @@ class FastHierarchicalIndex(HierarchicalIndex):
         return trees
 
     def _extract_pages_raw(self, file_obj) -> Tuple[str, List[Dict]]:
-        """Extract raw text per page - runs in process pool."""
         if hasattr(file_obj, 'getbuffer'):
             buf = BytesIO(file_obj.getbuffer())
             doc_name = file_obj.name
@@ -649,8 +666,6 @@ class FastHierarchicalIndex(HierarchicalIndex):
         return doc_name, pages
 
     async def _llm_extract_toc(self, doc_name: str, pages: List[Dict]) -> Dict[str, Any]:
-        """PageIndex-style TOC extraction with LLM validation."""
-        # Send first 5 pages to LLM to detect structure
         sample_text = "\n\n".join(p['text'][:1500] for p in pages[:5])
         
         prompt = f"""Analyze this document and extract its hierarchical structure.
@@ -679,7 +694,6 @@ Return ONLY valid JSON, no other text."""
         return {"has_toc": False, "headings_detected": [], "doc_type": "unknown"}
 
     def _extract_json_safe(self, text: str) -> Optional[Any]:
-        """Safely extract JSON from LLM response."""
         patterns = [
             r'\{.*\}',
             r'\[.*\]',
@@ -697,12 +711,11 @@ Return ONLY valid JSON, no other text."""
         return None
 
     def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
-        """Build tree from LLM-validated TOC or fallback to heading detection."""
         root = PageNode(
-            f"{doc_name}_root", 
-            toc.get("suggested_root_title", doc_name), 
+            f"{doc_name}_root",
+            toc.get("suggested_root_title", doc_name),
             1, len(pages), "",
-            f"Document {doc_name}", 0, 
+            f"Document {doc_name}", 0,
             doc_id=doc_name, node_id="0000"
         )
         
@@ -734,7 +747,6 @@ Return ONLY valid JSON, no other text."""
                     parent = self._find_parent(root, level - 1, node.page_start)
                     parent.children.append(node)
         else:
-            # Fallback: page-per-node
             for p in pages:
                 if not p['text'].strip():
                     continue
@@ -750,7 +762,6 @@ Return ONLY valid JSON, no other text."""
         return root
 
     async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
-        """Generate node summaries asynchronously using LLM."""
         all_nodes = []
         
         def collect_nodes(node: PageNode):
@@ -761,7 +772,6 @@ Return ONLY valid JSON, no other text."""
         for tree in trees.values():
             collect_nodes(tree)
         
-        # Generate summaries in batches
         batch_size = 5
         for i in range(0, len(all_nodes), batch_size):
             batch = all_nodes[i:i + batch_size]
@@ -776,7 +786,6 @@ Return ONLY valid JSON, no other text."""
                 await asyncio.gather(*tasks)
 
     async def _summarize_node(self, node: PageNode):
-        """Generate summary for a single node."""
         text = node.full_text[:3000]
         prompt = f"""Summarize this document section in one sentence (max 200 chars).
 Focus on key parameters, methods, and findings.
@@ -795,7 +804,6 @@ Summary:"""
             node.summary = text[:200]
 
     def _save_tree_fast(self, doc_name: str, tree: PageNode):
-        """Save tree using fast orjson serialization."""
         safe = re.sub(r'[^\w\-_.]', '_', doc_name)
         doc_hash = hashlib.sha256(doc_name.encode()).hexdigest()[:16]
         path = self.cache_dir / f"{safe}.{doc_hash}.tree.json"
@@ -865,9 +873,9 @@ class HybridLLM:
             messages.append({"role": "user", "content": prompt})
             
             resp = self.client.chat(
-                model=self.model_name, 
-                messages=messages, 
-                options=options, 
+                model=self.model_name,
+                messages=messages,
+                options=options,
                 stream=False
             )
             return resp.get("message", {}).get("content", "").strip()
@@ -891,10 +899,10 @@ class HybridLLM:
             
             with torch.no_grad():
                 outputs = self.model.generate(
-                    **inputs, 
-                    max_new_tokens=max_tokens, 
+                    **inputs,
+                    max_new_tokens=max_tokens,
                     temperature=temp if temp > 0 else None,
-                    do_sample=temp > 0, 
+                    do_sample=temp > 0,
                     pad_token_id=self.tokenizer.eos_token_id
                 )
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -912,12 +920,12 @@ class HybridLLM:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         model_kwargs = {
-            "trust_remote_code": True, 
+            "trust_remote_code": True,
             "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32
         }
         if self.use_4bit and self.device == "cuda":
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True, 
+                load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16
             )
         
@@ -929,16 +937,37 @@ class HybridLLM:
 
 
 # ============================================================================
-# 8. QUANTITATIVE KNOWLEDGE GRAPH (PageIndex-Style Annotation)
+# 8. QUANTITATIVE KNOWLEDGE GRAPH
 # ============================================================================
+class QuantityClassifier:
+    def classify(self, value, unit, context):
+        unit = unit.lower()
+        if "cm" in unit or "m2" in unit or "mm2" in unit:
+            return "irradiance"
+        if unit in ["w", "kw", "mw"]:
+            return "laser_power"
+        if OLLAMA_AVAILABLE:
+            try:
+                prompt = f"""Classify the quantity:
+Value: {value} {unit}
+Context: {context}
+Return ONLY one: laser_power OR irradiance OR unknown"""
+                resp = ollama.chat(
+                    model="llama3",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return resp['message']['content'].strip().lower()
+            except:
+                return "unknown"
+        return "unknown"
+
+
 class QuantitativeKnowledgeGraph:
-    """Stores extracted quantitative items in a PageIndex-navigable structure."""
-    
     def __init__(self):
         self.doc_graphs: Dict[str, Dict] = {}
+        self.classifier = QuantityClassifier()
     
     def add_extractions(self, doc_id: str, items: List[UniversalExtractionItem]):
-        """Group extractions by parameter type and attach to tree nodes."""
         graph = {
             "doc_id": doc_id,
             "parameters": defaultdict(list),
@@ -967,33 +996,26 @@ class QuantitativeKnowledgeGraph:
         self.doc_graphs[doc_id] = dict(graph)
     
     def get_parameter_across_docs(self, param_name: str) -> List[Dict]:
-        """Get all values for a parameter across all documents."""
         results = []
         param_key = param_name.lower()
         for doc_id, graph in self.doc_graphs.items():
             if param_key in graph["parameters"]:
                 for item in graph["parameters"][param_key]:
-                    results.append({
-                        **item,
-                        "doc_id": doc_id
-                    })
+                    results.append({**item, "doc_id": doc_id})
         return results
     
-    def to_pageindex_annotation(self, doc_tree: PageNode) -> Dict[str, Any]:
-        """Merge quantitative graph into PageIndex tree structure."""
+    def to_tree_annotation(self, doc_tree: PageNode) -> Dict[str, Any]:
         doc_id = doc_tree.doc_id
         graph = self.doc_graphs.get(doc_id, {})
         
         def annotate_node(node: PageNode) -> Dict[str, Any]:
-            result = node.to_pageindex_format()
+            result = node.to_tree_format()
             
-            # Attach quantitative items within this node's page range
             node_items = []
             end_page = node.page_end or node.page_start
             for page in range(node.page_start, end_page + 1):
                 node_items.extend(graph.get("by_page", {}).get(page, []))
             
-            # Deduplicate
             if node_items:
                 seen = set()
                 unique_items = []
@@ -1004,7 +1026,6 @@ class QuantitativeKnowledgeGraph:
                         unique_items.append(item)
                 result["quantitative_items"] = unique_items
             
-            # Recurse
             if node.children:
                 result["nodes"] = [annotate_node(c) for c in node.children]
             
@@ -1013,7 +1034,6 @@ class QuantitativeKnowledgeGraph:
         return annotate_node(doc_tree)
     
     def get_summary_stats(self, param_name: str) -> Dict[str, Any]:
-        """Get statistical summary of a parameter across documents."""
         items = self.get_parameter_across_docs(param_name)
         if not items:
             return {"count": 0, "documents": []}
@@ -1033,30 +1053,58 @@ class QuantitativeKnowledgeGraph:
             stats.update({
                 "min": min(values),
                 "max": max(values),
-                "mean": np.mean(values),
-                "std": np.std(values) if len(values) > 1 else 0
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)) if len(values) > 1 else 0
             })
         
         return stats
-
-
-# ============================================================================
-# 9. PAGEINDEX-STYLE LLM TREE RETRIEVER
-# ============================================================================
-class PageIndexStyleRetriever:
-    """LLM-powered tree navigation for quantitative retrieval."""
     
-    def __init__(self, llm: HybridLLM, max_results: int = 30):
+    def get_all_parameters(self) -> Dict[str, int]:
+        param_summary = {}
+        for doc_id, graph in self.doc_graphs.items():
+            for param in graph["parameters"]:
+                param_summary[param] = param_summary.get(param, 0) + len(graph["parameters"][param])
+        return param_summary
+    
+    def build_extracted_values(self, query: str) -> List[ExtractedValue]:
+        all_values = []
+        for doc_id, graph in self.doc_graphs.items():
+            for param_name, items in graph["parameters"].items():
+                if query.lower() in param_name.lower() or param_name.lower() in query.lower():
+                    for item in items:
+                        try:
+                            val = item.get("value", 0)
+                            if val == 0:
+                                continue
+                            unit = item.get("unit", "")
+                            qtype = self.classifier.classify(val, unit, item.get("context", ""))
+                            all_values.append(ExtractedValue(
+                                query=query,
+                                value=val,
+                                unit=unit,
+                                quantity_type=qtype,
+                                confidence=item.get("confidence", 0.7),
+                                context=item.get("context", "")[:300],
+                                doc_name=doc_id,
+                                page=item.get("page", 1),
+                                section_title=item.get("section_title")
+                            ))
+                        except:
+                            continue
+        return all_values
+
+
+# ============================================================================
+# 9. HIERARCHICAL TREE RETRIEVER (LLM-POWERED)
+# ============================================================================
+class HierarchicalTreeRetriever:
+    def __init__(self, llm: HybridLLM, max_results=30):
         self.llm = llm
         self.max_results = max_results
         self._condensed_cache: Dict[str, Dict] = {}
         self.template = llm.template if hasattr(llm, 'template') else MODEL_PROMPT_TEMPLATES["default"]
     
     async def retrieve_quantitative(self, query: str, annotated_trees: List[Dict]) -> List[Dict]:
-        """
-        PageIndex-style retrieval: LLM reasons over tree structure + quantitative annotations.
-        """
-        # Build condensed representations
         trees_json = []
         for tree in annotated_trees:
             doc_id = tree.get("doc_id", "unknown")
@@ -1064,7 +1112,6 @@ class PageIndexStyleRetriever:
                 self._condensed_cache[doc_id] = self._condense_tree(tree)
             trees_json.append(self._condensed_cache[doc_id])
         
-        # Batch trees to fit in context window
         batches = self._batch_trees(trees_json, max_tokens=6000)
         
         all_selections = []
@@ -1080,7 +1127,6 @@ class PageIndexStyleRetriever:
             selections = self._parse_node_selections(response)
             all_selections.extend(selections)
         
-        # Extract full nodes
         results = []
         for sel in sorted(all_selections, key=lambda x: x.get('confidence', 0), reverse=True):
             doc_id = sel.get('doc_id')
@@ -1102,7 +1148,6 @@ class PageIndexStyleRetriever:
         return results[:self.max_results]
     
     def _condense_tree(self, tree: Dict, max_depth: int = 3) -> Dict[str, Any]:
-        """Create LLM-friendly condensed tree with quantitative hints."""
         def condense(node: Dict, depth: int = 0) -> Dict[str, Any]:
             if depth > max_depth:
                 return {
@@ -1117,16 +1162,15 @@ class PageIndexStyleRetriever:
                 "summary": (node.get("summary", "") or "")[:150],
             }
             
-            # Add quantitative hints
             q_items = node.get("quantitative_items", [])
             if q_items:
                 params = list(set(
-                    item.get("parameter_name", "") 
-                    for item in q_items 
+                    item.get("parameter_name", "")
+                    for item in q_items
                     if item.get("parameter_name")
                 ))
                 if params:
-                    result["has_quantitative"] = params[:5]  # Limit hint size
+                    result["has_quantitative"] = params[:5]
             
             children = node.get("nodes", [])
             if children and depth < max_depth:
@@ -1141,7 +1185,6 @@ class PageIndexStyleRetriever:
         }
     
     def _batch_trees(self, trees: List[Dict], max_tokens: int = 6000) -> List[List[Dict]]:
-        """Group trees into batches that fit in LLM context."""
         batches = []
         current = []
         current_len = 0
@@ -1162,7 +1205,6 @@ class PageIndexStyleRetriever:
         return batches
     
     def _build_tree_search_prompt(self, query: str, trees: List[Dict]) -> str:
-        """Build prompt for LLM tree navigation."""
         trees_json = json.dumps(trees, ensure_ascii=False, indent=2)
         
         return f"""You are an expert scientific document navigator.
@@ -1187,7 +1229,7 @@ Return JSON:
     {{
       "doc_id": "document_name.pdf",
       "node_id": "0001.0002",
-      "reasoning": "This section discusses process parameters including laser power...",
+      "reasoning": "This section discusses process parameters...",
       "confidence": 0.95
     }}
   ]
@@ -1198,12 +1240,10 @@ Return JSON:
 Include up to {self.max_results} selections across all documents."""
     
     def _parse_node_selections(self, response: str) -> List[Dict]:
-        """Parse LLM response into node selections."""
         try:
             data = self._extract_json_safe(response)
             if data and isinstance(data, dict):
                 selections = data.get("selections", [])
-                # Validate required fields
                 valid = []
                 for s in selections:
                     if isinstance(s, dict) and "doc_id" in s and "node_id" in s:
@@ -1211,11 +1251,9 @@ Include up to {self.max_results} selections across all documents."""
                 return valid
         except Exception as e:
             logger.warning(f"Failed to parse selections: {e}")
-        
         return []
     
     def _extract_json_safe(self, text: str) -> Optional[Any]:
-        """Extract JSON from text."""
         patterns = [
             r'\{.*\}',
             r'\[.*\]',
@@ -1232,7 +1270,6 @@ Include up to {self.max_results} selections across all documents."""
         return None
     
     def _find_node_by_id(self, trees: List[Dict], doc_id: str, node_id: str) -> Optional[Dict]:
-        """Find node by ID in annotated trees."""
         for tree in trees:
             if tree.get("doc_id") == doc_id or tree.get("doc_name") == doc_id:
                 result = self._search_node_recursive(tree, node_id)
@@ -1251,7 +1288,7 @@ Include up to {self.max_results} selections across all documents."""
 
 
 # ============================================================================
-# 10. UNIVERSAL LLM EXTRACTOR (BATCH, JSON OUT, ANTI-HALLUCINATION)
+# 10. UNIVERSAL LLM EXTRACTOR
 # ============================================================================
 class UniversalLLMExtractor:
     EXTRACTION_PROMPT = """Extract information relevant to the query from these document sections.
@@ -1297,7 +1334,6 @@ STRICT RULES:
             doc = chunk["doc_id"]
             page = chunk["page_start"]
             
-            # Prefilter for quantitative queries
             if qa.get("query_type") == "quantitative" and not re.search(r'\d+', text):
                 continue
             
@@ -1326,7 +1362,6 @@ STRICT RULES:
             except Exception as e:
                 logger.error(f"Extraction error: {e}")
         
-        # Deduplicate and filter
         unique = {}
         for i in items:
             key = (i.content, i.doc_source, i.page)
@@ -1355,7 +1390,7 @@ STRICT RULES:
 
 
 # ============================================================================
-# 11. LLM REASONING SYNTHESIZER (Cross-Document Quantitative Analysis)
+# 11. LLM REASONING SYNTHESIZER
 # ============================================================================
 class LLMReasoningSynthesizer:
     REASONING_PROMPT = """You are an expert scientific analyst. Given extracted values and the user query, produce a comprehensive answer.
@@ -1428,14 +1463,12 @@ Use citations: <cite doc="filename.pdf" page="X"/>"""
             return "\n".join(lines)
 
     def synthesize_cross_document_quantitative(self, parameter: str, kg: QuantitativeKnowledgeGraph) -> str:
-        """Synthesize quantitative parameter across all documents."""
         stats = kg.get_summary_stats(parameter)
         items = kg.get_parameter_across_docs(parameter)
         
         if not items:
             return f"No data found for parameter '{parameter}' across documents."
         
-        # Build values text
         values_lines = []
         for item in items:
             doc = item.get("doc_id", "unknown")
@@ -1462,7 +1495,6 @@ Use citations: <cite doc="filename.pdf" page="X"/>"""
             return self._fallback_synthesis(parameter, stats, items)
     
     def _fallback_synthesis(self, parameter: str, stats: Dict, items: List[Dict]) -> str:
-        """Fallback when LLM synthesis fails."""
         lines = [
             f"## Cross-Document Analysis: {parameter}",
             "",
@@ -1491,10 +1523,53 @@ Use citations: <cite doc="filename.pdf" page="X"/>"""
             lines.append(f"- {doc} (p.{page}): {val} {unit}")
         
         return "\n".join(lines)
+    
+    def generate_human_conclusion(self, query: str, report: QueryReport) -> str:
+        """Generate a human-readable conclusion from extracted values."""
+        values = report.all_values
+        if not values:
+            return f"No quantitative data found for '{query}' across the analyzed documents."
+        
+        # Group by quantity type
+        by_type = defaultdict(list)
+        for v in values:
+            by_type[v.quantity_type].append(v)
+        
+        lines = [
+            f"## Summary: {query.title()}",
+            "",
+            f"Across **{report.total_docs}** documents analyzed, **{report.docs_with_results}** contained relevant quantitative data.",
+            f"Total extracted values: **{len(values)}**.",
+            ""
+        ]
+        
+        for qtype, vals in by_type.items():
+            lines.append(f"### {qtype.replace('_', ' ').title()} ({len(vals)} values)")
+            
+            # Statistics
+            nums = [v.value for v in vals]
+            units = list(set(v.unit for v in vals))
+            docs = list(set(v.doc_name for v in vals))
+            
+            if nums:
+                lines.append(f"- **Range**: {min(nums):.2f} to {max(nums):.2f} {units[0] if units else ''}")
+                lines.append(f"- **Average**: {np.mean(nums):.2f}")
+                if len(nums) > 1:
+                    lines.append(f"- **Std Dev**: {np.std(nums):.2f}")
+            
+            lines.append(f"- **Found in**: {', '.join(docs[:3])}{'...' if len(docs) > 3 else ''}")
+            lines.append("")
+        
+        # Top values table
+        lines.append("### Key Values by Document")
+        for v in sorted(values, key=lambda x: x.confidence, reverse=True)[:8]:
+            lines.append(f"| {v.doc_name} | p.{v.page} | {v.value:.2f} {v.unit} | {v.quantity_type} |")
+        
+        return "\n".join(lines)
 
 
 # ============================================================================
-# 12. STREAMLIT UI (PageIndex-Style with Quantitative Dashboard)
+# 12. STREAMLIT UI
 # ============================================================================
 def render_sidebar():
     with st.sidebar:
@@ -1515,7 +1590,7 @@ def render_sidebar():
         st.checkbox("🗜️ Use 4-bit quantization (if Transformers fallback)", value=True, key="use_4bit")
         st.slider("Confidence threshold", 0.3, 0.9, 0.55, 0.05, key="min_confidence")
         st.checkbox("Show reasoning trace", value=True, key="show_trace")
-        st.checkbox("Show PageIndex tree navigation", value=True, key="show_tree_nav")
+        st.checkbox("Show tree navigation", value=True, key="show_tree_nav")
         st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
 
 @st.cache_resource(show_spinner="Initializing LLM...")
@@ -1525,11 +1600,10 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
 
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v8 - PageIndex RAG", layout="wide")
-    st.markdown("# 🔬 DECLARMIMA v8.0-PAGEINDEX")
-    st.caption("Vectorless hierarchical RAG with PageIndex-style tree navigation and LLM-powered quantitative reasoning")
+    st.set_page_config(page_title="DECLARMIMA v12 - Vectorless RAG", layout="wide")
+    st.markdown("# 🔬 DECLARMIMA v12.0-VECTORLESS")
+    st.caption("Hierarchical tree navigation with LLM-powered quantitative reasoning")
 
-    # Session state init
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "query_processor" not in st.session_state:
@@ -1541,32 +1615,28 @@ def run_streamlit():
     
     render_sidebar()
 
-    # --- FILE UPLOAD SECTION ---
     uploaded_files = st.file_uploader(
-        "Upload PDF files", 
-        type="pdf", 
+        "Upload PDF files",
+        type="pdf",
         accept_multiple_files=True,
-        help="Files are processed with PageIndex-style LLM TOC extraction and async parallel indexing"
+        help="Files are processed with LLM TOC extraction and async parallel indexing"
     )
     
-    if uploaded_files and st.button("🚀 Build PageIndex", type="primary"):
+    if uploaded_files and st.button("🚀 Build Index", type="primary"):
         st.session_state.query_processor["files"] = uploaded_files
         st.success(f"{len(uploaded_files)} files registered.")
         st.rerun()
 
-    # --- INDEX BUILDING & PROCESSING ---
     if st.session_state.query_processor.get("files") and not st.session_state.annotated_trees:
-        with st.spinner("Building PageIndex with async LLM TOC extraction..."):
+        with st.spinner("Building hierarchical index with async LLM TOC extraction..."):
             progress = st.progress(0)
             
-            # Initialize LLM
             llm = get_cached_llm(
-                st.session_state.llm_model_choice, 
+                st.session_state.llm_model_choice,
                 st.session_state.get("use_4bit", True)
             )
             progress.progress(0.1)
             
-            # Fast async build
             idx = FastHierarchicalIndex(llm=llm)
             
             async def build_index():
@@ -1580,7 +1650,6 @@ def run_streamlit():
             st.session_state.query_processor["doc_trees"] = trees
             progress.progress(0.5)
             
-            # Extract quantitative data
             extractor = UniversalLLMExtractor(llm)
             kg = QuantitativeKnowledgeGraph()
             
@@ -1602,10 +1671,8 @@ def run_streamlit():
                         collect_leaves(c)
                 
                 collect_leaves(tree)
-                
-                # Extract with progress
                 items = extractor.extract_from_chunks(
-                    leaf_texts, 
+                    leaf_texts,
                     "extract all quantitative parameters, materials, methods, and process conditions"
                 )
                 all_items.extend(items)
@@ -1614,10 +1681,9 @@ def run_streamlit():
             st.session_state.knowledge_graph = kg
             progress.progress(0.8)
             
-            # Create annotated trees for PageIndex retrieval
             annotated = []
             for doc_name, tree in trees.items():
-                ann = kg.to_pageindex_annotation(tree)
+                ann = kg.to_tree_annotation(tree)
                 ann["doc_id"] = doc_name
                 ann["doc_name"] = doc_name
                 annotated.append(ann)
@@ -1627,13 +1693,8 @@ def run_streamlit():
             
             st.success(f"✅ Indexed {len(trees)} documents with {len(all_items)} quantitative items")
             
-            # Show parameter summary
             with st.expander("📊 Detected Parameters", expanded=True):
-                param_summary = {}
-                for doc_id, graph in kg.doc_graphs.items():
-                    for param in graph["parameters"]:
-                        param_summary[param] = param_summary.get(param, 0) + len(graph["parameters"][param])
-                
+                param_summary = kg.get_all_parameters()
                 if param_summary:
                     st.write("**Parameters found across documents:**")
                     for param, count in sorted(param_summary.items(), key=lambda x: x[1], reverse=True)[:10]:
@@ -1641,20 +1702,17 @@ def run_streamlit():
                 else:
                     st.write("No quantitative parameters detected yet.")
 
-    # --- CHAT INTERFACE ---
     if st.session_state.annotated_trees:
-        # Quick parameter query buttons
         st.markdown("### ⚡ Quick Queries")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         quick_params = ["laser power", "scan speed", "temperature", "energy density"]
         for i, param in enumerate(quick_params):
-            with [col1, col2, col3][i % 3]:
+            with [col1, col2, col3, col4][i]:
                 if st.button(f"📈 {param.title()}", key=f"quick_{param}"):
                     st.session_state.quick_query = f"What is the {param} discussed in these papers?"
                     st.rerun()
         
-        # Chat input
         default_query = st.session_state.get("quick_query", "")
         prompt = st.chat_input(
             "Ask about any term, value, or concept across documents...",
@@ -1681,24 +1739,21 @@ def run_streamlit():
                 )
                 progress.progress(0.15)
                 
-                # Determine query type
                 query_lower = prompt.lower()
                 is_parameter_query = any(
-                    kw in query_lower for kw in 
-                    ["laser power", "scan speed", "temperature", "energy density", 
+                    kw in query_lower for kw in
+                    ["laser power", "scan speed", "temperature", "energy density",
                      "parameter", "value", "what is the", "how much"]
                 )
                 
-                # Use PageIndex-style retriever
                 progress.text("Reasoning over document trees...")
-                retriever = PageIndexStyleRetriever(llm, max_results=30)
+                retriever = HierarchicalTreeRetriever(llm, max_results=30)
                 
                 retrieved = asyncio.run(
                     retriever.retrieve_quantitative(prompt, st.session_state.annotated_trees)
                 )
                 progress.progress(0.4)
                 
-                # Extract from retrieved nodes
                 progress.text("Extracting values with LLM...")
                 extractor = UniversalLLMExtractor(llm)
                 items = []
@@ -1706,18 +1761,14 @@ def run_streamlit():
                     chunk_items = extractor.extract_from_chunks([r], prompt)
                     items.extend(chunk_items)
                 
-                # Filter by confidence
                 min_conf = st.session_state.get("min_confidence", 0.55)
                 items = [i for i in items if i.confidence >= min_conf]
                 progress.progress(0.6)
                 
-                # Synthesize answer
                 progress.text("Synthesizing cross-document answer...")
                 synthesizer = LLMReasoningSynthesizer(llm)
                 
-                # Check if this is a known parameter query
                 if is_parameter_query:
-                    # Try to extract parameter name
                     for param in ["laser power", "scan speed", "temperature", "energy density"]:
                         if param in query_lower:
                             answer = synthesizer.synthesize_cross_document_quantitative(
@@ -1732,9 +1783,60 @@ def run_streamlit():
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
                 
+                # TABLE + JSON DISPLAY TOGGLE
+                st.markdown("---")
+                st.subheader("📊 Quantitative Results")
+                
+                display_mode = st.radio(
+                    "Display format",
+                    ["Table", "JSON", "Human Summary"],
+                    horizontal=True,
+                    key="display_mode"
+                )
+                
+                # Build extracted values from knowledge graph
+                kg = st.session_state.knowledge_graph
+                extracted_values = []
+                for param in ["laser power", "scan speed", "temperature", "energy density"]:
+                    if param in query_lower:
+                        extracted_values = kg.build_extracted_values(param)
+                        break
+                
+                if display_mode == "Table" and extracted_values:
+                    import pandas as pd
+                    df_data = []
+                    for v in extracted_values:
+                        df_data.append({
+                            "Document": v.doc_name,
+                            "Page": v.page,
+                            "Value": f"{v.value:.2f}",
+                            "Unit": v.unit,
+                            "Type": v.quantity_type,
+                            "Confidence": f"{v.confidence:.2f}",
+                            "Context": v.context[:100] + "..."
+                        })
+                    st.dataframe(df_data, use_container_width=True)
+                    
+                elif display_mode == "JSON" and extracted_values:
+                    st.json([v.model_dump() for v in extracted_values])
+                    
+                elif display_mode == "Human Summary" and extracted_values:
+                    report = QueryReport(
+                        query=prompt,
+                        total_docs=len(st.session_state.annotated_trees),
+                        docs_with_results=len(set(v.doc_name for v in extracted_values)),
+                        all_values=extracted_values,
+                        consensus=kg.get_summary_stats(
+                            next(p for p in ["laser power", "scan speed", "temperature", "energy density"] if p in query_lower)
+                        ) if any(p in query_lower for p in ["laser power", "scan speed", "temperature", "energy density"]) else {},
+                        processing_time_sec=0.0
+                    )
+                    conclusion = synthesizer.generate_human_conclusion(prompt, report)
+                    st.markdown(conclusion)
+                
                 # Show tree navigation trace
                 if st.session_state.get("show_tree_nav") and retrieved:
-                    with st.expander("🌳 PageIndex Navigation Trace", expanded=False):
+                    with st.expander("🌳 Tree Navigation Trace", expanded=False):
                         for r in retrieved[:5]:
                             st.markdown(
                                 f"**{r['doc_id']}** → `{r['section_title']}` "
@@ -1749,11 +1851,11 @@ def run_streamlit():
                     with st.expander("🔍 Extracted Items (Raw)", expanded=False):
                         st.json([i.to_dict() for i in items[:10]])
                 
-                # Show knowledge graph stats
+                # Statistics
                 if is_parameter_query:
                     for param in ["laser power", "scan speed", "temperature", "energy density"]:
                         if param in query_lower:
-                            stats = st.session_state.knowledge_graph.get_summary_stats(param)
+                            stats = kg.get_summary_stats(param)
                             if stats.get("count", 0) > 0:
                                 with st.expander(f"📊 {param.title()} Statistics", expanded=False):
                                     cols = st.columns(4)
@@ -1764,7 +1866,7 @@ def run_streamlit():
                                         cols[3].metric("Max", f"{stats['max']:.2f}")
                                         st.write(f"**Mean**: {stats['mean']:.2f} | **Std**: {stats['std']:.2f}")
                 
-                # Download report
+                # Download buttons
                 report = CrossDocumentQueryReport(
                     query=prompt,
                     total_documents=len(st.session_state.annotated_trees),
@@ -1781,8 +1883,7 @@ def run_streamlit():
                         "application/json"
                     )
                 with col_dl2:
-                    # PageIndex-compatible export
-                    pageindex_export = {
+                    tree_export = {
                         "query": prompt,
                         "annotated_trees": st.session_state.annotated_trees,
                         "retrieved_nodes": retrieved,
@@ -1790,15 +1891,14 @@ def run_streamlit():
                         "answer": answer
                     }
                     st.download_button(
-                        "📥 Download PageIndex Export",
-                        json.dumps(pageindex_export, indent=2, ensure_ascii=False, default=str),
-                        "pageindex_report.json",
+                        "📥 Download Tree Export",
+                        json.dumps(tree_export, indent=2, ensure_ascii=False, default=str),
+                        "tree_report.json",
                         "application/json"
                     )
                 
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             
-            # Cleanup
             if "index" in st.session_state.query_processor:
                 st.session_state.query_processor["index"].cleanup()
 

@@ -1331,13 +1331,10 @@ class HybridLLM:
         if EXLLAMA_AVAILABLE: available.append("exllamav2")
 
         raise RuntimeError(
-            f"❌ No LLM backend could be initialized.
-"
-            f"Available in env: {available}
-"
-            f"Requested: {self.model_key}
-"
-            f"Fix: 1) Run 'ollama serve' for Ollama, or 2) Ensure transformers is installed."
+            "❌ No LLM backend could be initialized.\n"
+            f"Available in env: {available}\n"
+            f"Requested: {self.model_key}\n"
+            "Fix: 1) Run 'ollama serve' for Ollama, or 2) Ensure transformers is installed."
         )
 
     def generate(self, prompt: str, max_new_tokens: int = 512, 

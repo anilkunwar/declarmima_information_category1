@@ -69,6 +69,7 @@ import numpy as np
 import pandas as pd
 import torch
 import threading
+import requests  # REQUIRED for Ollama health checks & API calls
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -1273,289 +1274,164 @@ class HierarchicalPDFIndex:
 # =====================================================================
 class HybridLLM:
     """
-    Unified LLM client with fallback chain:
-    Ollama → ExLlamaV2 → Transformers
-    
-    Features:
-    - Response caching with TTL
-    - Batch generation support
-    - Fast JSON mode for structured outputs
-    - Timeout protection
-    - Automatic backend detection
+    Unified LLM client with automatic fallback: Ollama -> Transformers.
+    Designed for reliability: lazy-loads models, verifies connections, 
+    and never crashes the app on missing dependencies.
     """
-    
-    def __init__(self, model_name: str = None, use_ollama: bool = True, 
-                 use_exllama: bool = False, use_transformers: bool = True,
-                 cache_responses: bool = True):
-        self.model_name = model_name or "qwen2.5:7b-instruct-q4_K_M"
-        self.use_ollama = use_ollama and OLLAMA_AVAILABLE
-        self.use_exllama = use_exllama and EXLLAMA_AVAILABLE
-        self.use_transformers = use_transformers and TRANSFORMERS_AVAILABLE
-        self.cache_responses = cache_responses and app_config.get("cache_llm_responses", True)
-        
-        self.backend: Optional[str] = None
-        self.ollama_client: Optional[Any] = None
-        self.exllama_model: Optional[Any] = None
-        self.transformers_tokenizer: Optional[Any] = None
-        self.transformers_model: Optional[Any] = None
-        self.device: str = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        self._response_cache = ResponseCache(
-            max_size=500, 
-            ttl_seconds=app_config.get("cache_ttl_minutes", 60) * 60
-        ) if self.cache_responses else None
-        
+    def __init__(self, model_key: str = None, use_4bit: bool = True):
+        self.model_key = model_key or "ollama:qwen2.5:7b-instruct-q4_K_M"
+        self.use_4bit = use_4bit
+        self.backend = None
+        self.model_name = None
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.client = None  # Ollama client
+        self.tokenizer = None
+        self.model = None
+
+        # Clean model name from UI dropdown keys
+        if self.model_key.startswith("[Ollama]"):
+            self.model_name = self.model_key.split("] ")[1].strip()
+        elif self.model_key.startswith("ollama:"):
+            self.model_name = self.model_key.replace("ollama:", "", 1)
+        else:
+            self.model_name = LOCAL_LLM_OPTIONS.get(self.model_key, self.model_key)
+
         self._init_backend()
-    
+
     def _init_backend(self):
-        """Initialize the first available backend."""
-        # Try Ollama first (fastest setup, best for RTX 5080)
-        if self.use_ollama:
+        """Dynamically detect and initialize the first available backend."""
+
+        # 1. Try Ollama (using the ollama library directly, no requests needed)
+        if OLLAMA_AVAILABLE:
             try:
-                resp = requests.get("http://localhost:11434/api/tags", timeout=5)
-                if resp.status_code == 200:
-                    self.backend = "ollama"
-                    self.ollama_client = ollama.Client(host="http://localhost:11434")
-                    logger.info(f"✅ Using Ollama backend with model: {self.model_name}")
-                    return
-            except Exception as e:
-                logger.warning(f"⚠️ Ollama not available: {e}")
-        
-        # Try ExLlamaV2 (fastest for consumer NVIDIA GPUs)
-        if self.use_exllama:
-            try:
-                # ExLlamaV2 requires pre-converted model
-                model_dir = os.path.expanduser(f"~/.exllama/{self.model_name.replace('/', '_')}")
-                if os.path.exists(model_dir):
-                    self.backend = "exllama"
-                    logger.info(f"✅ Using ExLlamaV2 backend: {model_dir}")
-                    return
-            except Exception as e:
-                logger.warning(f"⚠️ ExLlamaV2 not available: {e}")
-        
-        # Fallback to Transformers
-        if self.use_transformers:
-            try:
-                self.backend = "transformers"
-                logger.info(f"✅ Using Transformers backend: {self.model_name}")
+                # Use ollama.list() to check if server is responsive
+                ollama.list()
+                self.backend = "ollama"
+                self.client = ollama.Client(host="http://localhost:11434")
+                logger.info(f"✅ Ollama backend initialized: {self.model_name}")
                 return
             except Exception as e:
-                logger.warning(f"⚠️ Transformers not available: {e}")
-        
-        logger.error("❌ No LLM backend available")
-        raise RuntimeError("No LLM backend could be initialized")
-    
-    def _generate_cache_key(self, prompt: str, params: Dict) -> str:
-        """Generate cache key from prompt and parameters."""
-        key_data = f"{prompt}|{json.dumps(params, sort_keys=True, default=str)}"
-        return hashlib.sha256(key_data.encode()).hexdigest()[:16]
-    
-    def generate(self, prompt: str, max_new_tokens: int = 512, 
-                 temperature: float = 0.1, fast_json: bool = False,
-                 cache: bool = True) -> str:
-        """Generate response with caching and fast JSON mode."""
-        
-        # Cache lookup
-        if cache and self._response_cache:
-            cache_key = self._generate_cache_key(prompt, {
-                "max_tokens": max_new_tokens,
-                "temperature": temperature,
-                "fast_json": fast_json
-            })
-            cached = self._response_cache.get(prompt, {
-                "max_tokens": max_new_tokens,
-                "temperature": temperature,
-                "fast_json": fast_json
-            })
-            if cached:
-                logger.debug(f"✅ Cache hit for prompt hash {cache_key[:8]}")
-                return cached
-        
-        # Generate based on backend
-        if self.backend == "ollama":
-            result = self._ollama_generate(prompt, max_new_tokens, temperature, fast_json)
-        elif self.backend == "exllama":
-            result = self._exllama_generate(prompt, max_new_tokens, temperature)
-        else:
-            result = self._transformers_generate(prompt, max_new_tokens, temperature)
-        
-        # Cache result
-        if cache and self._response_cache:
-            self._response_cache.set(prompt, {
-                "max_tokens": max_new_tokens,
-                "temperature": temperature,
-                "fast_json": fast_json
-            }, result)
-        
-        return result
-    
-    def _ollama_generate(self, prompt: str, max_tokens: int, temp: float, fast_json: bool) -> str:
-        """Generate via Ollama API."""
-        try:
-            options = {
-                "temperature": temp,
-                "num_predict": max_tokens,
-                "top_p": 0.9,
-                "repeat_penalty": 1.1,
-            }
-            
-            # Fast JSON mode: greedy decoding + stop tokens
-            if fast_json:
-                options.update({
-                    "temperature": 0.0,
-                    "stop": ["```", "</code>", "JSON OUTPUT:", "]\n\n"]
-                })
-            
-            response = self.ollama_client.generate(
-                model=self.model_name,
-                prompt=prompt,
-                stream=False,
-                options=options,
-                format="json" if fast_json else None
-            )
-            return response["response"].strip()
-            
-        except requests.Timeout:
-            logger.warning(f"⏰ Ollama timeout for prompt: {prompt[:100]}...")
-            return '{"measurements": []}'
-        except Exception as e:
-            logger.error(f"Ollama error: {e}")
-            # Auto-fallback to transformers
-            if self.backend != "transformers":
+                logger.debug(f"Ollama check skipped: {e}")
+
+        # 2. Fallback to Transformers
+        if TRANSFORMERS_AVAILABLE:
+            try:
                 self.backend = "transformers"
-                return self._transformers_generate(prompt, max_tokens, temp)
-            return '{"measurements": []}'
-    
-    def _exllama_generate(self, prompt: str, max_tokens: int, temp: float) -> str:
-        """Generate via ExLlamaV2 (placeholder - requires model conversion)."""
-        # ExLlamaV2 implementation would go here
-        # For now, fallback to transformers
-        logger.warning("⚠️ ExLlamaV2 not fully implemented, falling back to transformers")
-        self.backend = "transformers"
-        return self._transformers_generate(prompt, max_tokens, temp)
-    
-    def _transformers_generate(self, prompt: str, max_tokens: int, temp: float) -> str:
-        """Generate via Transformers with 4-bit quantization support."""
+                logger.info(f"✅ Transformers backend selected: {self.model_name} | Device: {self.device}")
+                # NOTE: We lazy-load the actual model/tokenizer on first generate() call
+                # to avoid 30-60s startup delay during Streamlit cache initialization.
+                return
+            except Exception as e:
+                logger.warning(f"Transformers init failed: {e}")
+
+        # 3. Critical failure diagnostics
+        available = []
+        if OLLAMA_AVAILABLE: available.append("ollama")
+        if TRANSFORMERS_AVAILABLE: available.append("transformers")
+        if EXLLAMA_AVAILABLE: available.append("exllamav2")
+
+        raise RuntimeError(
+            f"❌ No LLM backend could be initialized.
+"
+            f"Available in env: {available}
+"
+            f"Requested: {self.model_key}
+"
+            f"Fix: 1) Run 'ollama serve' for Ollama, or 2) Ensure transformers is installed."
+        )
+
+    def generate(self, prompt: str, max_new_tokens: int = 512, 
+                 temperature: float = 0.1, fast_json: bool = False) -> str:
+        """Generate response with lazy-loading for Transformers."""
+        if self.backend == "ollama":
+            return self._ollama_generate(prompt, max_new_tokens, temperature, fast_json)
+        elif self.backend == "transformers":
+            # Lazy load on first call
+            if self.tokenizer is None:
+                self._load_transformers_model()
+            return self._transformers_generate(prompt, max_new_tokens, temperature)
+        else:
+            return "Error: Backend not initialized."
+
+    def _load_transformers_model(self):
+        """Load model/tokenizer with 4-bit quantization if requested."""
+        logger.info(f"⏳ Loading {self.model_name} on {self.device}...")
+
         try:
-            # Lazy load model if not already loaded
-            if self.transformers_tokenizer is None:
-                self.transformers_tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name, trust_remote_code=True, padding_side="left"
-                )
-                if self.transformers_tokenizer.pad_token is None:
-                    self.transformers_tokenizer.pad_token = self.transformers_tokenizer.eos_token
-                
-                # Quantization config for 4-bit
-                quantization_config = None
-                if self.device == "cuda" and app_config.get("use_4bit", True):
-                    try:
-                        quantization_config = BitsAndBytesConfig(
-                            load_in_4bit=True,
-                            bnb_4bit_compute_dtype=torch.float16,
-                            bnb_4bit_use_double_quant=True,
-                            bnb_4bit_quant_type="nf4",
-                        )
-                    except ImportError:
-                        logger.warning("⚠️ bitsandbytes not installed, using FP16")
-                
-                model_kwargs = {
-                    "trust_remote_code": True,
-                    "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
-                }
-                if quantization_config:
-                    model_kwargs["quantization_config"] = quantization_config
-                if self.device == "cuda":
-                    model_kwargs["device_map"] = "auto"
-                
-                self.transformers_model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name, **model_kwargs
-                )
-                if "device_map" not in model_kwargs and self.device == "cpu":
-                    self.transformers_model = self.transformers_model.to(self.device)
-                self.transformers_model.eval()
-            
-            # Format prompt for chat models
-            if "Qwen" in self.model_name or "qwen" in self.model_name.lower():
-                messages = [
-                    {"role": "system", "content": "You are an expert scientific research assistant."},
-                    {"role": "user", "content": prompt}
-                ]
-                formatted = self.transformers_tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-            elif "Llama" in self.model_name or "llama" in self.model_name.lower():
-                messages = [
-                    {"role": "system", "content": "You are an expert scientific research assistant."},
-                    {"role": "user", "content": prompt}
-                ]
-                formatted = self.transformers_tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name, trust_remote_code=True, padding_side="left"
+            )
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+
+            model_kwargs = {
+                "trust_remote_code": True,
+                "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+            }
+
+            # 4-bit quantization for consumer GPUs
+            if self.use_4bit and self.device == "cuda":
+                try:
+                    model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
+                    )
+                    logger.info("🗜️ 4-bit quantization enabled")
+                except Exception as e:
+                    logger.warning(f"⚠️ bitsandbytes failed, falling back to FP16: {e}")
+
+            if self.device == "cuda":
+                model_kwargs["device_map"] = "auto"
+
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+            if "device_map" not in model_kwargs and self.device == "cpu":
+                self.model = self.model.to(self.device)
+            self.model.eval()
+            logger.info(f"✅ Transformers model loaded: {self.model_name}")
+        except Exception as e:
+            logger.error(f"❌ Transformers model loading failed: {e}")
+            raise
+
+    def _ollama_generate(self, prompt: str, max_tokens: int, temp: float, fast_json: bool) -> str:
+        try:
+            options = {"temperature": temp, "num_predict": max_tokens, "top_p": 0.9}
+            if fast_json:
+                options.update({"temperature": 0.0, "stop": ["```", "</code>"]})
+
+            response = self.client.generate(
+                model=self.model_name, prompt=prompt, stream=False,
+                options=options, format="json" if fast_json else None
+            )
+            return response.get("response", "").strip()
+        except Exception as e:
+            logger.error(f"Ollama generation error: {e}")
+            return f"Ollama error: {str(e)[:100]}"
+
+    def _transformers_generate(self, prompt: str, max_tokens: int, temp: float) -> str:
+        try:
+            if "Qwen" in self.model_name or "Llama" in self.model_name or "Mistral" in self.model_name:
+                messages = [{"role": "system", "content": "You are an expert scientific assistant."}, 
+                           {"role": "user", "content": prompt}]
+                formatted = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             else:
                 formatted = prompt
-            
-            # Tokenize and generate
-            inputs = self.transformers_tokenizer.encode(
-                formatted, return_tensors='pt', truncation=True, max_length=2048
-            )
-            if self.device == "cuda" and torch.cuda.is_available():
-                inputs = inputs.to('cuda')
-            
+
+            inputs = self.tokenizer.encode(formatted, return_tensors="pt", truncation=True, max_length=2048)
+            if self.device == "cuda": inputs = inputs.to("cuda")
+
             with torch.no_grad():
-                outputs = self.transformers_model.generate(
-                    inputs,
-                    max_new_tokens=max_tokens,
-                    temperature=temp,
-                    do_sample=(temp > 0),
-                    pad_token_id=self.transformers_tokenizer.eos_token_id,
-                    eos_token_id=self.transformers_tokenizer.eos_token_id,
-                    no_repeat_ngram_size=3,
-                    early_stopping=True
+                outputs = self.model.generate(
+                    inputs, max_new_tokens=max_tokens, temperature=temp,
+                    do_sample=(temp > 0), pad_token_id=self.tokenizer.eos_token_id,
+                    no_repeat_ngram_size=3, early_stopping=True
                 )
-            
-            full_text = self.transformers_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract answer after [/INST] or similar
-            if "[/INST]" in full_text:
-                answer = full_text.split("[/INST]")[-1].strip()
-            else:
-                answer = full_text[-max_tokens*2:].strip()
-            
+            full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            answer = full_text.split("[/INST]")[-1].strip() if "[/INST]" in full_text else full_text[-max_tokens*2:].strip()
             return re.sub(r'\s+', ' ', answer).strip()
-            
         except Exception as e:
             logger.error(f"Transformers generation error: {e}")
-            return f"Error: {str(e)[:200]}..."
-    
-    def batch_generate(self, prompts: List[str], max_tokens: int = 256,
-                       temperature: float = 0.1, fast_json: bool = True) -> List[str]:
-        """Batch generate multiple prompts (parallel for Ollama)."""
-        if self.backend == "ollama":
-            # Ollama doesn't support true batching, but we can parallelize
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                results = list(executor.map(
-                    lambda p: self.generate(p, max_tokens, temperature, fast_json),
-                    prompts
-                ))
-            return results
-        else:
-            # Sequential for other backends
-            return [self.generate(p, max_tokens, temperature, fast_json) for p in prompts]
-    
-    def health_check(self) -> bool:
-        """Quick check if backend is responsive."""
-        if self.backend == "ollama":
-            try:
-                resp = requests.get("http://localhost:11434/api/tags", timeout=5)
-                return resp.status_code == 200
-            except:
-                return False
-        return True  # Assume other backends are OK if loaded
+            return f"Generation error: {str(e)[:100]}"
 
-
-# =====================================================================
-# SECTION 10: FAST HYBRID RETRIEVER (KEYWORD + LLM NAVIGATION)
-# =====================================================================
 class FastHybridRetriever:
     """
     LLM-powered router with keyword-based fallback for faster simple queries.
@@ -2378,28 +2254,24 @@ def render_performance_metrics(timing: Dict[str, float]):
 # =====================================================================
 # SECTION 15: MAIN APPLICATION LOGIC
 # =====================================================================
-@st.cache_resource
+@st.cache_resource(show_spinner="Initializing LLM backend...")
 def get_cached_llm(model_choice: str, use_4bit: bool = True) -> HybridLLM:
-    """Cache LLM instance across Streamlit reruns."""
-    # Extract model name
+    """Cache LLM instance across Streamlit reruns. Handles UI model keys safely."""
+    # Normalize UI dropdown value to clean model key
+    clean_key = model_choice
     if model_choice.startswith("[Ollama]"):
-        model_name = model_choice.split("] ")[1].strip()
-        return HybridLLM(
-            model_name=model_name,
-            use_ollama=True,
-            use_exllama=False,
-            use_transformers=False,
-            cache_responses=True
-        )
-    else:
-        model_name = LOCAL_LLM_OPTIONS.get(model_choice, model_choice)
-        return HybridLLM(
-            model_name=model_name,
-            use_ollama=False,
-            use_exllama=False,
-            use_transformers=True,
-            cache_responses=True
-        )
+        clean_key = f"ollama:{model_choice.split('] ')[1].strip()}"
+    elif ":" in model_choice and "/" in model_choice:
+        clean_key = model_choice  # Already HF format
+        
+    try:
+        return HybridLLM(model_key=clean_key, use_4bit=use_4bit)
+    except RuntimeError as e:
+        st.error(str(e))
+        st.stop()
+    except Exception as e:
+        st.error(f"Unexpected LLM init error: {e}")
+        st.stop()
 
 
 def main():

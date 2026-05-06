@@ -159,7 +159,7 @@ V42-v54: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v53.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval53.streamlit.app/) (v49 that works in local computer, Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v54.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval54.streamlit.app/) (v49 that works in local computer, Table and JSON, distinguishes laser power and irradiance,  Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v54.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval54.streamlit.app/) (v49 that works in local computer, Table and JSON format,  Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
 V55- : Vectorless Reasoning Based RAG and Parallelization (No Series)
 

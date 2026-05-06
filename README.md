@@ -149,7 +149,7 @@ V42-v52: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v48.0-orange)](https://vectorless-reasoning-rag-information-retrieval48.streamlit.app/) (Excellent qualitative and quantitative reasoning, Finds better but still not inferring)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v49.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval49.streamlit.app/) (Laser power specific RAG, Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v49.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval49.streamlit.app/) (Laser power specific RAG, only works  in streamlit cloud, Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v51.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval50.streamlit.app/) (   Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
@@ -157,8 +157,9 @@ V42-v52: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v52.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval52.streamlit.app/) (Laser power specific RAG, Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v53.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval49.streamlit.app/) (v49 that works in local computer, Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
-V53- : Vectorless Reasoning Based RAG and Parallelization (No Series)
+V55- : Vectorless Reasoning Based RAG and Parallelization (No Series)
 
 
 

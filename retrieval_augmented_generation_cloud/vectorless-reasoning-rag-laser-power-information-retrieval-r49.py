@@ -1,15 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v7.0-OMNISCIENT-FINAL
-=================================
-Vectorless hierarchical RAG for precise extraction of any quantitative value.
-Examples: laser power, scan speed, temperature, pressure.
-
-Outputs JSON with exact citations and cross‑document consensus.
-Zero false positives: rejects 0.0, nonsense units, and out‑of‑context numbers.
-
-FIXED: Runs Streamlit UI automatically when no CLI arguments are provided.
+DECLARMIMA v7.3 – Persistent Index + Reliable Extraction
+=========================================================
+- Stores uploaded files and index in session state.
+- Reuses index for multiple queries (no re-upload, no rebuild).
+- Extracts laser power, etc., with high precision.
 """
 
 import streamlit as st
@@ -30,36 +26,22 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 
-# PDF processing (PyMuPDF required)
+# PDF processing
 try:
     import fitz
 except ImportError:
     raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
-
-# Optional LLM backends (not needed for extraction, only for advanced fallback)
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("DECLARMIMA")
 
 # ============================================================================
-# 1. Pydantic Models for Structured Output
+# Pydantic Models
 # ============================================================================
 from pydantic import BaseModel, Field, field_validator
 
 class ExtractedValue(BaseModel):
-    """A single extracted measurement (non-zero, valid unit, relevant context)."""
     query: str
     value: float
     unit: str
@@ -78,10 +60,10 @@ class ExtractedValue(BaseModel):
 
     @field_validator('unit')
     def valid_unit(cls, v):
-        allowed_units = {"W", "kW", "mW", "MW", "W/cm", "kW/cm", "W/cm²", "kW/cm²",
-                         "W/cm2", "kW/cm2", "W/m²", "kW/m²", "W/m2", "kW/m2"}
-        if not any(v.startswith(u) for u in allowed_units):
-            raise ValueError(f"Invalid unit for power extraction: {v}")
+        allowed = {"W", "kW", "mW", "MW", "W/cm", "kW/cm", "W/cm²", "kW/cm²",
+                   "W/cm2", "kW/cm2", "W/m²", "kW/m²", "W/m2", "kW/m2"}
+        if not any(v.startswith(u) for u in allowed):
+            raise ValueError(f"Invalid unit: {v}")
         return v
 
     def citation(self) -> str:
@@ -105,7 +87,7 @@ class QueryReport(BaseModel):
         return json.dumps(self.model_dump(), indent=indent, ensure_ascii=False)
 
 # ============================================================================
-# 2. Hierarchical PDF Index (Vectorless)
+# Hierarchical Index (Vectorless) – same as before
 # ============================================================================
 @dataclass
 class PageNode:
@@ -244,7 +226,6 @@ class HierarchicalIndex:
                 node = PageNode(f"{doc_id}_h{i}", title, page, end, text, text[:200], 2, doc_id=doc_id, _pdf_path=pdf_path)
                 root.children.append(node)
             return root
-        # fallback: each page as leaf
         for p in range(1, len(doc)+1):
             text = doc[p-1].get_text("text")
             if not text.strip(): continue
@@ -285,39 +266,37 @@ class HierarchicalIndex:
         self._pdf_cache.clear()
 
 # ============================================================================
-# 3. Precise Extractor with Strict Validation
+# Robust Extractor (handles real-world variations)
 # ============================================================================
 class PreciseExtractor:
-    """Extracts only real, non‑zero, properly‑unit values relevant to the query."""
     def __init__(self, query: str):
         self.query = query.lower()
-        # Allowed units for power / intensity
         self.allowed_units = {"W", "kW", "mW", "MW", "W/cm", "kW/cm", "W/cm²", "kW/cm²",
                               "W/cm2", "kW/cm2", "W/m²", "kW/m²", "W/m2", "kW/m2"}
-        # Patterns that indicate a genuine extraction
+        # Expanded patterns – captures "250W", "250 W", etc.
         self.patterns = [
-            # "laser power = 250 W"
-            rf'{self.query}\s*[=:]\s*(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)',
-            # "laser power of 250 W"
-            rf'{self.query}\s+of\s+(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)',
-            # "250 W laser power"
-            rf'(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)\s+{self.query}',
-            # "power = 250 W" (only if query contains "power")
+            rf'(?:{self.query})\s*[=:]\s*(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)',
+            rf'(?:{self.query})\s+of\s+(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)',
+            rf'(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)\s+(?:{self.query})',
             r'power\s*[=:]\s*(\d+(?:\.\d+)?)\s*([WkWMm]{1,3})',
-            # "P = 250 W"
             r'P\s*[=:]\s*(\d+(?:\.\d+)?)\s*([WkWMm]{1,3})',
+            # direct "250W" (no space) or "250 W" (non-breaking space)
+            r'(\d+(?:\.\d+)?)([WkWMm]{1,3})\b',
+            r'(\d+(?:\.\d+)?)\s*[  ]?\s*([WkWMm]{1,3})\b',
         ]
 
     def _is_valid(self, value: float, unit: str, context: str) -> bool:
-        # 1. Zero is never a real measurement
         if value == 0.0:
             return False
-        # 2. Unit must be in whitelist
         if not any(unit.startswith(u) for u in self.allowed_units):
             return False
-        # 3. Context must contain a power‑related phrase
+        # Context must contain query OR "laser" (for power queries)
+        lower_ctx = context.lower()
+        if self.query not in lower_ctx and "laser" not in lower_ctx:
+            return False
+        # Also require a power-related phrase (avoids false positives like "250 µm")
         power_phrases = ["power", "input power", "laser power", "beam power", "P =", "power =", "irradiance"]
-        if not any(phrase in context.lower() for phrase in power_phrases):
+        if not any(phrase in lower_ctx for phrase in power_phrases):
             return False
         return True
 
@@ -330,30 +309,29 @@ class PreciseExtractor:
                     if len(groups) == 2:
                         val_str, unit = groups
                     else:
-                        # fallback: first group is value, unit may be empty
                         val_str = groups[0]
                         unit = ""
                     value = float(val_str)
                     unit = unit.strip().upper().replace("²", "2")
-                    # Get context around the match
-                    start = max(0, match.start() - 100)
-                    end = min(len(text), match.end() + 100)
+                    # Context window (±80 characters)
+                    start = max(0, match.start() - 80)
+                    end = min(len(text), match.end() + 80)
                     context = text[start:end].strip()
                     if not self._is_valid(value, unit, context):
                         continue
-                    # Extract exact sentence as context
+                    # Extract exact sentence
                     sentences = re.split(r'(?<=[.!?])\s+', text)
-                    exact_context = ""
+                    exact = ""
                     for sent in sentences:
                         if match.group(0) in sent:
-                            exact_context = sent.strip()
+                            exact = sent.strip()
                             break
-                    if not exact_context:
-                        exact_context = context[:200]
+                    if not exact:
+                        exact = context[:200]
                     # Simple material heuristic
                     material = None
                     for mat in ["AlSiMg", "SDSS", "Ti6Al4V", "Ti-Cr", "Cu6Sn5", "Al-Cu-Ni", "Ti3Au", "Inconel"]:
-                        if mat in exact_context:
+                        if mat in exact:
                             material = mat
                             break
                     results.append(ExtractedValue(
@@ -361,7 +339,7 @@ class PreciseExtractor:
                         value=value,
                         unit=unit,
                         confidence=0.95,
-                        context=exact_context,
+                        context=exact,
                         doc_name=doc_name,
                         page=page,
                         section_title=section_title,
@@ -369,7 +347,7 @@ class PreciseExtractor:
                     ))
                 except (ValueError, IndexError):
                     continue
-        # Deduplication by (value, unit, page, doc)
+        # Deduplicate by (value, unit, page, doc)
         unique = {}
         for v in results:
             key = (v.value, v.unit, v.page, v.doc_name)
@@ -378,7 +356,7 @@ class PreciseExtractor:
         return list(unique.values())
 
 # ============================================================================
-# 4. Parallel Query Engine
+# Parallel Query Engine
 # ============================================================================
 class ParallelQueryEngine:
     def __init__(self, index: HierarchicalIndex, max_workers=8):
@@ -408,7 +386,7 @@ class ParallelQueryEngine:
             else:
                 docs_without.append(doc_name)
                 doc_res.append(DocumentResult(doc_name=doc_name, values=[]))
-        # Consensus analysis (only for power‑like units)
+        # Consensus (only for power-like units)
         power_vals = [v for v in all_vals if any(v.unit.startswith(u) for u in ["W", "kW", "mW"])]
         consensus = {}
         if power_vals:
@@ -453,67 +431,71 @@ class ParallelQueryEngine:
         return doc_name, values
 
 # ============================================================================
-# 5. Streamlit UI
+# Streamlit UI with Session State (persistent files & index)
 # ============================================================================
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v7 - Accurate Extraction", layout="wide")
-    st.title("🔬 DECLARMIMA v7.0-OMNISCIENT (Final)")
-    st.caption("Extract laser power, scan speed, temperature, or any numeric parameter – with exact citations and zero false positives.")
-    uploaded = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
-    query = st.text_input("Enter query (e.g., 'laser power', 'irradiance', 'scan speed')", "laser power")
-    if uploaded and query and st.button("Extract", type="primary"):
-        with st.spinner("Building index and extracting values..."):
+    st.set_page_config(page_title="DECLARMIMA v7.3 – Persistent Extraction", layout="wide")
+    st.title("🔬 DECLARMIMA v7.3 – Multi‑Query Extraction")
+    st.caption("Upload your PDFs once. Ask multiple questions (e.g., 'laser power', 'scan speed', 'irradiance').")
+
+    # ----- Initialise session state -----
+    if "uploaded_files" not in st.session_state:
+        st.session_state.uploaded_files = None
+    if "index_built" not in st.session_state:
+        st.session_state.index_built = False
+    if "index" not in st.session_state:
+        st.session_state.index = None
+
+    # ----- File uploader (stores files in session) -----
+    uploaded = st.file_uploader("Upload PDF files (once)", type="pdf", accept_multiple_files=True, key="file_uploader")
+    if uploaded:
+        st.session_state.uploaded_files = uploaded
+        # Reset index so it will be rebuilt with new files
+        st.session_state.index_built = False
+        st.session_state.index = None
+        st.rerun()   # force rerun to show updated state
+
+    # ----- Clear files button -----
+    if st.button("🗑️ Clear all uploaded files"):
+        st.session_state.uploaded_files = None
+        st.session_state.index_built = False
+        st.session_state.index = None
+        st.rerun()
+
+    # ----- Build index only once after files are uploaded -----
+    if st.session_state.uploaded_files and not st.session_state.index_built:
+        with st.spinner("Building hierarchical index (this takes a few seconds, only once)..."):
             idx = HierarchicalIndex()
-            idx.build_from_pdfs(uploaded, parallel=True)
-            engine = ParallelQueryEngine(idx)
-            report = asyncio.run(engine.run_query(query))
-            idx.cleanup()
-        st.success(f"✅ {report.docs_with_results} documents contain relevant '{query}' values")
-        st.json(report.model_dump())
-        st.download_button("📥 Download JSON", report.to_json(), f"{query.replace(' ', '_')}_report.json", "application/json")
+            # Use parallel processing
+            idx.build_from_pdfs(st.session_state.uploaded_files, parallel=True)
+            st.session_state.index = idx
+            st.session_state.index_built = True
+        st.success("✅ Index built! You can now ask multiple questions.")
+        st.rerun()
+
+    # ----- Query input (only visible when index is ready) -----
+    if st.session_state.index_built:
+        query = st.text_input("Enter query (e.g., 'laser power', 'power', 'irradiance', 'scan speed')",
+                              "laser power")
+        if st.button("🔍 Extract", type="primary"):
+            with st.spinner("Extracting values..."):
+                report = asyncio.run(ParallelQueryEngine(st.session_state.index).run_query(query))
+            if report.docs_with_results == 0:
+                st.warning(f"No values found for '{query}'. Try 'power' or check that PDFs contain relevant numbers.")
+            else:
+                st.success(f"✅ {report.docs_with_results} documents contain relevant '{query}' values")
+            st.json(report.model_dump())
+            if report.all_values:
+                st.download_button("📥 Download JSON", report.to_json(),
+                                   f"{query.replace(' ', '_')}_report.json", "application/json")
     else:
-        st.info("Upload one or more PDFs, enter a query, then click 'Extract'.")
+        if not st.session_state.uploaded_files:
+            st.info("👆 Upload your PDF files above (one time). Then the index will be built automatically.")
+        else:
+            st.info("Index is being built. Please wait a moment...")
 
 # ============================================================================
-# 6. Entry Point – Auto‑detect UI or CLI
+# Entry Point
 # ============================================================================
 if __name__ == "__main__":
-    import sys
-    # If script is run with no arguments, launch Streamlit UI (for Cloud or local testing)
-    if len(sys.argv) == 1:
-        run_streamlit()
-    else:
-        # Otherwise, parse arguments for CLI mode
-        import argparse
-        parser = argparse.ArgumentParser(description="DECLARMIMA - Precise value extraction from PDFs")
-        parser.add_argument("files", nargs="+", help="PDF files to process")
-        parser.add_argument("-q", "--query", default="laser power", help="Query (e.g., 'laser power', 'scan speed')")
-        parser.add_argument("-o", "--output", help="Output JSON file")
-        parser.add_argument("--max-workers", type=int, default=8, help="Parallel workers")
-        args = parser.parse_args()
-
-        # Load files
-        file_buffers = []
-        for f in args.files:
-            if f.endswith(".pdf"):
-                with open(f, "rb") as fp:
-                    buf = BytesIO(fp.read())
-                    buf.name = os.path.basename(f)
-                    file_buffers.append(buf)
-        if not file_buffers:
-            print("No valid PDF files found.")
-            sys.exit(1)
-
-        print(f"Processing {len(file_buffers)} files with query: '{args.query}'")
-        idx = HierarchicalIndex()
-        idx.build_from_pdfs(file_buffers, parallel=True, max_workers=args.max_workers)
-        engine = ParallelQueryEngine(idx, max_workers=args.max_workers)
-        report = asyncio.run(engine.run_query(args.query))
-        idx.cleanup()
-
-        if args.output:
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(report.to_json())
-            print(f"Report saved to {args.output}")
-        else:
-            print(report.to_json(indent=2))
+    run_streamlit()

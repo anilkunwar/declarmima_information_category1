@@ -133,7 +133,7 @@ V36-V37: Regex-Free, QBQE + Query Attention, VECTOR Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v40.0-yellow)](https://information-retrieval-reasoning-visualization41.streamlit.app/) (Optimized with speed and number of chunks for quantitative and qualitative reason based information retrieval, Excellent and faster than V36, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
-V42-v52: Vectorless Reasoning Based RAG
+V42-v54: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v42.0-orange)](https://vectorless-reasoning-rag-information-retrieval42.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
 
@@ -157,7 +157,9 @@ V42-v52: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v52.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval52.streamlit.app/) (Laser power specific RAG, Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v53.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval49.streamlit.app/) (v49 that works in local computer, Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v53.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval53.streamlit.app/) (v49 that works in local computer, Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v54.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval54.streamlit.app/) (v49 that works in local computer, Table and JSON, distinguishes laser power and irradiance,  Laser power specific RAG,  Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
 
 V55- : Vectorless Reasoning Based RAG and Parallelization (No Series)
 

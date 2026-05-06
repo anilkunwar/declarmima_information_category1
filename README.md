@@ -171,6 +171,8 @@ V55- : Vectorless Reasoning Based RAG and Parallelization (No Series)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v57.0-orange)](https://vectorless-reasoning-rag-information-retrieval-parallel57.streamlit.app/) (V55 method finetuned to laser-microstructure parameters,  Temporary Query Report instead of Stale or Static Knowledge Graph, V45+V49 features with parallelization for faster processing, hierarchical navigation and quantitative cross-document analysis)
 
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v56.0-orange)](https://vectorless-reasoning-rag-information-retrieval-parallel56.streamlit.app/) (Advanced V56  method, Node text truncated only after 20000 Characters or Full Text,  Regex for Qty. and Units,  Temporary Query Report instead of Stale or Static Knowledge Graph, V45+V49 features with parallelization for faster processing, hierarchical navigation and quantitative cross-document analysis)
+
 
 Multicomponent Alloy Microstructure Focus :
 

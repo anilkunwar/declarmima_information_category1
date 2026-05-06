@@ -467,7 +467,7 @@ class HierarchicalIndex:
                 tmp.write(buf.getbuffer())
                 tmp_path = tmp.name
             doc = fitz.open(tmp_path)
-            root = self._build_tree(doc, doc_name, tmp_path)
+            root = self.(doc, doc_name, tmp_path)
             doc.close()
             
             try:
@@ -704,7 +704,7 @@ Return ONLY valid JSON."""
                     continue
         return None
     #
-        def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
+    def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
         # ROBUST: toc title may be explicit None
         safe_title = toc.get("suggested_root_title") or doc_name
         root = PageNode(

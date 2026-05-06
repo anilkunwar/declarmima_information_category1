@@ -19,32 +19,9 @@ FIXES & ENHANCEMENTS (v7.0):
 - Expanded LLM support: Qwen2.5 (0.5B to 14B), Falcon3 (10B), Llama3.1 (8B), Mistral (7B), Gemma2 (9B)
 - Local execution: full privacy, $0 cost, consumer GPU compatible, offline capable
 
-FEATURES:
-✓ Vectorless hierarchical document indexing (PageIndex-style tree navigation)
-✓ Ollama integration for local LLM serving with all supported models
-✓ HybridLLM fallback chain: Ollama → Transformers (4-bit optional) → CPU fallback
-✓ UniversalQueryRetriever: dynamic keyword routing + semantic pre-filtering + tree navigation
-✓ OmniExtractor: batch processing, value/claim extraction, anti-hallucination validation
-✓ EnhancedCrossDocumentKnowledgeGraph with consensus/contradiction detection
-✓ CrossDocumentThinker for scientific reasoning across papers (stub - extensible)
-✓ Semantic chunking with section-aware splitting (natural document sections preserved)
-✓ Bibliographic metadata extraction (DOI, Crossref, PDF parsing)
-✓ RTX 5080 optimization: GPU offload, 4-bit quantization, batch inference
-✓ Response caching, tree caching, embedding caching for 3-10x speedup
-✓ Streamlit UI with progress bars, performance metrics, reasoning trace display, JSON export
-✓ Debug mode: show intermediate results, navigation trace, extraction details
-✓ Export results: JSON, CSV, Markdown with citations
-
-CORE PRINCIPLES PRESERVED:
-✗ NO vector embeddings for retrieval (structure-based tree navigation only)
-✗ NO artificial chunking (natural document sections preserved)
-✓ Exact citation output: <cite doc="filename.pdf" page="X"/>
-✓ Anti-hallucination: values validated against source text, exact filename requirement
-✓ Local execution: full privacy, $0 cost, consumer GPU compatible
-
 AUTHOR: DECLARMIMA Team
 LICENSE: MIT
-VERSION: 7.0-OMNISCIENT-STREAMLIT
+VERSION: 7.0-OMNISCIENT-STREAMLIT-FIXED
 DATE: 2026-05-06
 """
 
@@ -245,6 +222,24 @@ PROCESSING_GROUPS = {
     "large": {"max_pages": 40, "batch_size": 3},
     "extra_large": {"max_pages": float('inf'), "batch_size": 1}
 }
+
+
+# Simple configuration wrapper (fixes missing app_config)
+class SimpleConfig:
+    def __init__(self, config_dict: Dict[str, Any]):
+        self._config = config_dict.copy()
+        self._overrides = {}
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._overrides.get(key, self._config.get(key, default))
+    
+    def set(self, key: str, value: Any):
+        self._overrides[key] = value
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {**self._config, **self._overrides}
+
+app_config = SimpleConfig(UNIVERSAL_CONFIG)
 
 # =====================================================================
 # SECTION 4: TIMING, CACHING & MEMORY UTILITIES
@@ -871,7 +866,9 @@ def main():
     
     render_sidebar()
     
-    uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple=True)
+    # FIXED: correct parameter name is `accept_multiple_files` (not `accept_multiple`)
+    uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
+    
     if uploaded_files and st.button("Register Files", type="primary"):
         st.session_state.query_processor["files"] = uploaded_files
         st.success(f"{len(uploaded_files)} files registered.")
@@ -928,7 +925,4 @@ def main():
         st.info("👆 Upload PDF files to begin. Ask anything: e.g., 'laser power', 'scan speed', 'define martensite', 'compare hardness'.")
 
 if __name__ == "__main__":
-    # Set global app config for cache settings (simplified)
-    app_config = lambda: None
-    app_config.get = lambda key, default=None: UNIVERSAL_CONFIG.get(key, default)
     main()

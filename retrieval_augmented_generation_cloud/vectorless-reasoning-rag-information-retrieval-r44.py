@@ -2285,19 +2285,21 @@ def render_navigation_trace(trace: List[Dict]):
             elif action == "keyword_routed":
                 st.markdown(f"**Fast path**: Found {entry.get('results_count', '?')} sections via keywords")
 
-
-def render_performance_metrics(timing: Dict[str, float]):
-    """Render timing metrics."""
-    if not timing:
+#
+def render_performance_metrics(metrics: Dict[str, Dict[str, float]]):
+    """Render timing metrics from aggregated stats."""
+    if not metrics:
         return
     with st.expander("⚡ Performance", expanded=True):
         cols = st.columns(4)
-        total = sum(timing.values())
+        total = sum(stats.get('mean', 0) for stats in metrics.values())
         cols[0].metric("Total", f"{total:.1f}s")
-        cols[1].metric("Index", f"{timing.get('index_build', 0):.1f}s")
-        cols[2].metric("Retrieve", f"{timing.get('retrieval', 0):.1f}s")
-        cols[3].metric("Extract", f"{timing.get('extraction', 0):.1f}s")
-
+        index_stats = metrics.get("Index build", {})
+        retrieve_stats = metrics.get("Retrieval", {})
+        extract_stats = metrics.get("Extraction", {})
+        cols[1].metric("Index", f"{index_stats.get('mean', 0):.1f}s")
+        cols[2].metric("Retrieve", f"{retrieve_stats.get('mean', 0):.1f}s")
+        cols[3].metric("Extract", f"{extract_stats.get('mean', 0):.1f}s")
 
 # =====================================================================
 # SECTION 15: MAIN APPLICATION LOGIC

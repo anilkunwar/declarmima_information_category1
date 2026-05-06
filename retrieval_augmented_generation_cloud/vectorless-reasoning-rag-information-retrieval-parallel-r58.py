@@ -1,26 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v12.0-VECTORLESS - COMPLETE INTEGRATED STREAMLIT APPLICATION
+DECLARMIMA v12.2-VECTORLESS - ENHANCED FIXED VERSION
 =======================================================================
-UNIVERSAL VECTORLESS HIERARCHICAL RAG WITH OLLAMA INTEGRATION & HIERARCHICAL TREE NAVIGATION
-
-FEATURES:
-- Vectorless hierarchical document indexing (tree navigation, no vectors)
-- Dropdown of all Ollama models (qwen2.5, llama3.1, mistral, gemma2, falcon3)
-- HybridLLM fallback chain: Ollama → Transformers (4-bit optional) → CPU
-- HierarchicalTreeRetriever: dynamic keyword routing + tree navigation (no vector DB)
-- UniversalLLMExtractor: batch LLM extraction with anti-hallucination validation
-- LLM Reasoning Synthesizer: generates natural language answer with citations, consensus, contradictions
-- Streamlit UI: file upload, chat interface, JSON export, reasoning trace, performance metrics
-- RTX 5080 optimized: GPU offload, 4-bit quantization, batch inference, memory pooling
-- Table + JSON display toggle for quantitative results
-- Human-readable consensus analysis with statistics
-
-AUTHOR: DECLARMIMA Team
-LICENSE: MIT
-VERSION: 12.1-VECTORLESS-FIXED
-DATE: 2026-05-06
+- Configurable retrieval text length (sidebar slider)
+- Physical quantity type preservation (power vs irradiance)
+- Cached query results to avoid reruns on display toggle
+- Improved extraction prompt for unit-aware extraction
 """
 
 import streamlit as st
@@ -92,7 +78,7 @@ except ImportError:
     logger.warning("orjson not installed. Using standard json (slower).")
 
 # ============================================================================
-# 1. PYDANTIC MODELS (UNIVERSAL EXTRACTION)
+# 1. PYDANTIC MODELS (UNIVERSAL EXTRACTION) - ENHANCED WITH QUANTITY TYPE
 # ============================================================================
 from pydantic import BaseModel, Field, field_validator
 
@@ -103,6 +89,7 @@ class UniversalExtractionItem(BaseModel):
     parameter_name: Optional[str] = None
     value: Optional[float] = None
     unit: Optional[str] = None
+    quantity_physical_type: Optional[str] = None  # ENHANCEMENT: "power", "irradiance", "temperature", etc.
     subject: Optional[str] = None
     predicate: Optional[str] = None
     object_val: Optional[str] = None
@@ -136,7 +123,8 @@ class ExtractedValue(BaseModel):
     query: str
     value: float
     unit: str
-    quantity_type: str
+    quantity_type: str  # e.g., "laser_power", "irradiance", "temperature"
+    physical_type: str = "power"  # ENHANCEMENT: "power", "irradiance", "temperature"
     confidence: float = Field(ge=0.0, le=1.0)
     context: str
     doc_name: str
@@ -195,9 +183,7 @@ UNIVERSAL_CONFIG = {
     "tree_search_depth": 3,
     "max_tree_nodes_per_prompt": 50,
     "enable_orjson": ORJSON_AVAILABLE,
-    # FIX: Increase text limit for retrieval (was 500)
-    "max_retrieval_text_chars": 8000,
-    # FIX: Wider leaf node pages (was 3)
+    "max_retrieval_text_chars": 20000,   # will be overridden by sidebar slider
     "leaf_node_page_window": 7,
 }
 
@@ -213,7 +199,7 @@ LOCAL_LLM_OPTIONS = {
     "[Ollama] falcon3:10b (Instruction Following)": "ollama:falcon3:10b",
 }
 
-# Model-specific prompt templates for tree search
+# Model-specific prompt templates
 MODEL_PROMPT_TEMPLATES = {
     "qwen2.5:14b": {
         "system": "You are a precise document analyst. Follow JSON format strictly.",
@@ -391,7 +377,7 @@ class PageNode:
             "children": [c.to_dict() for c in self.children]
         }
 
-    def to_tree_format(self) -> Dict[str, Any]:
+    def to_tree_format(self, max_chars: int = 20000) -> Dict[str, Any]:   # ENHANCEMENT: accept max_chars
         result = {
             "title": self.title,
             "node_id": self.node_id,
@@ -402,10 +388,7 @@ class PageNode:
             "text_token_count": self.text_token_count,
         }
         if self.children:
-            result["nodes"] = [c.to_tree_format() for c in self.children]
-        # FIX: Remove truncation – provide full text or up to max_retrieval_text_chars
-        # But we must avoid blowing context; use a generous configurable limit.
-        max_chars = UNIVERSAL_CONFIG.get("max_retrieval_text_chars", 8000)
+            result["nodes"] = [c.to_tree_format(max_chars) for c in self.children]
         if self.full_text:
             if len(self.full_text) > max_chars:
                 result["text"] = self.full_text[:max_chars] + "..."
@@ -516,7 +499,6 @@ class HierarchicalIndex:
         )
         
         toc = doc.get_toc()
-        # FIX: wider page window for leaf nodes
         window = UNIVERSAL_CONFIG.get("leaf_node_page_window", 7)
         
         if toc:
@@ -524,7 +506,7 @@ class HierarchicalIndex:
             for level, title, page in toc:
                 if page > len(doc):
                     continue
-                end = min(page + window, len(doc))   # increased from 3
+                end = min(page + window, len(doc))
                 text = self._extract_range(doc, page, end)
                 node = PageNode(
                     f"{doc_id}_toc_{level}_{title[:20]}",
@@ -618,7 +600,7 @@ class HierarchicalIndex:
 
 
 # ============================================================================
-# 6. FAST ASYNC INDEX BUILDER (LLM TOC VALIDATION)
+# 6. FAST ASYNC INDEX BUILDER
 # ============================================================================
 class FastHierarchicalIndex(HierarchicalIndex):
     def __init__(self, cache_dir=".declarmima_cache", llm=None):
@@ -628,7 +610,6 @@ class FastHierarchicalIndex(HierarchicalIndex):
     async def build_from_pdfs_fast(self, files: List, max_workers: int = 4) -> Dict[str, PageNode]:
         loop = asyncio.get_event_loop()
         
-        # Stage 1: Extract raw pages using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 loop.run_in_executor(pool, self._extract_pages_raw, f)
@@ -636,7 +617,6 @@ class FastHierarchicalIndex(HierarchicalIndex):
             ]
             raw_docs = await asyncio.gather(*futures)
         
-        # Stage 2: LLM-based TOC extraction
         if self.llm:
             toc_tasks = [
                 self._llm_extract_toc(doc_name, pages)
@@ -646,17 +626,14 @@ class FastHierarchicalIndex(HierarchicalIndex):
         else:
             toc_results = [{"has_toc": False, "headings_detected": []} for _ in raw_docs]
         
-        # Stage 3: Build trees
         trees = {}
         for (doc_name, pages), toc in zip(raw_docs, toc_results):
             tree = self._build_tree_from_toc(doc_name, pages, toc)
             trees[doc_name] = tree
         
-        # Stage 4: Async summary generation
         if self.llm:
             await self._generate_summaries_async(trees)
         
-        # Stage 5: Fast serialization
         for doc_name, tree in trees.items():
             self.doc_trees[doc_name] = tree
             self._save_tree_fast(doc_name, tree)
@@ -689,17 +666,16 @@ class FastHierarchicalIndex(HierarchicalIndex):
         
         prompt = f"""Analyze this document and extract its hierarchical structure.
 Return JSON with:
-- "has_toc": bool (whether document has explicit table of contents)
+- "has_toc": bool
 - "toc_entries": list of {{"title": str, "level": int, "page": int}}
 - "headings_detected": list of {{"title": str, "level": int, "page": int}}
-- "doc_type": str (research_paper, review, report, manual, etc.)
+- "doc_type": str
 - "suggested_root_title": str
 
-Document sample (first pages):
+Document sample:
 {sample_text[:6000]}
 
-Return ONLY valid JSON, no other text."""
-
+Return ONLY valid JSON."""
         try:
             response = await asyncio.to_thread(
                 self.llm.generate, prompt, max_new_tokens=1024, fast_json=True
@@ -709,7 +685,6 @@ Return ONLY valid JSON, no other text."""
                 return result
         except Exception as e:
             logger.warning(f"LLM TOC extraction failed for {doc_name}: {e}")
-        
         return {"has_toc": False, "headings_detected": [], "doc_type": "unknown"}
 
     def _extract_json_safe(self, text: str) -> Optional[Any]:
@@ -747,13 +722,10 @@ Return ONLY valid JSON, no other text."""
                 level = entry.get("level", 1)
                 title = entry.get("title", "Unknown")
                 page = entry.get("page", 1)
-                
                 if page > len(pages):
                     continue
-                    
                 end = min(page + window, len(pages))
                 text = "\n\n".join(pages[i - 1]['text'] for i in range(page, min(end + 1, len(pages) + 1)))
-                
                 node = PageNode(
                     f"{doc_name}_toc_{level}_{title[:20]}",
                     title.strip(), page, end,
@@ -761,7 +733,6 @@ Return ONLY valid JSON, no other text."""
                     doc_id=doc_name
                 )
                 nodes_by_level.setdefault(level, []).append(node)
-            
             for level in sorted(nodes_by_level.keys()):
                 for node in nodes_by_level[level]:
                     parent = self._find_parent(root, level - 1, node.page_start)
@@ -783,12 +754,10 @@ Return ONLY valid JSON, no other text."""
 
     async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
         all_nodes = []
-        
         def collect_nodes(node: PageNode):
             all_nodes.append(node)
             for c in node.children:
                 collect_nodes(c)
-        
         for tree in trees.values():
             collect_nodes(tree)
         
@@ -801,7 +770,6 @@ Return ONLY valid JSON, no other text."""
                     tasks.append(self._summarize_node(node))
                 else:
                     node.summary = node.full_text[:200]
-            
             if tasks:
                 await asyncio.gather(*tasks)
 
@@ -813,7 +781,6 @@ Focus on key parameters, methods, and findings.
 Text: {text}
 
 Summary:"""
-        
         try:
             summary = await asyncio.to_thread(
                 self.llm.generate, prompt, max_new_tokens=150, temperature=0.1
@@ -827,7 +794,6 @@ Summary:"""
         safe = re.sub(r'[^\w\-_.]', '_', doc_name)
         doc_hash = hashlib.sha256(doc_name.encode()).hexdigest()[:16]
         path = self.cache_dir / f"{safe}.{doc_hash}.tree.json"
-        
         try:
             with open(path, "wb") as f:
                 f.write(fast_json_dumps(tree.to_dict(), indent=True))
@@ -836,7 +802,7 @@ Summary:"""
 
 
 # ============================================================================
-# 7. HYBRID LLM CLIENT (OLLAMA + TRANSFORMERS)
+# 7. HYBRID LLM CLIENT
 # ============================================================================
 class HybridLLM:
     def __init__(self, model_key: str, use_4bit: bool = True, device: Optional[str] = None):
@@ -885,13 +851,11 @@ class HybridLLM:
             options = {"temperature": temp, "num_predict": max_tokens}
             if fast_json:
                 options["format"] = "json"
-            
             messages = []
             sys = system_prompt or self.template.get("system")
             if sys:
                 messages.append({"role": "system", "content": sys})
             messages.append({"role": "user", "content": prompt})
-            
             resp = self.client.chat(
                 model=self.model_name,
                 messages=messages,
@@ -913,10 +877,8 @@ class HybridLLM:
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
-            
             text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=4096).to(self.device)
-            
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
@@ -938,7 +900,6 @@ class HybridLLM:
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-        
         model_kwargs = {
             "trust_remote_code": True,
             "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32
@@ -948,7 +909,6 @@ class HybridLLM:
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16
             )
-        
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
         if self.device == "cuda":
             self.model.to(self.device)
@@ -957,28 +917,26 @@ class HybridLLM:
 
 
 # ============================================================================
-# 8. QUANTITATIVE KNOWLEDGE GRAPH
+# 8. QUANTITATIVE KNOWLEDGE GRAPH (ENHANCED WITH PHYSICAL TYPE)
 # ============================================================================
 class QuantityClassifier:
     def classify(self, value, unit, context):
         unit = unit.lower()
-        if "cm" in unit or "m2" in unit or "mm2" in unit:
+        if "w/cm²" in unit or "kw/cm²" in unit:
             return "irradiance"
         if unit in ["w", "kw", "mw"]:
             return "laser_power"
-        if OLLAMA_AVAILABLE:
-            try:
-                prompt = f"""Classify the quantity:
-Value: {value} {unit}
-Context: {context}
-Return ONLY one: laser_power OR irradiance OR unknown"""
-                resp = ollama.chat(
-                    model="llama3",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return resp['message']['content'].strip().lower()
-            except:
-                return "unknown"
+        # heuristic fallback
+        if "irradiance" in context.lower():
+            return "irradiance"
+        return "unknown"
+
+    def physical_type_from_unit(self, unit: str) -> str:
+        unit_l = unit.lower()
+        if "w/cm²" in unit_l or "kw/cm²" in unit_l:
+            return "irradiance"
+        if unit_l in ["w", "kw", "mw"]:
+            return "power"
         return "unknown"
 
 
@@ -997,22 +955,18 @@ class QuantitativeKnowledgeGraph:
             "by_section": defaultdict(list),
             "all_items": []
         }
-        
         for item in items:
             item_dict = item.to_dict()
             graph["all_items"].append(item_dict)
-            
             if item.parameter_name:
                 graph["parameters"][item.parameter_name.lower()].append(item_dict)
             if item.material:
                 graph["materials"][item.material.lower()].append(item_dict)
             if item.method:
                 graph["methods"][item.method.lower()].append(item_dict)
-            
             graph["by_page"][item.page].append(item_dict)
             if item.section_title:
                 graph["by_section"][item.section_title].append(item_dict)
-        
         self.doc_graphs[doc_id] = dict(graph)
     
     def get_parameter_across_docs(self, param_name: str) -> List[Dict]:
@@ -1024,18 +978,15 @@ class QuantitativeKnowledgeGraph:
                     results.append({**item, "doc_id": doc_id})
         return results
     
-    def to_tree_annotation(self, doc_tree: PageNode) -> Dict[str, Any]:
+    def to_tree_annotation(self, doc_tree: PageNode, max_chars: int = 20000) -> Dict[str, Any]:
         doc_id = doc_tree.doc_id
         graph = self.doc_graphs.get(doc_id, {})
-        
         def annotate_node(node: PageNode) -> Dict[str, Any]:
-            result = node.to_tree_format()
-            
+            result = node.to_tree_format(max_chars=max_chars)
             node_items = []
             end_page = node.page_end or node.page_start
             for page in range(node.page_start, end_page + 1):
                 node_items.extend(graph.get("by_page", {}).get(page, []))
-            
             if node_items:
                 seen = set()
                 unique_items = []
@@ -1045,30 +996,18 @@ class QuantitativeKnowledgeGraph:
                         seen.add(key)
                         unique_items.append(item)
                 result["quantitative_items"] = unique_items
-            
             if node.children:
                 result["nodes"] = [annotate_node(c) for c in node.children]
-            
             return result
-        
         return annotate_node(doc_tree)
     
     def get_summary_stats(self, param_name: str) -> Dict[str, Any]:
         items = self.get_parameter_across_docs(param_name)
         if not items:
             return {"count": 0, "documents": []}
-        
         values = [i["value"] for i in items if i.get("value") is not None]
-        units = list(set(i.get("unit", "") for i in items if i.get("unit")))
         docs = list(set(i["doc_id"] for i in items))
-        
-        stats = {
-            "count": len(items),
-            "documents": docs,
-            "units": units,
-            "values": values
-        }
-        
+        stats = {"count": len(items), "documents": docs, "values": values}
         if values:
             stats.update({
                 "min": min(values),
@@ -1076,7 +1015,6 @@ class QuantitativeKnowledgeGraph:
                 "mean": float(np.mean(values)),
                 "std": float(np.std(values)) if len(values) > 1 else 0
             })
-        
         return stats
     
     def get_all_parameters(self) -> Dict[str, int]:
@@ -1098,11 +1036,13 @@ class QuantitativeKnowledgeGraph:
                                 continue
                             unit = item.get("unit", "")
                             qtype = self.classifier.classify(val, unit, item.get("context", ""))
+                            phys_type = self.classifier.physical_type_from_unit(unit)
                             all_values.append(ExtractedValue(
                                 query=query,
                                 value=val,
                                 unit=unit,
                                 quantity_type=qtype,
+                                physical_type=phys_type,
                                 confidence=item.get("confidence", 0.7),
                                 context=item.get("context", "")[:300],
                                 doc_name=doc_id,
@@ -1115,12 +1055,13 @@ class QuantitativeKnowledgeGraph:
 
 
 # ============================================================================
-# 9. HIERARCHICAL TREE RETRIEVER (LLM-POWERED)
+# 9. HIERARCHICAL TREE RETRIEVER (WITH CONFIGURABLE TEXT LIMIT)
 # ============================================================================
 class HierarchicalTreeRetriever:
-    def __init__(self, llm: HybridLLM, max_results=30):
+    def __init__(self, llm: HybridLLM, max_results=30, max_text_chars=20000):
         self.llm = llm
         self.max_results = max_results
+        self.max_text_chars = max_text_chars
         self._condensed_cache: Dict[str, Dict] = {}
         self.template = llm.template if hasattr(llm, 'template') else MODEL_PROMPT_TEMPLATES["default"]
     
@@ -1133,7 +1074,6 @@ class HierarchicalTreeRetriever:
             trees_json.append(self._condensed_cache[doc_id])
         
         batches = self._batch_trees(trees_json, max_tokens=6000)
-        
         all_selections = []
         for batch in batches:
             prompt = self._build_tree_search_prompt(query, batch)
@@ -1152,14 +1092,10 @@ class HierarchicalTreeRetriever:
             doc_id = sel.get('doc_id')
             node_id = sel.get('node_id')
             node = self._find_node_by_id(annotated_trees, doc_id, node_id)
-            
             if node:
-                # FIX: retrieve full text (or up to limit) without truncation
                 full_text = node.get('text', '')
-                # Ensure we don't exceed context (but keep it full)
-                max_chars = UNIVERSAL_CONFIG.get("max_retrieval_text_chars", 8000)
-                if len(full_text) > max_chars:
-                    full_text = full_text[:max_chars] + "..."
+                if len(full_text) > self.max_text_chars:
+                    full_text = full_text[:self.max_text_chars] + "..."
                 results.append({
                     "full_text": full_text,
                     "page_start": node.get('start_index'),
@@ -1170,48 +1106,32 @@ class HierarchicalTreeRetriever:
                     "selection_reasoning": sel.get('reasoning', ''),
                     "confidence": sel.get('confidence', 0)
                 })
-        
         return results[:self.max_results]
     
     def _condense_tree(self, tree: Dict, max_depth: int = 3) -> Dict[str, Any]:
         def condense(node: Dict, depth: int = 0) -> Dict[str, Any]:
             if depth > max_depth:
-                return {
-                    "node_id": node.get("node_id", ""),
-                    "title": node.get("title", ""),
-                    "leaf": True
-                }
-            
+                return {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "leaf": True}
             result = {
                 "node_id": node.get("node_id", ""),
                 "title": node.get("title", ""),
                 "summary": (node.get("summary", "") or "")[:150],
             }
-            
             q_items = node.get("quantitative_items", [])
             if q_items:
-                params = list(set(
-                    item.get("parameter_name", "")
-                    for item in q_items
-                    if item.get("parameter_name")
-                ))
+                params = list(set(item.get("parameter_name", "") for item in q_items if item.get("parameter_name")))
                 if params:
                     result["has_quantitative"] = params[:5]
             else:
-                # FIX: add regex-based candidate values even without KG
                 text = node.get("text", "")
                 if text:
-                    # simple regex for numbers with common units
-                    candidates = re.findall(r'(\d+(?:\.\d+)?)\s*(W|kW|mW|J|mm/s|°C|K|MPa|GPa|nm|µm|mm|s|m/s)', text, re.IGNORECASE)
+                    candidates = re.findall(r'(\d+(?:\.\d+)?)\s*(W|kW|mW|J|mm/s|°C|K|MPa|GPa|nm|µm|mm|s|m/s|W/cm²|kW/cm²)', text, re.IGNORECASE)
                     if candidates:
                         result["candidate_values"] = [f"{v}{u}" for v, u in candidates[:3]]
-            
             children = node.get("nodes", [])
             if children and depth < max_depth:
                 result["nodes"] = [condense(c, depth + 1) for c in children[:5]]
-            
             return result
-        
         return {
             "doc_id": tree.get("doc_id", tree.get("doc_name", "unknown")),
             "doc_name": tree.get("doc_name", ""),
@@ -1222,7 +1142,6 @@ class HierarchicalTreeRetriever:
         batches = []
         current = []
         current_len = 0
-        
         for t in trees:
             t_len = len(json.dumps(t))
             if current_len + t_len > max_tokens and current:
@@ -1232,15 +1151,12 @@ class HierarchicalTreeRetriever:
             else:
                 current.append(t)
                 current_len += t_len
-        
         if current:
             batches.append(current)
-        
         return batches
     
     def _build_tree_search_prompt(self, query: str, trees: List[Dict]) -> str:
         trees_json = json.dumps(trees, ensure_ascii=False, indent=2)
-        
         return f"""You are an expert scientific document navigator.
 Given a query about quantitative parameters, identify which document nodes are MOST likely to contain the answer.
 
@@ -1258,41 +1174,27 @@ DOCUMENT TREES:
 
 Return JSON:
 {{
-  "thinking": "Brief reasoning about which nodes are relevant and why...",
+  "thinking": "Brief reasoning...",
   "selections": [
-    {{
-      "doc_id": "document_name.pdf",
-      "node_id": "0001.0002",
-      "reasoning": "This section discusses process parameters...",
-      "confidence": 0.95
-    }}
+    {{"doc_id": "...", "node_id": "...", "reasoning": "...", "confidence": 0.95}}
   ]
 }}
 
 {self.template.get('json_reminder', 'Return ONLY valid JSON.')}
-
-Include up to {self.max_results} selections across all documents."""
+Include up to {self.max_results} selections."""
     
     def _parse_node_selections(self, response: str) -> List[Dict]:
         try:
             data = self._extract_json_safe(response)
             if data and isinstance(data, dict):
                 selections = data.get("selections", [])
-                valid = []
-                for s in selections:
-                    if isinstance(s, dict) and "doc_id" in s and "node_id" in s:
-                        valid.append(s)
-                return valid
+                return [s for s in selections if isinstance(s, dict) and "doc_id" in s and "node_id" in s]
         except Exception as e:
             logger.warning(f"Failed to parse selections: {e}")
         return []
     
     def _extract_json_safe(self, text: str) -> Optional[Any]:
-        patterns = [
-            r'\{.*\}',
-            r'\[.*\]',
-            r'```json\s*(\{.*?\})\s*```',
-        ]
+        patterns = [r'\{.*\}', r'\[.*\]', r'```json\s*(\{.*?\})\s*```']
         for pattern in patterns:
             match = re.search(pattern, text, re.DOTALL)
             if match:
@@ -1306,26 +1208,23 @@ Include up to {self.max_results} selections across all documents."""
     def _find_node_by_id(self, trees: List[Dict], doc_id: str, node_id: str) -> Optional[Dict]:
         for tree in trees:
             if tree.get("doc_id") == doc_id or tree.get("doc_name") == doc_id:
-                result = self._search_node_recursive(tree, node_id)
-                if result:
-                    return result
+                return self._search_node_recursive(tree, node_id)
         return None
     
     def _search_node_recursive(self, node: Dict, target_id: str) -> Optional[Dict]:
         if node.get("node_id") == target_id:
             return node
         for child in node.get("nodes", []):
-            result = self._search_node_recursive(child, target_id)
-            if result:
-                return result
+            res = self._search_node_recursive(child, target_id)
+            if res:
+                return res
         return None
 
 
 # ============================================================================
-# 10. UNIVERSAL LLM EXTRACTOR (IMPROVED PROMPT)
+# 10. UNIVERSAL LLM EXTRACTOR (ENHANCED WITH PHYSICAL TYPE)
 # ============================================================================
 class UniversalLLMExtractor:
-    # FIX: improved extraction prompt with explicit numeric instructions
     EXTRACTION_PROMPT = """Extract information relevant to the query from these document sections.
 QUERY: {query}
 QUERY TYPE: {query_type}
@@ -1338,23 +1237,25 @@ Return JSON array of extracted items with fields:
   "confidence": 0.0-1.0,
   "context": "exact sentence from text",
   "doc_source": "{doc_id}",
-  "page": page_number}}
+  "page": page_number,
+  "parameter_name": "...",
+  "value": number,
+  "unit": "e.g., W, kW, W/cm², mm/s, °C",
+  "quantity_physical_type": "power|irradiance|temperature|speed|energy_density|unknown"}}
 
-ADDITIONAL FIELDS (include if applicable):
-- For quantitative: "parameter_name" (e.g., "laser power"), "value" (full number, never truncated), "unit" (e.g., "W", "kW", "mm/s")
-- For qualitative: "subject", "predicate", "object_val"
-- For definition: "definition_term", "definition_text"
-- For comparison: "comparison_entities", "comparison_aspect"
-- Also include: "material", "method", "conditions", "reasoning_trace"
+For quantitative items, ALWAYS include:
+- "parameter_name" (e.g., "laser power", "scan speed")
+- "value" (full number, never truncated)
+- "unit" (with correct formatting, including / if needed)
+- "quantity_physical_type" (choose from: power, irradiance, temperature, speed, energy_density)
 
-STRICT RULES:
-1. ONLY extract information that literally appears in the text above
-2. Include exact sentence as context
-3. Use filename '{doc_id}' as doc_source
-4. Return [] if no relevant information found
-5. Return ONLY valid JSON, no extra text
-6. Set confidence based on clarity: 0.9+ for explicit statements, 0.6-0.8 for inferred, <0.6 for uncertain
-7. CRITICAL: When you see a number like "1000 W", output value=1000, never "1..." or any truncation. Output the complete number."""
+CRITICAL RULES:
+1. Distinguish between power (W, kW, mW) and irradiance (W/cm², kW/cm²). Set quantity_physical_type accordingly.
+2. NEVER truncate numbers: if text says "1000 W", output 1000, not "1..."
+3. Return ONLY valid JSON, no extra text.
+4. Set confidence based on clarity: 0.9+ for explicit, 0.6-0.8 for inferred.
+
+Return [] if no relevant information found."""
 
     def __init__(self, llm: HybridLLM):
         self.llm = llm
@@ -1364,23 +1265,18 @@ STRICT RULES:
             return []
         qa = query_analysis or {"query_type": "mixed", "keywords": []}
         items = []
-        
         for chunk in chunks:
             text = chunk["full_text"]
             doc = chunk["doc_id"]
             page = chunk["page_start"]
-            
-            # Skip if query_type is quantitative but no digits in text (optimization)
             if qa.get("query_type") == "quantitative" and not re.search(r'\d+', text):
                 continue
-            
             prompt = self.EXTRACTION_PROMPT.format(
                 query=query,
                 query_type=qa.get("query_type", "mixed"),
-                sections_text=text[:4000],  # keep within token limits
+                sections_text=text[:4000],
                 doc_id=doc
             )
-            
             try:
                 response = self.llm.generate(prompt, max_new_tokens=1024, fast_json=True)
                 json_str = self._extract_json(response)
@@ -1398,22 +1294,17 @@ STRICT RULES:
                             logger.debug(f"Item parse error: {e}")
             except Exception as e:
                 logger.error(f"Extraction error: {e}")
-        
+        # deduplicate
         unique = {}
         for i in items:
             key = (i.content, i.doc_source, i.page)
             if key not in unique or i.confidence > unique[key].confidence:
                 unique[key] = i
-        
         min_conf = UNIVERSAL_CONFIG.get("min_confidence_threshold", 0.55)
         return [i for i in unique.values() if i.confidence >= min_conf]
 
     def _extract_json(self, text: str) -> Optional[str]:
-        patterns = [
-            r'\[.*\]',
-            r'```json\s*(\[.*?\])\s*```',
-            r'(\[.*\])',
-        ]
+        patterns = [r'\[.*\]', r'```json\s*(\[.*?\])\s*```', r'(\[.*\])']
         for pattern in patterns:
             match = re.search(pattern, text, re.DOTALL)
             if match:
@@ -1427,7 +1318,7 @@ STRICT RULES:
 
 
 # ============================================================================
-# 11. LLM REASONING SYNTHESIZER
+# 11. LLM REASONING SYNTHESIZER (ENHANCED WITH PHYSICAL TYPE GROUPING)
 # ============================================================================
 class LLMReasoningSynthesizer:
     REASONING_PROMPT = """You are an expert scientific analyst. Given extracted values and the user query, produce a comprehensive answer.
@@ -1458,36 +1349,17 @@ Do NOT invent information. Only use the extracted values above. For each citatio
 
 Return ONLY the answer text, no extra commentary."""
 
-    CROSS_DOC_QUANTITATIVE_PROMPT = """You are analyzing quantitative data across multiple scientific documents.
-Given the following parameter values extracted from different papers, provide a comprehensive cross-document analysis.
-
-PARAMETER: {parameter}
-
-VALUES BY DOCUMENT:
-{values_text}
-
-Provide:
-1. **Range Summary**: Minimum, maximum, mean values across all documents
-2. **Document-by-Document Breakdown**: Each document's reported values with context
-3. **Trends & Patterns**: Any correlations between parameters (e.g., laser power vs. scan speed)
-4. **Methodological Notes**: Differences in measurement methods or conditions
-5. **Missing Data**: Which documents did not report this parameter
-
-Use citations: <cite doc="filename.pdf" page="X"/>"""
-
     def __init__(self, llm: HybridLLM):
         self.llm = llm
 
     def synthesize(self, query: str, items: List[UniversalExtractionItem]) -> str:
         if not items:
             return f"No relevant information found for query: '{query}'. Try rephrasing or check the documents."
-
         extracted_lines = []
         for item in items:
             line = f"- {item.content} ({item.confidence:.2f}) context: {item.context[:200]} {item.citation()}"
             extracted_lines.append(line)
         extracted_text = "\n".join(extracted_lines[:20])
-
         prompt = self.REASONING_PROMPT.format(query=query, extracted_text=extracted_text)
         try:
             answer = self.llm.generate(prompt, max_new_tokens=1024, temperature=0.2)
@@ -1499,123 +1371,48 @@ Use citations: <cite doc="filename.pdf" page="X"/>"""
                 lines.append(f"- {item.content} {item.citation()}")
             return "\n".join(lines)
 
-    def synthesize_cross_document_quantitative(self, parameter: str, kg: QuantitativeKnowledgeGraph) -> str:
-        stats = kg.get_summary_stats(parameter)
-        items = kg.get_parameter_across_docs(parameter)
-        
-        if not items:
-            return f"No data found for parameter '{parameter}' across documents."
-        
-        values_lines = []
-        for item in items:
-            doc = item.get("doc_id", "unknown")
-            val = item.get("value", "N/A")
-            unit = item.get("unit", "")
-            context = item.get("context", "")[:150]
-            page = item.get("page", 1)
-            values_lines.append(
-                f"- {doc} (p.{page}): {val} {unit} | Context: {context} "
-                f"<cite doc=\"{doc}\" page=\"{page}\"/>"
-            )
-        
-        values_text = "\n".join(values_lines)
-        
-        prompt = self.CROSS_DOC_QUANTITATIVE_PROMPT.format(
-            parameter=parameter,
-            values_text=values_text
-        )
-        
-        try:
-            return self.llm.generate(prompt, max_new_tokens=2048, temperature=0.1)
-        except Exception as e:
-            logger.error(f"Cross-doc synthesis error: {e}")
-            return self._fallback_synthesis(parameter, stats, items)
-    
-    def _fallback_synthesis(self, parameter: str, stats: Dict, items: List[Dict]) -> str:
-        lines = [
-            f"## Cross-Document Analysis: {parameter}",
-            "",
-            f"**Documents Analyzed**: {stats.get('count', 0)}",
-            f"**Unique Sources**: {len(stats.get('documents', []))}",
-        ]
-        
-        if stats.get("values"):
-            lines.extend([
-                "",
-                f"**Value Range**: {stats['min']} to {stats['max']} {stats.get('units', [''])[0]}",
-                f"**Mean**: {stats['mean']:.2f}",
-                f"**Std Dev**: {stats['std']:.2f}" if stats.get('std') else "",
-            ])
-        
-        lines.extend([
-            "",
-            "**Document Breakdown**:"
-        ])
-        
-        for item in items[:10]:
-            doc = item.get("doc_id", "unknown")
-            val = item.get("value", "N/A")
-            unit = item.get("unit", "")
-            page = item.get("page", 1)
-            lines.append(f"- {doc} (p.{page}): {val} {unit}")
-        
-        return "\n".join(lines)
-    
     def generate_human_conclusion(self, query: str, report: QueryReport) -> str:
-        """Generate a human-readable conclusion from extracted values."""
         values = report.all_values
         if not values:
             return f"No quantitative data found for '{query}' across the analyzed documents."
-        
-        # Group by quantity type
-        by_type = defaultdict(list)
+        # Group by physical_type OR quantity_type
+        by_physical = defaultdict(list)
         for v in values:
-            by_type[v.quantity_type].append(v)
-        
+            phys = v.physical_type if v.physical_type else v.quantity_type
+            by_physical[phys].append(v)
         lines = [
             f"## Summary: {query.title()}",
-            "",
             f"Across **{report.total_docs}** documents analyzed, **{report.docs_with_results}** contained relevant quantitative data.",
             f"Total extracted values: **{len(values)}**.",
             ""
         ]
-        
-        for qtype, vals in by_type.items():
-            lines.append(f"### {qtype.replace('_', ' ').title()} ({len(vals)} values)")
-            
-            # Statistics
+        for phys, vals in by_physical.items():
+            lines.append(f"### {phys.replace('_', ' ').title()} ({len(vals)} values)")
             nums = [v.value for v in vals]
             units = list(set(v.unit for v in vals))
             docs = list(set(v.doc_name for v in vals))
-            
             if nums:
                 lines.append(f"- **Range**: {min(nums):.2f} to {max(nums):.2f} {units[0] if units else ''}")
                 lines.append(f"- **Average**: {np.mean(nums):.2f}")
                 if len(nums) > 1:
                     lines.append(f"- **Std Dev**: {np.std(nums):.2f}")
-            
             lines.append(f"- **Found in**: {', '.join(docs[:3])}{'...' if len(docs) > 3 else ''}")
             lines.append("")
-        
-        # Top values table
         lines.append("### Key Values by Document")
-        for v in sorted(values, key=lambda x: x.confidence, reverse=True)[:8]:
-            lines.append(f"| {v.doc_name} | p.{v.page} | {v.value:.2f} {v.unit} | {v.quantity_type} |")
-        
+        for v in sorted(values, key=lambda x: x.confidence, reverse=True)[:12]:
+            lines.append(f"| {v.doc_name} | p.{v.page} | {v.value:.2f} {v.unit} | {v.physical_type or v.quantity_type} |")
         return "\n".join(lines)
 
 
 # ============================================================================
-# 12. STREAMLIT UI
+# 12. STREAMLIT UI (WITH SESSION STATE CACHING AND TEXT LENGTH SLIDER)
 # ============================================================================
 def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
-        
         model_keys = list(LOCAL_LLM_OPTIONS.keys())
         if "llm_model_choice" not in st.session_state:
             st.session_state.llm_model_choice = model_keys[3]
-        
         selected = st.selectbox(
             "🧠 Select Local LLM (Ollama)",
             options=model_keys,
@@ -1625,10 +1422,18 @@ def render_sidebar():
         st.session_state.llm_model_choice = selected
 
         st.checkbox("🗜️ Use 4-bit quantization (if Transformers fallback)", value=True, key="use_4bit")
+        # ENHANCEMENT: Text length slider
+        max_chars = st.slider(
+            "📄 Max text length per retrieved section (characters)",
+            min_value=1000, max_value=50000, value=20000, step=1000,
+            help="Larger values give more context but use more memory/LLM tokens. 20000 is a good balance."
+        )
+        st.session_state.max_retrieval_chars = max_chars
         st.slider("Confidence threshold", 0.3, 0.9, 0.55, 0.05, key="min_confidence")
         st.checkbox("Show reasoning trace", value=True, key="show_trace")
         st.checkbox("Show tree navigation", value=True, key="show_tree_nav")
         st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+
 
 @st.cache_resource(show_spinner="Initializing LLM...")
 def get_cached_llm(model_choice: str, use_4bit: bool):
@@ -1637,10 +1442,11 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
 
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v12.1 - Vectorless RAG (Fixed)", layout="wide")
-    st.markdown("# 🔬 DECLARMIMA v12.1-VECTORLESS-FIXED")
-    st.caption("Hierarchical tree navigation with LLM-powered quantitative reasoning (full text retrieval)")
+    st.set_page_config(page_title="DECLARMIMA v12.2 - Vectorless RAG", layout="wide")
+    st.markdown("# 🔬 DECLARMIMA v12.2-VECTORLESS-FIXED")
+    st.caption("Hierarchical tree navigation with LLM-powered quantitative reasoning (configurable text length)")
 
+    # Initialize session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "query_processor" not in st.session_state:
@@ -1649,8 +1455,12 @@ def run_streamlit():
         st.session_state.knowledge_graph = QuantitativeKnowledgeGraph()
     if "annotated_trees" not in st.session_state:
         st.session_state.annotated_trees = []
-    
+    # ENHANCEMENT: cache query results to avoid reruns on display toggle
+    if "cached_query_result" not in st.session_state:
+        st.session_state.cached_query_result = None
+
     render_sidebar()
+    max_retrieval_chars = st.session_state.get("max_retrieval_chars", 20000)
 
     uploaded_files = st.file_uploader(
         "Upload PDF files",
@@ -1667,33 +1477,26 @@ def run_streamlit():
     if st.session_state.query_processor.get("files") and not st.session_state.annotated_trees:
         with st.spinner("Building hierarchical index with async LLM TOC extraction..."):
             progress = st.progress(0)
-            
             llm = get_cached_llm(
                 st.session_state.llm_model_choice,
                 st.session_state.get("use_4bit", True)
             )
             progress.progress(0.1)
-            
             idx = FastHierarchicalIndex(llm=llm)
-            
             async def build_index():
                 return await idx.build_from_pdfs_fast(
                     st.session_state.query_processor["files"],
                     max_workers=4
                 )
-            
             trees = asyncio.run(build_index())
             st.session_state.query_processor["index"] = idx
             st.session_state.query_processor["doc_trees"] = trees
             progress.progress(0.5)
-            
             extractor = UniversalLLMExtractor(llm)
             kg = QuantitativeKnowledgeGraph()
-            
             all_items = []
             for doc_name, tree in trees.items():
                 leaf_texts = []
-                
                 def collect_leaves(node: PageNode):
                     if not node.children:
                         text = node.get_text()
@@ -1706,33 +1509,25 @@ def run_streamlit():
                             })
                     for c in node.children:
                         collect_leaves(c)
-                
                 collect_leaves(tree)
-                # FIX: use a more targeted extraction prompt for initial indexing
-                initial_prompt = "Extract all quantitative parameters (especially laser power, scan speed, temperature, energy density), materials, methods, and process conditions with full numerical values."
+                initial_prompt = "Extract all quantitative parameters (laser power, irradiance, scan speed, temperature, energy density) with full numerical values and correct units. Distinguish power (W, kW) from irradiance (W/cm², kW/cm²)."
                 items = extractor.extract_from_chunks(leaf_texts, initial_prompt)
                 all_items.extend(items)
                 kg.add_extractions(doc_name, items)
-            
             st.session_state.knowledge_graph = kg
             progress.progress(0.8)
-            
             annotated = []
             for doc_name, tree in trees.items():
-                ann = kg.to_tree_annotation(tree)
+                ann = kg.to_tree_annotation(tree, max_chars=max_retrieval_chars)
                 ann["doc_id"] = doc_name
                 ann["doc_name"] = doc_name
                 annotated.append(ann)
-            
             st.session_state.annotated_trees = annotated
             progress.progress(1.0)
-            
             st.success(f"✅ Indexed {len(trees)} documents with {len(all_items)} quantitative items")
-            
             with st.expander("📊 Detected Parameters", expanded=True):
                 param_summary = kg.get_all_parameters()
                 if param_summary:
-                    st.write("**Parameters found across documents:**")
                     for param, count in sorted(param_summary.items(), key=lambda x: x[1], reverse=True)[:10]:
                         st.write(f"- `{param}`: {count} occurrences")
                 else:
@@ -1741,7 +1536,6 @@ def run_streamlit():
     if st.session_state.annotated_trees:
         st.markdown("### ⚡ Quick Queries")
         col1, col2, col3, col4 = st.columns(4)
-        
         quick_params = ["laser power", "scan speed", "temperature", "energy density"]
         for i, param in enumerate(quick_params):
             with [col1, col2, col3, col4][i]:
@@ -1750,146 +1544,75 @@ def run_streamlit():
                     st.rerun()
         
         default_query = st.session_state.get("quick_query", "")
-        prompt = st.chat_input(
-            "Ask about any term, value, or concept across documents...",
-            key="chat_input"
-        )
-        
+        prompt = st.chat_input("Ask about any term, value, or concept across documents...", key="chat_input")
         if default_query and not prompt:
             prompt = default_query
             st.session_state.quick_query = ""
-        
+
+        # ENHANCEMENT: Only run query if new prompt or cache invalid
+        run_query = False
         if prompt:
+            if st.session_state.cached_query_result is None or st.session_state.cached_query_result.get("prompt") != prompt:
+                run_query = True
+                st.session_state.cached_query_result = {"prompt": prompt}  # placeholder
             st.session_state.messages.append({"role": "user", "content": prompt})
-            
             with st.chat_message("user"):
                 st.markdown(prompt)
 
+        if run_query:
             with st.chat_message("assistant"):
                 progress = st.progress(0)
                 progress.text("Initializing LLM...")
-                
                 llm = get_cached_llm(
                     st.session_state.llm_model_choice,
                     st.session_state.get("use_4bit", True)
                 )
                 progress.progress(0.15)
-                
                 query_lower = prompt.lower()
-                is_parameter_query = any(
-                    kw in query_lower for kw in
-                    ["laser power", "scan speed", "temperature", "energy density",
-                     "parameter", "value", "what is the", "how much", "laser power"]
-                )
-                
+                is_parameter_query = any(kw in query_lower for kw in ["laser power", "scan speed", "temperature", "energy density", "parameter", "value", "what is the", "how much"])
                 progress.text("Reasoning over document trees...")
-                retriever = HierarchicalTreeRetriever(llm, max_results=30)
-                
-                retrieved = asyncio.run(
-                    retriever.retrieve_quantitative(prompt, st.session_state.annotated_trees)
-                )
+                retriever = HierarchicalTreeRetriever(llm, max_results=30, max_text_chars=max_retrieval_chars)
+                retrieved = asyncio.run(retriever.retrieve_quantitative(prompt, st.session_state.annotated_trees))
                 progress.progress(0.4)
-                
                 progress.text("Extracting values with LLM...")
                 extractor = UniversalLLMExtractor(llm)
                 items = []
                 for r in retrieved:
                     chunk_items = extractor.extract_from_chunks([r], prompt)
                     items.extend(chunk_items)
-                
                 min_conf = st.session_state.get("min_confidence", 0.55)
                 items = [i for i in items if i.confidence >= min_conf]
                 progress.progress(0.6)
-                
                 progress.text("Synthesizing cross-document answer...")
                 synthesizer = LLMReasoningSynthesizer(llm)
-                
-                # FIX: Use freshly extracted items for the answer
-                if is_parameter_query and items:
-                    # Build a temporary report from items
-                    temp_values = []
-                    for item in items:
-                        if item.item_type == "quantitative" and item.value is not None:
-                            temp_values.append(ExtractedValue(
-                                query=prompt,
-                                value=item.value,
-                                unit=item.unit or "",
-                                quantity_type="laser_power" if "power" in prompt.lower() else "unknown",
-                                confidence=item.confidence,
-                                context=item.context,
-                                doc_name=item.doc_source,
-                                page=item.page,
-                                section_title=item.section_title
-                            ))
-                    if temp_values:
-                        # Generate human conclusion directly from items
-                        report = QueryReport(
-                            query=prompt,
-                            total_docs=len(st.session_state.annotated_trees),
-                            docs_with_results=len(set(v.doc_name for v in temp_values)),
-                            all_values=temp_values,
-                            consensus={},
-                            processing_time_sec=0.0
-                        )
-                        answer = synthesizer.generate_human_conclusion(prompt, report)
-                        # Also add evidence synthesis
-                        answer += "\n\n**Detailed Extractions:**\n"
-                        for v in temp_values:
-                            answer += f"- {v.doc_name} (p.{v.page}): {v.value} {v.unit}\n"
-                    else:
-                        answer = synthesizer.synthesize(prompt, items)
-                else:
-                    answer = synthesizer.synthesize(prompt, items)
-                
-                progress.progress(1.0, text="Done!")
-                st.markdown(answer)
-                
-                # TABLE + JSON DISPLAY TOGGLE
-                st.markdown("---")
-                st.subheader("📊 Quantitative Results")
-                
-                display_mode = st.radio(
-                    "Display format",
-                    ["Table", "JSON", "Human Summary"],
-                    horizontal=True,
-                    key="display_mode"
-                )
-                
-                # Build extracted values from fresh items (not KG)
+                # Build extracted values from items (fresh)
                 extracted_values = []
                 for item in items:
                     if item.item_type == "quantitative" and item.value is not None:
+                        unit = item.unit or ""
+                        # Determine physical type from unit or explicit field
+                        if item.quantity_physical_type:
+                            phys_type = item.quantity_physical_type
+                        else:
+                            if "w/cm²" in unit.lower() or "kw/cm²" in unit.lower():
+                                phys_type = "irradiance"
+                            elif unit.lower() in ["w", "kw", "mw"]:
+                                phys_type = "power"
+                            else:
+                                phys_type = "unknown"
                         extracted_values.append(ExtractedValue(
                             query=prompt,
                             value=item.value,
-                            unit=item.unit or "",
-                            quantity_type="laser_power" if "power" in prompt.lower() else "unknown",
+                            unit=unit,
+                            quantity_type=item.parameter_name or "laser_power",
+                            physical_type=phys_type,
                             confidence=item.confidence,
                             context=item.context,
                             doc_name=item.doc_source,
                             page=item.page,
                             section_title=item.section_title
                         ))
-                
-                if display_mode == "Table" and extracted_values:
-                    import pandas as pd
-                    df_data = []
-                    for v in extracted_values:
-                        df_data.append({
-                            "Document": v.doc_name,
-                            "Page": v.page,
-                            "Value": f"{v.value:.2f}",
-                            "Unit": v.unit,
-                            "Type": v.quantity_type,
-                            "Confidence": f"{v.confidence:.2f}",
-                            "Context": v.context[:100] + "..."
-                        })
-                    st.dataframe(df_data, use_container_width=True)
-                    
-                elif display_mode == "JSON" and extracted_values:
-                    st.json([v.model_dump() for v in extracted_values])
-                    
-                elif display_mode == "Human Summary" and extracted_values:
+                if is_parameter_query and extracted_values:
                     report = QueryReport(
                         query=prompt,
                         total_docs=len(st.session_state.annotated_trees),
@@ -1898,78 +1621,114 @@ def run_streamlit():
                         consensus={},
                         processing_time_sec=0.0
                     )
-                    conclusion = synthesizer.generate_human_conclusion(prompt, report)
-                    st.markdown(conclusion)
-                
-                # Show tree navigation trace
-                if st.session_state.get("show_tree_nav") and retrieved:
-                    with st.expander("🌳 Tree Navigation Trace", expanded=False):
-                        for r in retrieved[:5]:
-                            st.markdown(
-                                f"**{r['doc_id']}** → `{r['section_title']}` "
-                                f"(p.{r['page_start']}) | confidence: {r.get('confidence', 0):.2f}"
-                            )
-                            st.caption(r.get('selection_reasoning', ''))
-                            if r.get('quantitative_items'):
-                                st.json(r['quantitative_items'][:3])
-                
-                # Show extracted items
-                if items:
-                    with st.expander("🔍 Extracted Items (Raw)", expanded=False):
-                        st.json([i.to_dict() for i in items[:10]])
-                
-                # Statistics from fresh items
-                if extracted_values:
-                    with st.expander(f"📊 Quick Statistics", expanded=False):
-                        vals = [v.value for v in extracted_values if v.unit]
-                        if vals:
-                            st.metric("Count", len(vals))
-                            st.metric("Min", f"{min(vals):.2f}")
-                            st.metric("Max", f"{max(vals):.2f}")
-                            st.metric("Mean", f"{np.mean(vals):.2f}")
-                
-                # Download buttons
-                report = CrossDocumentQueryReport(
-                    query=prompt,
-                    total_documents=len(st.session_state.annotated_trees),
-                    documents_with_results=len(set(i.doc_source for i in items)),
-                    all_items=items
-                )
-                
-                col_dl1, col_dl2 = st.columns(2)
-                with col_dl1:
-                    st.download_button(
-                        "📥 Download JSON Report",
-                        report.to_json(),
-                        "results.json",
-                        "application/json"
-                    )
-                with col_dl2:
-                    tree_export = {
-                        "query": prompt,
-                        "annotated_trees": st.session_state.annotated_trees,
-                        "retrieved_nodes": retrieved,
-                        "extracted_items": [i.to_dict() for i in items],
-                        "answer": answer
-                    }
-                    st.download_button(
-                        "📥 Download Tree Export",
-                        json.dumps(tree_export, indent=2, ensure_ascii=False, default=str),
-                        "tree_report.json",
-                        "application/json"
-                    )
-                
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-            
-            if "index" in st.session_state.query_processor:
-                st.session_state.query_processor["index"].cleanup()
+                    answer = synthesizer.generate_human_conclusion(prompt, report)
+                    # Append detailed extractions
+                    answer += "\n\n**Detailed Extractions:**\n"
+                    for v in extracted_values:
+                        answer += f"- {v.doc_name} (p.{v.page}): {v.value} {v.unit} [{v.physical_type}]\n"
+                else:
+                    answer = synthesizer.synthesize(prompt, items)
+                progress.progress(1.0, text="Done!")
+                st.markdown(answer)
+                # Cache results
+                st.session_state.cached_query_result = {
+                    "prompt": prompt,
+                    "retrieved": retrieved,
+                    "items": items,
+                    "extracted_values": extracted_values,
+                    "answer": answer
+                }
+        else:
+            # Display cached results if they exist
+            if st.session_state.cached_query_result and st.session_state.cached_query_result.get("prompt") == prompt:
+                cached = st.session_state.cached_query_result
+                with st.chat_message("assistant"):
+                    st.markdown(cached["answer"])
+                    retrieved = cached["retrieved"]
+                    items = cached["items"]
+                    extracted_values = cached["extracted_values"]
+            else:
+                # No query yet
+                st.info("Ask a question about the documents.")
+                return
 
+        # Display quantitative results (with toggle) – using cached data
+        st.markdown("---")
+        st.subheader("📊 Quantitative Results")
+        display_mode = st.radio("Display format", ["Table", "JSON", "Human Summary"], horizontal=True, key="display_mode")
+        if display_mode == "Table" and extracted_values:
+            import pandas as pd
+            df_data = []
+            for v in extracted_values:
+                df_data.append({
+                    "Document": v.doc_name,
+                    "Page": v.page,
+                    "Value": f"{v.value:.2f}",
+                    "Unit": v.unit,
+                    "Physical Type": v.physical_type,
+                    "Confidence": f"{v.confidence:.2f}",
+                    "Context": v.context[:100] + "..."
+                })
+            st.dataframe(df_data, use_container_width=True)
+        elif display_mode == "JSON" and extracted_values:
+            st.json([v.model_dump() for v in extracted_values])
+        elif display_mode == "Human Summary" and extracted_values:
+            report = QueryReport(
+                query=prompt,
+                total_docs=len(st.session_state.annotated_trees),
+                docs_with_results=len(set(v.doc_name for v in extracted_values)),
+                all_values=extracted_values,
+                consensus={},
+                processing_time_sec=0.0
+            )
+            conclusion = LLMReasoningSynthesizer(None).generate_human_conclusion(prompt, report)
+            st.markdown(conclusion)
+        
+        if st.session_state.get("show_tree_nav") and retrieved:
+            with st.expander("🌳 Tree Navigation Trace", expanded=False):
+                for r in retrieved[:5]:
+                    st.markdown(f"**{r['doc_id']}** → `{r['section_title']}` (p.{r['page_start']}) | confidence: {r.get('confidence', 0):.2f}")
+                    st.caption(r.get('selection_reasoning', ''))
+        if items:
+            with st.expander("🔍 Extracted Items (Raw)", expanded=False):
+                st.json([i.to_dict() for i in items[:10]])
+        if extracted_values:
+            with st.expander("📊 Quick Statistics", expanded=False):
+                # Group by physical type
+                by_phys = defaultdict(list)
+                for v in extracted_values:
+                    by_phys[v.physical_type].append(v.value)
+                for phys, vals in by_phys.items():
+                    st.metric(f"{phys.title()} count", len(vals))
+                    if vals:
+                        st.metric(f"{phys} min", f"{min(vals):.2f}")
+                        st.metric(f"{phys} max", f"{max(vals):.2f}")
+                        st.metric(f"{phys} mean", f"{np.mean(vals):.2f}")
+        # Download buttons
+        report = CrossDocumentQueryReport(
+            query=prompt,
+            total_documents=len(st.session_state.annotated_trees),
+            documents_with_results=len(set(i.doc_source for i in items)),
+            all_items=items
+        )
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button("📥 Download JSON Report", report.to_json(), "results.json", "application/json")
+        with col_dl2:
+            tree_export = {
+                "query": prompt,
+                "annotated_trees": st.session_state.annotated_trees,
+                "retrieved_nodes": retrieved,
+                "extracted_items": [i.to_dict() for i in items],
+                "answer": answer
+            }
+            st.download_button("📥 Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json")
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        if "index" in st.session_state.query_processor:
+            st.session_state.query_processor["index"].cleanup()
     else:
-        st.info("👆 Upload PDF files to begin. The system will automatically detect document structure and extract quantitative parameters.")
+        st.info("👆 Upload PDF files to begin.")
 
 
-# ============================================================================
-# 13. MAIN ENTRY
-# ============================================================================
 if __name__ == "__main__":
     run_streamlit()

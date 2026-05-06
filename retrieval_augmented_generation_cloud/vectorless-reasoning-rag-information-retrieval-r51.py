@@ -670,21 +670,28 @@ class PageNode:
             "children": [c.to_dict() for c in self.children]
         }
     
+    
     @classmethod
-    def from_dict(cls,  Dict[str, Any], pdf_path: str = None) -> 'PageNode':
-        """Reconstruct from dictionary."""
+    def from_dict(cls, data: Dict[str, Any], pdf_path: str = None) -> 'PageNode':
+        """Reconstruct PageNode from dictionary (for cache loading)."""
         node = cls(
-            id=data["id"], title=data["title"],
-            page_start=data.get("page_start", 1), page_end=data.get("page_end"),
-            full_text="", summary=data.get("summary", ""),
-            level=data.get("level", 0), doc_id=data.get("doc_id", ""),
-            section_type=data.get("section_type", "BODY")
+            id=data["id"],
+            title=data["title"],
+            page_start=data.get("page_start", 1),
+            page_end=data.get("page_end"),
+            full_text="",  # Will be lazy-loaded
+            summary=data.get("summary", ""),
+            level=data.get("level", 0),
+            doc_id=data.get("doc_id", ""),
+            section_type=data.get("section_type", "BODY"),
+            metadata=data.get("metadata", {}),
         )
         node._pdf_path = pdf_path
+        # Reconstruct children recursively
         for child_data in data.get("children", []):
             node.children.append(cls.from_dict(child_data, pdf_path))
         return node
-    
+        
     def get_keyword_density(self, keywords: List[str]) -> float:
         """Calculate keyword density for relevance scoring."""
         text = self.get_text().lower()

@@ -135,7 +135,14 @@ V36-V37: Regex-Free, QBQE + Query Attention, VECTOR Based RAG
 
 V42: Vectorless Reasoning Based RAG
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v42.0-yellow)](https://vectorless-reasoning-rag-information-retrieval42.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v42.0-orange)](https://vectorless-reasoning-rag-information-retrieval42.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v43.0-orange)](https://vectorless-reasoning-rag-information-retrieval43.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v44.0-orange)](https://vectorless-reasoning-rag-information-retrieval44.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v45.0-red)](https://vectorless-reasoning-rag-information-retrieval45.streamlit.app/) (Excellent qualitative and quantitative reasoning, Output in json format)
+
 
 Multicomponent Alloy Microstructure Focus :
 

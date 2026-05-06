@@ -1563,7 +1563,7 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
     internal = LOCAL_LLM_OPTIONS[model_choice]
     return HybridLLM(model_key=internal, use_4bit=use_4bit)
 
-
+#
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v12.3 - Physical Quantity Distinction", layout="wide")
     st.markdown("# 🔬 DECLARMIMA v12.3 - Physical Quantity Distinction")
@@ -1579,6 +1579,9 @@ def run_streamlit():
         st.session_state.annotated_trees = []
     if "cached_query_result" not in st.session_state:
         st.session_state.cached_query_result = None
+    # NEW: persist the current query across reruns caused by downloads/radio changes
+    if "active_prompt" not in st.session_state:
+        st.session_state.active_prompt = ""
 
     render_sidebar()
     max_retrieval_chars = st.session_state.get("max_retrieval_chars", 20000)
@@ -1653,19 +1656,35 @@ def run_streamlit():
                     st.rerun()
 
         default_query = st.session_state.get("quick_query", "")
-        prompt = st.chat_input("Ask about any term, value, or concept...", key="chat_input")
-        if default_query and not prompt:
-            prompt = default_query
+        prompt_input = st.chat_input("Ask about any term, value, or concept...", key="chat_input")
+        if default_query and not prompt_input:
+            prompt_input = default_query
             st.session_state.quick_query = ""
 
-        run_query = False
-        if prompt:
-            if st.session_state.cached_query_result is None or st.session_state.cached_query_result.get("prompt") != prompt:
-                run_query = True
-                st.session_state.cached_query_result = {"prompt": prompt}
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        # Persist the active prompt across Streamlit reruns (downloads, radio changes, etc.)
+        if prompt_input:
+            st.session_state.active_prompt = prompt_input
+            st.session_state.messages.append({"role": "user", "content": prompt_input})
             with st.chat_message("user"):
-                st.markdown(prompt)
+                st.markdown(prompt_input)
+        elif st.session_state.active_prompt:
+            # Re-render user message on widget-triggered reruns so chat history doesn't vanish
+            with st.chat_message("user"):
+                st.markdown(st.session_state.active_prompt)
+
+        active_prompt = st.session_state.get("active_prompt", "")
+
+        # Determine whether we need to run a fresh query or can safely use cached results
+        run_query = False
+        if active_prompt:
+            cached = st.session_state.cached_query_result
+            has_valid_cache = (
+                cached is not None
+                and cached.get("prompt") == active_prompt
+                and "answer" in cached          # ensure cache is complete, not partial
+            )
+            if not has_valid_cache:
+                run_query = True
 
         if run_query:
             with st.chat_message("assistant"):
@@ -1674,12 +1693,12 @@ def run_streamlit():
                 llm = get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
                 progress.progress(0.15)
                 retriever = HierarchicalTreeRetriever(llm, max_results=30, max_text_chars=max_retrieval_chars)
-                retrieved = asyncio.run(retriever.retrieve_quantitative(prompt, st.session_state.annotated_trees))
+                retrieved = asyncio.run(retriever.retrieve_quantitative(active_prompt, st.session_state.annotated_trees))
                 progress.progress(0.4)
                 extractor = UniversalLLMExtractor(llm)
                 items = []
                 for r in retrieved:
-                    items.extend(extractor.extract_from_chunks([r], prompt))
+                    items.extend(extractor.extract_from_chunks([r], active_prompt))
                 min_conf = st.session_state.get("min_confidence", 0.55)
                 items = [i for i in items if i.confidence >= min_conf]
                 progress.progress(0.6)
@@ -1691,7 +1710,7 @@ def run_streamlit():
                             item.parameter_name, item.unit, item.context
                         )
                         extracted_values.append(ExtractedValue(
-                            query=prompt,
+                            query=active_prompt,
                             value=item.value,
                             unit=item.unit or "",
                             physical_quantity=phys_q,
@@ -1704,37 +1723,40 @@ def run_streamlit():
                         ))
                 if extracted_values:
                     report = QueryReport(
-                        query=prompt,
+                        query=active_prompt,
                         total_docs=len(st.session_state.annotated_trees),
                         docs_with_results=len(set(v.doc_name for v in extracted_values)),
                         all_values=extracted_values,
                         consensus={},
                         processing_time_sec=0.0
                     )
-                    answer = synthesizer.generate_human_conclusion(prompt, report)
+                    answer = synthesizer.generate_human_conclusion(active_prompt, report)
                 else:
-                    answer = synthesizer.synthesize(prompt, items)
+                    answer = synthesizer.synthesize(active_prompt, items)
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
+                # Store complete result so reruns (downloads, radio changes) don't recompute
                 st.session_state.cached_query_result = {
-                    "prompt": prompt,
+                    "prompt": active_prompt,
                     "retrieved": retrieved,
                     "items": items,
                     "extracted_values": extracted_values,
                     "answer": answer
                 }
+                st.session_state.messages.append({"role": "assistant", "content": answer})
         else:
-            if st.session_state.cached_query_result and st.session_state.cached_query_result.get("prompt") == prompt:
+            if active_prompt and st.session_state.cached_query_result and "answer" in st.session_state.cached_query_result:
                 cached = st.session_state.cached_query_result
                 with st.chat_message("assistant"):
                     st.markdown(cached["answer"])
-                    retrieved = cached["retrieved"]
-                    items = cached["items"]
-                    extracted_values = cached["extracted_values"]
+                retrieved = cached["retrieved"]
+                items = cached["items"]
+                extracted_values = cached["extracted_values"]
+                answer = cached["answer"]
             else:
-                if not prompt:
+                if not active_prompt:
                     st.info("Ask a question about the documents.")
-                return
+                    return
 
         st.markdown("---")
         st.subheader("📊 Quantitative Results")
@@ -1758,14 +1780,14 @@ def run_streamlit():
             st.json([v.model_dump() for v in extracted_values])
         elif display_mode == "Human Summary" and extracted_values:
             report = QueryReport(
-                query=prompt,
+                query=active_prompt,
                 total_docs=len(st.session_state.annotated_trees),
                 docs_with_results=len(set(v.doc_name for v in extracted_values)),
                 all_values=extracted_values,
                 consensus={},
                 processing_time_sec=0.0
             )
-            conclusion = LLMReasoningSynthesizer(None).generate_human_conclusion(prompt, report)
+            conclusion = LLMReasoningSynthesizer(None).generate_human_conclusion(active_prompt, report)
             st.markdown(conclusion)
 
         if st.session_state.get("show_tree_nav") and retrieved:
@@ -1790,7 +1812,7 @@ def run_streamlit():
                         st.metric(f"{readable} mean", f"{np.mean(vals):.2f}")
 
         report = CrossDocumentQueryReport(
-            query=prompt,
+            query=active_prompt,
             total_documents=len(st.session_state.annotated_trees),
             documents_with_results=len(set(i.doc_source for i in items)),
             all_items=items
@@ -1800,18 +1822,19 @@ def run_streamlit():
             st.download_button("📥 Download JSON Report", report.to_json(), "results.json", "application/json")
         with col_dl2:
             tree_export = {
-                "query": prompt,
+                "query": active_prompt,
                 "annotated_trees": st.session_state.annotated_trees,
                 "retrieved_nodes": retrieved,
                 "extracted_items": [i.to_dict() for i in items],
                 "answer": answer
             }
             st.download_button("📥 Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json")
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        
         if "index" in st.session_state.query_processor:
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("👆 Upload PDF files to begin.")
+
 
 
 if __name__ == "__main__":

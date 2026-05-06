@@ -303,6 +303,6 @@ if __name__ == "__main__":
     import os
 
     if os.environ.get("STREAMLIT_SERVER_PORT"):
-        run_streamlit()
+        run_app()
     else:
         run_cli()

@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-DECLARMIMA v8.0 - CLEAN PRODUCTION VERSION
-==========================================
-- Streamlit UI (default when launched via streamlit)
-- CLI mode (when run via python)
-- Fixed argument handling
-- Improved robustness
+DECLARMIMA v8.5 - STREAMLIT ONLY (FULL POWER)
+=============================================
+✔ Hierarchical PDF indexing (TOC + fallback)
+✔ Parallel extraction (async + threads)
+✔ Strict numeric filtering (no garbage values)
+✔ Cross-document consensus
+✔ Streamlit-native execution (no CLI conflicts)
 """
 
 import streamlit as st
@@ -26,9 +27,8 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-import numpy as np
 
-# PDF processing
+import numpy as np
 import fitz  # PyMuPDF
 
 # Logging
@@ -48,12 +48,14 @@ class ExtractedValue(BaseModel):
     context: str
     doc_name: str
     page: int
+    section_title: Optional[str] = None
 
     @field_validator('value')
-    def non_zero_value(cls, v):
+    def non_zero(cls, v):
         if v == 0.0:
-            raise ValueError("Zero values are ignored")
+            raise ValueError("Zero values ignored")
         return v
+
 
 class QueryReport(BaseModel):
     query: str
@@ -68,74 +70,119 @@ class QueryReport(BaseModel):
 
 
 # =========================================================
-# PDF INDEX
+# HIERARCHICAL INDEX
 # =========================================================
 @dataclass
 class PageNode:
+    id: str
+    title: str
     page: int
     text: str
+    children: List['PageNode'] = field(default_factory=list)
 
-class SimpleIndex:
+
+class HierarchicalIndex:
     def __init__(self):
-        self.docs = {}
+        self.doc_trees = {}
 
     def build(self, files):
-        for f in files:
-            doc = fitz.open(stream=f.read(), filetype="pdf")
-            pages = []
-            for i in range(len(doc)):
-                txt = doc[i].get_text("text")
-                if txt.strip():
-                    pages.append(PageNode(i + 1, txt))
-            self.docs[f.name] = pages
-        return self.docs
+        for file in files:
+            doc = fitz.open(stream=file.read(), filetype="pdf")
+            root = PageNode(file.name, "ROOT", 0, "")
+
+            toc = doc.get_toc()
+
+            # --- TOC-based hierarchy ---
+            if toc:
+                for level, title, page in toc:
+                    text = doc[page-1].get_text("text")
+                    node = PageNode(
+                        id=f"{file.name}_{page}",
+                        title=title,
+                        page=page,
+                        text=text
+                    )
+                    root.children.append(node)
+
+            # --- fallback: page-wise ---
+            else:
+                for p in range(len(doc)):
+                    text = doc[p].get_text("text")
+                    if text.strip():
+                        node = PageNode(
+                            id=f"{file.name}_p{p+1}",
+                            title=f"Page {p+1}",
+                            page=p+1,
+                            text=text
+                        )
+                        root.children.append(node)
+
+            self.doc_trees[file.name] = root
+
+        return self.doc_trees
 
 
 # =========================================================
 # EXTRACTION
 # =========================================================
-class Extractor:
+class PreciseExtractor:
     def __init__(self, query):
         self.query = query.lower()
-        self.pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(W|kW|mW)', re.IGNORECASE)
 
-    def extract(self, text, doc, page):
+        self.patterns = [
+            rf'{self.query}\s*[=:]\s*(\d+(?:\.\d+)?)\s*(W|kW|mW)',
+            rf'(\d+(?:\.\d+)?)\s*(W|kW|mW)\s+{self.query}',
+            r'(\d+(?:\.\d+)?)\s*(W|kW|mW)'
+        ]
+
+    def extract(self, text, doc, page, title):
         results = []
-        for m in self.pattern.finditer(text):
-            value = float(m.group(1))
-            unit = m.group(2)
 
-            context = text[max(0, m.start()-80):m.end()+80]
+        for pattern in self.patterns:
+            for m in re.finditer(pattern, text, re.IGNORECASE):
+                try:
+                    val = float(m.group(1))
+                    unit = m.group(2)
 
-            if self.query not in context.lower() and "laser" not in context.lower():
-                continue
+                    if val == 0:
+                        continue
 
-            results.append(ExtractedValue(
-                query=self.query,
-                value=value,
-                unit=unit,
-                confidence=0.9,
-                context=context.strip(),
-                doc_name=doc,
-                page=page
-            ))
+                    context = text[max(0, m.start()-120):m.end()+120]
+
+                    if self.query not in context.lower() and "laser" not in context.lower():
+                        continue
+
+                    results.append(ExtractedValue(
+                        query=self.query,
+                        value=val,
+                        unit=unit,
+                        confidence=0.9,
+                        context=context.strip(),
+                        doc_name=doc,
+                        page=page,
+                        section_title=title
+                    ))
+
+                except:
+                    continue
+
         return results
 
 
 # =========================================================
 # ENGINE
 # =========================================================
-class Engine:
+class ParallelEngine:
     def __init__(self, index):
         self.index = index
 
     async def run(self, query):
         start = time.time()
-        extractor = Extractor(query)
+        extractor = PreciseExtractor(query)
 
         tasks = []
-        for doc, pages in self.index.docs.items():
-            tasks.append(self.process_doc(doc, pages, extractor))
+        for doc, root in self.index.doc_trees.items():
+            tasks.append(self.process_doc(doc, root, extractor))
 
         results = await asyncio.gather(*tasks)
 
@@ -147,105 +194,108 @@ class Engine:
                 docs_with += 1
                 all_vals.extend(vals)
 
+        # --- consensus ---
         consensus = {}
         if all_vals:
             nums = [v.value for v in all_vals]
+            units = Counter(v.unit for v in all_vals).most_common(1)[0][0]
+
             consensus = {
                 "mean": float(np.mean(nums)),
+                "std": float(np.std(nums)),
                 "min": float(np.min(nums)),
                 "max": float(np.max(nums)),
-                "count": len(nums)
+                "count": len(nums),
+                "unit": units
             }
 
         return QueryReport(
             query=query,
-            total_docs=len(self.index.docs),
+            total_docs=len(self.index.doc_trees),
             docs_with_results=docs_with,
             all_values=all_vals,
             consensus=consensus,
             processing_time_sec=time.time() - start
         )
 
-    async def process_doc(self, doc, pages, extractor):
+    async def process_doc(self, doc, root, extractor):
+        values = []
+
+        def traverse(node):
+            if node.text:
+                vals = extractor.extract(node.text, doc, node.page, node.title)
+                values.extend(vals)
+            for c in node.children:
+                traverse(c)
+
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: [
-                v
-                for p in pages
-                for v in extractor.extract(p.text, doc, p.page)
-            ]
-        )
+        await loop.run_in_executor(None, traverse, root)
+
+        return values
 
 
 # =========================================================
 # STREAMLIT UI
 # =========================================================
-def run_streamlit():
+def run_app():
     st.set_page_config(layout="wide")
-    st.title("🔬 DECLARMIMA v8.0")
+    st.title("🔬 DECLARMIMA v8.5 (Streamlit Edition)")
+    st.caption("Hierarchical Vectorless RAG for Scientific PDFs")
 
-    uploaded = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
-    query = st.text_input("Query", "laser power")
+    uploaded = st.file_uploader(
+        "Upload PDF files",
+        type="pdf",
+        accept_multiple_files=True
+    )
 
-    if st.button("Run") and uploaded:
-        files = [BytesIO(f.read()) for f in uploaded]
-        for i, f in enumerate(files):
-            f.name = uploaded[i].name
+    query = st.text_input(
+        "Enter query",
+        value="laser power"
+    )
 
-        index = SimpleIndex()
-        index.build(files)
+    if st.button("🚀 Extract") and uploaded:
+        with st.spinner("Processing documents..."):
 
-        engine = Engine(index)
-        report = asyncio.run(engine.run(query))
+            # Convert to buffers
+            files = []
+            for f in uploaded:
+                buf = BytesIO(f.read())
+                buf.name = f.name
+                files.append(buf)
 
-        st.success(f"Found {len(report.all_values)} values")
-        st.json(report.model_dump())
+            # Build index
+            idx = HierarchicalIndex()
+            idx.build(files)
 
-        st.download_button("Download JSON", report.to_json(), "results.json")
+            # Run engine
+            engine = ParallelEngine(idx)
+            report = asyncio.run(engine.run(query))
 
+        st.success(f"✅ Found {len(report.all_values)} values")
 
-# =========================================================
-# CLI
-# =========================================================
-def run_cli():
-    import argparse
+        col1, col2 = st.columns([2, 1])
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("files", nargs="+")
-    parser.add_argument("-q", "--query", default="laser power")
-    parser.add_argument("-o", "--output")
+        with col1:
+            st.subheader("📊 Extracted Values")
+            st.json(report.model_dump())
 
-    args = parser.parse_args()
+        with col2:
+            st.subheader("📈 Consensus")
+            st.json(report.consensus)
 
-    files = []
-    for path in args.files:
-        with open(path, "rb") as f:
-            buf = BytesIO(f.read())
-            buf.name = os.path.basename(path)
-            files.append(buf)
+        st.download_button(
+            "Download JSON",
+            report.to_json(),
+            "results.json",
+            "application/json"
+        )
 
-    index = SimpleIndex()
-    index.build(files)
-
-    engine = Engine(index)
-    report = asyncio.run(engine.run(args.query))
-
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(report.to_json())
     else:
-        print(report.to_json())
+        st.info("Upload PDFs and click Extract")
 
 
 # =========================================================
 # ENTRY POINT
 # =========================================================
 if __name__ == "__main__":
-    import sys
-
-    # Detect if running via Streamlit
-    if any("streamlit" in arg for arg in sys.argv):
-        run_streamlit()
-    else:
-        run_cli()
+    run_app()

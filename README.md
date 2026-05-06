@@ -149,7 +149,10 @@ V42-: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v48.0-orange)](https://vectorless-reasoning-rag-information-retrieval48.streamlit.app/) (Excellent qualitative and quantitative reasoning, Finds better but still not inferring)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v49.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval49.streamlit.app/) (Laser power specific RAG, Excellent qualitative and quantitative reasoning, Finds better but still not inferring)
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v49.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval49.streamlit.app/) (Laser power specific RAG, Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlesspragmodel-v50.0-purple)](https://vectorless-reasoning-rag-laser-power-information-retrieval50.streamlit.app/) (Laser power specific RAG, Excellent qualitative and quantitative reasoning, Finds better but still not inferring, PDF needs to be uploaded everytime)
+
 
 
 Multicomponent Alloy Microstructure Focus :

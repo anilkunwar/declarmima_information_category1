@@ -297,5 +297,12 @@ def run_app():
 # =========================================================
 # ENTRY POINT
 # =========================================================
+#if __name__ == "__main__":
+#    run_app()
 if __name__ == "__main__":
-    run_app()
+    import os
+
+    if os.environ.get("STREAMLIT_SERVER_PORT"):
+        run_streamlit()
+    else:
+        run_cli()

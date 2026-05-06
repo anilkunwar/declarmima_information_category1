@@ -1,612 +1,773 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v6.2-ACCELERATED - VECTORLESS RAG FOR ANY QUERY
-===========================================================
-Parallel hierarchical document indexing + flexible query answering
-Outputs JSON with exact citations, ready for LLM consumption.
+DECLARMIMA v6.2-ACCELERATED - OMNISCIENT INTEGRATED APPLICATION
+================================================================
+VECTORLESS HIERARCHICAL RAG WITH PARALLEL DOCUMENT PROCESSING
 
-Key features:
-- Parallel PDF processing (grouped by file size)
-- Hierarchical tree index (no embeddings)
-- Any query: "laser power", "scan speed", "material", etc.
-- Regex + optional LLM extraction (local Ollama / Transformers)
-- JSON output with citations and cross‑document analysis
+Features:
+- Full PageIndex integration (Tree structure parsing for PDF/MD).
+- Parallel processing grouped by file size (Small/Medium/Large/XL).
+- Generic query engine (Defaults to "laser power" but accepts any term).
+- LLM-based extraction with exact citation generation.
+- Streamlit UI for real-time interaction and JSON export.
+- Anti-hallucination checks via source text verification.
 
 Author: DECLARMIMA Team
-License: MIT
+Version: 6.2.1-ACCELERATED-OMNISCIENT
 Date: 2026-05-06
 """
 
+# =====================================================================
+# SECTION 1: CORE IMPORTS & GLOBAL SETUP
+# =====================================================================
 import asyncio
 import json
 import re
 import os
 import sys
-import tempfile
 import time
-import hashlib
-import pickle
 import logging
+import copy
+import math
+import random
+import hashlib
 import warnings
+import tempfile
+from io import BytesIO
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple, Union, Any
+from dataclasses import dataclass, field
 from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-from datetime import datetime
-from io import BytesIO
+from contextlib import contextmanager
+
+# Third-party libraries
+import streamlit as st
+import yaml
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any, Set, Union
-import numpy as np
 
-# Streamlit optional
 try:
-    import streamlit as st
-    STREAMLIT_AVAILABLE = True
+    import litellm
+    from litellm import completion, acompletion
+    LITELLM_AVAILABLE = True
 except ImportError:
-    STREAMLIT_AVAILABLE = False
+    LITELLM_AVAILABLE = False
+    warnings.warn("litellm not installed. LLM features will fail.")
 
-# PDF processing
 try:
-    import fitz  # PyMuPDF
+    import PyPDF2
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
+
+try:
+    import pymupdf  # PyMuPDF
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    raise ImportError("PyMuPDF (fitz) is required. Install with: pip install pymupdf")
 
-# Optional LLM for advanced extraction (fallback)
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
+# =====================================================================
+# SECTION 2: CONFIGURATION & LOGGING
+# =====================================================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("DECLARMIMA")
+# Default Model Configuration
+DEFAULT_MODEL = os.getenv("MODEL_NAME", "gpt-4o")
+API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 
-warnings.filterwarnings("ignore")
+if not API_KEY and LITELLM_AVAILABLE:
+    logger.warning("No API Key found in environment variables.")
 
-# ============================================================================
-# 1. DATA MODELS (Pydantic for structured JSON output)
-# ============================================================================
-from pydantic import BaseModel, Field, field_validator
-
-class ExtractedValue(BaseModel):
-    """A single extracted value (numerical or text) answering the query."""
-    query: str = Field(description="The original query term")
-    value: Union[float, str] = Field(description="Extracted value (number or text)")
-    unit: Optional[str] = Field(None, description="Unit if numeric")
-    confidence: float = Field(ge=0.0, le=1.0, default=0.8)
-    context: str = Field(description="Snippet of text containing the value")
-    doc_name: str = Field(description="Source filename")
-    page: int = Field(description="Page number")
-    section_title: Optional[str] = Field(None)
-    extraction_method: str = Field(default="regex")
-
-    @field_validator('confidence')
-    def clamp_confidence(cls, v):
-        return max(0.0, min(1.0, v))
-
-    def to_citation(self) -> str:
-        return f'<cite doc="{self.doc_name}" page="{self.page}"/>'
-
-class DocumentResult(BaseModel):
-    """All extracted values from one document."""
-    doc_name: str
-    values: List[ExtractedValue] = []
-    total_found: int = 0
-
-class QueryReport(BaseModel):
-    """Complete report for a user query."""
-    query: str
-    total_documents: int
-    documents_with_matches: int
-    documents_without_matches: List[str] = []
-    all_values: List[ExtractedValue] = []
-    document_results: List[DocumentResult] = []
-    consensus: Dict[str, Any] = {}
-    processing_time_sec: float = 0.0
-    metadata: Dict[str, Any] = {}
-
-    def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.model_dump(), indent=indent, ensure_ascii=False)
-
-# ============================================================================
-# 2. HIERARCHICAL PDF INDEX (vectorless)
-# ============================================================================
-@dataclass
-class PageNode:
-    id: str
-    title: str
-    page_start: int
-    page_end: Optional[int]
-    full_text: str
-    summary: str
-    level: int
-    children: List['PageNode'] = field(default_factory=list)
-    doc_id: str = ""
-    section_type: str = "BODY"
-    _pdf_path: Optional[str] = field(default=None, repr=False)
-
-    def get_text(self, pdf_doc_cache: Dict[str, Any] = None) -> str:
-        """Lazy load text from PDF if not already cached."""
-        if self.full_text:
-            return self.full_text
-        if not self._pdf_path or not PYMUPDF_AVAILABLE:
-            return ""
-        try:
-            doc = None
-            if pdf_doc_cache and self.doc_id in pdf_doc_cache:
-                doc = pdf_doc_cache[self.doc_id]
-            else:
-                doc = fitz.open(self._pdf_path)
-                if pdf_doc_cache is not None:
-                    pdf_doc_cache[self.doc_id] = doc
-            start = self.page_start - 1
-            end = min(self.page_end or self.page_start, len(doc))
-            texts = []
-            for p in range(start, end):
-                text = doc[p].get_text("text")
-                if text.strip():
-                    texts.append(text)
-            self.full_text = "\n\n".join(texts)
-            if pdf_doc_cache is None and doc is not None:
-                doc.close()
-            return self.full_text
-        except Exception as e:
-            logger.warning(f"Failed to get text for {self.id}: {e}")
-            return ""
-
-class HierarchicalIndex:
-    def __init__(self, cache_dir: str = ".declarmima_cache"):
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(exist_ok=True)
-        self.doc_trees: Dict[str, PageNode] = {}
-        self.pdf_doc_cache: Dict[str, Any] = {}
-
-    def _doc_hash(self, file_buffer: BytesIO) -> str:
-        pos = file_buffer.tell()
-        file_buffer.seek(0)
-        content = file_buffer.read()
-        file_buffer.seek(pos)
-        return hashlib.sha256(content).hexdigest()[:16]
-
-    def _cache_path(self, doc_name: str, doc_hash: str) -> Path:
-        safe = re.sub(r'[^\w\-_.]', '_', doc_name)
-        return self.cache_dir / f"{safe}.{doc_hash}.tree.pkl"
-
-    def build_from_pdfs(self, files: List, parallel: bool = True, max_workers: int = 4) -> Dict[str, PageNode]:
-        """Build index from uploaded PDF files (BytesIO with .name attribute)."""
-        def build_one(file):
-            doc_name = file.name
-            file_buffer = BytesIO(file.getbuffer())
-            doc_hash = self._doc_hash(file_buffer)
-            cache_path = self._cache_path(doc_name, doc_hash)
-
-            if cache_path.exists():
-                try:
-                    with open(cache_path, "rb") as f:
-                        root_data = pickle.load(f)
-                    root = self._rebuild_node(root_data)
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        file_buffer.seek(0)
-                        tmp.write(file_buffer.getbuffer())
-                        root._pdf_path = tmp.name
-                    logger.info(f"Loaded cached tree for {doc_name}")
-                    return doc_name, root
-                except Exception as e:
-                    logger.warning(f"Cache failed for {doc_name}: {e}")
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                file_buffer.seek(0)
-                tmp.write(file_buffer.getbuffer())
-                tmp_path = tmp.name
-
-            doc = fitz.open(tmp_path)
-            root = self._build_tree(doc, doc_name, tmp_path)
-            doc.close()
-            # Save to cache
-            try:
-                cache_root = self._clone_for_cache(root)
-                with open(cache_path, "wb") as f:
-                    pickle.dump(cache_root.to_dict(), f)
-            except Exception as e:
-                logger.warning(f"Failed to cache {doc_name}: {e}")
-            return doc_name, root
-
-        if parallel and len(files) > 1:
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = {ex.submit(build_one, f): f.name for f in files}
-                for fut in as_completed(futures):
-                    name, tree = fut.result()
-                    self.doc_trees[name] = tree
-        else:
-            for f in files:
-                name, tree = build_one(f)
-                self.doc_trees[name] = tree
-        return self.doc_trees
-
-    def _build_tree(self, doc: fitz.Document, doc_id: str, pdf_path: str) -> PageNode:
-        """Create hierarchical tree from TOC or heading detection."""
-        root = PageNode(
-            id=f"{doc_id}_root", title="Document Root",
-            page_start=1, page_end=len(doc), full_text="",
-            summary=doc_id, level=0, doc_id=doc_id, _pdf_path=pdf_path
-        )
-        toc = doc.get_toc()
-        if toc:
-            return self._build_from_toc(doc, doc_id, toc, root, pdf_path)
-        headings = self._detect_headings(doc)
-        if headings:
-            return self._build_from_headings(doc, doc_id, headings, root, pdf_path)
-        return self._build_page_by_page(doc, doc_id, root, pdf_path)
-
-    def _build_from_toc(self, doc, doc_id, toc, root, pdf_path):
-        nodes_by_level = {}
-        for level, title, page in toc:
-            if page > len(doc):
-                continue
-            end_page = min(page + 3, len(doc))
-            text = self._extract_text_range(doc, page, end_page)
-            summary = text[:200]
-            node = PageNode(
-                id=f"{doc_id}_toc_{level}_{title.replace(' ', '_')[:20]}",
-                title=title.strip(), page_start=page, page_end=end_page,
-                full_text=text, summary=summary, level=level,
-                doc_id=doc_id, _pdf_path=pdf_path
-            )
-            nodes_by_level.setdefault(level, []).append(node)
-        for level in sorted(nodes_by_level.keys()):
-            for node in nodes_by_level[level]:
-                parent = self._find_parent(root, level-1, node.page_start)
-                parent.children.append(node)
-        return root
-
-    def _build_from_headings(self, doc, doc_id, headings, root, pdf_path):
-        for i, (title, page) in enumerate(headings):
-            end_page = min(page+3, len(doc))
-            text = self._extract_text_range(doc, page, end_page)
-            summary = text[:200]
-            node = PageNode(
-                id=f"{doc_id}_h{i}", title=title, page_start=page, page_end=end_page,
-                full_text=text, summary=summary, level=2, doc_id=doc_id, _pdf_path=pdf_path
-            )
-            root.children.append(node)
-        return root
-
-    def _build_page_by_page(self, doc, doc_id, root, pdf_path):
-        for p in range(1, len(doc)+1):
-            text = doc[p-1].get_text("text")
-            if not text.strip():
-                continue
-            node = PageNode(
-                id=f"{doc_id}_p{p}", title=f"Page {p}", page_start=p, page_end=p,
-                full_text=text, summary=text[:200], level=3, doc_id=doc_id, _pdf_path=pdf_path
-            )
-            root.children.append(node)
-        return root
-
-    def _extract_text_range(self, doc, start_page, end_page):
-        texts = []
-        for p in range(start_page-1, min(end_page, len(doc))):
-            texts.append(doc[p].get_text("text"))
-        return "\n\n".join(texts)
-
-    def _detect_headings(self, doc):
-        headings = []
-        for p in range(len(doc)):
-            text = doc[p].get_text("text")
-            lines = text.split('\n')
-            for line in lines:
-                if re.match(r'^(?:[0-9]+\.?)+ +[A-Z]', line.strip()):
-                    headings.append((line.strip(), p+1))
-        return headings[:50]
-
-    def _find_parent(self, node, target_level, page_hint):
-        if target_level < 0:
-            return node
-        candidates = [c for c in node.children if c.level == target_level]
-        if not candidates:
-            return node
-        return min(candidates, key=lambda n: abs(n.page_start - page_hint))
-
-    def _clone_for_cache(self, node: PageNode) -> PageNode:
-        return PageNode(
-            id=node.id, title=node.title, page_start=node.page_start, page_end=node.page_end,
-            full_text="", summary=node.summary, level=node.level,
-            doc_id=node.doc_id, section_type=node.section_type,
-            children=[self._clone_for_cache(c) for c in node.children]
-        )
-
-    def _rebuild_node(self, data: dict) -> PageNode:
-        node = PageNode(
-            id=data['id'], title=data['title'], page_start=data.get('page_start',1),
-            page_end=data.get('page_end'), full_text="", summary=data.get('summary',''),
-            level=data.get('level',0), doc_id=data.get('doc_id',''),
-            section_type=data.get('section_type','BODY')
-        )
-        for child_data in data.get('children', []):
-            node.children.append(self._rebuild_node(child_data))
-        return node
-
-    def cleanup(self):
-        for doc in self.pdf_doc_cache.values():
-            try:
-                doc.close()
-            except:
-                pass
-        self.pdf_doc_cache.clear()
-
-# ============================================================================
-# 3. QUERY PROCESSOR (Any query, vectorless)
-# ============================================================================
-class QueryProcessor:
-    def __init__(self, query: str):
-        self.query = query.lower()
-        self.keywords = set(re.findall(r'\b[a-zA-Z]{3,}\b', query.lower()))
-
-    def score_node(self, node: PageNode) -> float:
-        text = f"{node.title} {node.summary}".lower()
-        score = 0.0
-        for kw in self.keywords:
-            if kw in text:
-                score += 0.3
-        if re.search(r'\d+', text):
-            score += 0.2
-        return min(score, 1.0)
-
-    def extract_from_text(self, text: str, doc_name: str, page: int, section_title: str = None) -> List[ExtractedValue]:
-        """Extract values matching the query using regex patterns."""
-        values = []
-        # Build a regex that looks for numbers with optional units, close to the query term
-        # Pattern: (number)(unit) near query term, or query term followed by number+unit
-        patterns = [
-            # Generic number+unit that appears within 100 chars of the query
-            rf'(?i)(?:{self.query}).{{0,100}}(\d+(?:\.\d+)?)\s*([a-zA-Zµ²]+(?:/?[a-zA-Zµ²]+)?)',
-            # Number+unit before the query within 100 chars
-            rf'(?i)(\d+(?:\.\d+)?)\s*([a-zA-Zµ²]+).{{0,100}}{self.query}',
-            # Direct assignment: query = value unit
-            rf'(?i){self.query}\s*[=:]\s*(\d+(?:\.\d+)?)\s*([a-zA-Zµ²]+)',
-            # value unit query
-            rf'(?i)(\d+(?:\.\d+)?)\s*([a-zA-Zµ²]+)\s+{self.query}',
-        ]
-        seen = set()
-        for pattern in patterns:
-            for match in re.finditer(pattern, text, re.IGNORECASE):
-                try:
-                    if len(match.groups()) == 2:
-                        val_str, unit = match.groups()
-                        value = float(val_str)
-                        # Get context: 150 chars around match
-                        start = max(0, match.start() - 75)
-                        end = min(len(text), match.end() + 75)
-                        context = text[start:end].strip()
-                        unique_key = (value, unit, page, doc_name)
-                        if unique_key in seen:
-                            continue
-                        seen.add(unique_key)
-                        values.append(ExtractedValue(
-                            query=self.query,
-                            value=value,
-                            unit=unit,
-                            context=context,
-                            doc_name=doc_name,
-                            page=page,
-                            section_title=section_title,
-                            extraction_method="regex"
-                        ))
-                except (ValueError, IndexError):
-                    continue
-        return values
-
-    def process_document(self, node: PageNode, doc_cache: Dict) -> List[ExtractedValue]:
-        """Recursively traverse tree, extract values from relevant leaves."""
-        results = []
-        if not node.children:
-            score = self.score_node(node)
-            if score >= 0.3:
-                text = node.get_text(doc_cache)
-                if text:
-                    extracted = self.extract_from_text(text, node.doc_id, node.page_start, node.title)
-                    results.extend(extracted)
-        else:
-            for child in node.children:
-                results.extend(self.process_document(child, doc_cache))
-        return results
-
-# ============================================================================
-# 4. PARALLEL PROCESSING ENGINE (grouped by file size)
-# ============================================================================
-# Size groups for adaptive concurrency
+# Processing Groups Configuration
+# Groups files by size to optimize parallel thread allocation
 PROCESSING_GROUPS = {
-    "small": {"max_pages": 10, "max_tokens": 5000, "batch_size": 8},
-    "medium": {"max_pages": 20, "max_tokens": 15000, "batch_size": 4},
-    "large": {"max_pages": 35, "max_tokens": 30000, "batch_size": 2},
-    "extra_large": {"max_pages": float('inf'), "max_tokens": float('inf'), "batch_size": 1}
+    "small": {"max_pages": 10, "max_tokens": 5000, "batch_size": 8, "max_mb": 2},
+    "medium": {"max_pages": 20, "max_tokens": 15000, "batch_size": 4, "max_mb": 10},
+    "large": {"max_pages": 35, "max_tokens": 30000, "batch_size": 2, "max_mb": 50},
+    "extra_large": {"max_pages": float('inf'), "max_tokens": float('inf'), "batch_size": 1, "max_mb": float('inf')}
 }
 
-class ParallelQueryEngine:
-    def __init__(self, index: HierarchicalIndex, max_workers: int = 8):
-        self.index = index
-        self.max_workers = max_workers
+# =====================================================================
+# SECTION 3: UTILITY FUNCTIONS (Integrated from provided snippets)
+# =====================================================================
 
-    async def run_query(self, query: str) -> QueryReport:
-        start_time = time.time()
-        processor = QueryProcessor(query)
+class SimpleNamespace:
+    """Simple namespace for config objects."""
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
 
-        # Prepare tasks for each document (parallel)
-        tasks = []
-        for doc_name, root in self.index.doc_trees.items():
-            tasks.append(self._process_doc_async(doc_name, root, processor))
+def count_tokens(text, model=None):
+    """Count tokens using litellm."""
+    if not text or not LITELLM_AVAILABLE:
+        return 0
+    try:
+        return litellm.token_counter(model=model, text=text)
+    except:
+        # Fallback rough estimation (4 chars per token)
+        return len(text) // 4
 
-        results_list = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Aggregate results
-        all_extracted = []
-        doc_results = []
-        docs_with_matches = 0
-        docs_without = []
-
-        for res in results_list:
-            if isinstance(res, Exception):
-                logger.error(f"Error in document processing: {res}")
-                continue
-            doc_name, values = res
-            if values:
-                docs_with_matches += 1
-                all_extracted.extend(values)
-                doc_results.append(DocumentResult(doc_name=doc_name, values=values, total_found=len(values)))
-            else:
-                docs_without.append(doc_name)
-                doc_results.append(DocumentResult(doc_name=doc_name, values=[]))
-
-        # Consensus analysis (simple grouping by value+unit)
-        value_groups = defaultdict(list)
-        for v in all_extracted:
-            key = f"{v.value} {v.unit}" if v.unit else str(v.value)
-            value_groups[key].append(v.doc_name)
-
-        consensus = {
-            "total_extracted": len(all_extracted),
-            "unique_values": len(value_groups),
-            "most_common": None
-        }
-        if value_groups:
-            most = max(value_groups.items(), key=lambda x: len(x[1]))
-            consensus["most_common"] = {
-                "value": most[0],
-                "count": len(most[1]),
-                "documents": most[1]
-            }
-        # Also add per-document counts
-        consensus["documents_summary"] = {doc: len(vals) for doc, vals in value_groups.items()}
-
-        elapsed = time.time() - start_time
-        report = QueryReport(
-            query=query,
-            total_documents=len(self.index.doc_trees),
-            documents_with_matches=docs_with_matches,
-            documents_without_matches=docs_without,
-            all_values=all_extracted,
-            document_results=doc_results,
-            consensus=consensus,
-            processing_time_sec=elapsed,
-            metadata={"parallel_workers": self.max_workers}
-        )
-        return report
-
-    async def _process_doc_async(self, doc_name: str, root: PageNode, processor: QueryProcessor):
-        # Use run_in_executor for CPU-bound extraction
-        loop = asyncio.get_event_loop()
-        values = await loop.run_in_executor(
-            None, processor.process_document, root, self.index.pdf_doc_cache
-        )
-        return doc_name, values
-
-# ============================================================================
-# 5. STREAMLIT UI (if available)
-# ============================================================================
-def run_streamlit():
-    if not STREAMLIT_AVAILABLE:
-        print("Streamlit not installed. Install with: pip install streamlit")
-        return
-    st.set_page_config(page_title="DECLARMIMA - Query Any Document", layout="wide")
-    st.title("🔬 DECLARMIMA v6.2-ACCELERATED")
-    st.markdown("*Vectorless hierarchical RAG – parallel PDF processing, any query, JSON output*")
-
-    uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
-    query = st.text_input("Enter your query (e.g., laser power, scan speed, temperature)", value="laser power")
-
-    if uploaded_files and query:
-        if st.button("🔍 Extract Information", type="primary"):
-            with st.spinner("Building index and processing documents in parallel..."):
-                progress = st.progress(0)
-                progress.text("Building hierarchical index...")
-                index = HierarchicalIndex()
-                index.build_from_pdfs(uploaded_files, parallel=True, max_workers=4)
-                progress.progress(30)
-                progress.text("Running query...")
-                engine = ParallelQueryEngine(index, max_workers=4)
-                report = asyncio.run(engine.run_query(query))
-                progress.progress(100)
-                progress.text("Done!")
-
-            # Display summary
-            st.success(f"✅ Found {report.documents_with_matches} documents with matches")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total documents", report.total_documents)
-            col2.metric("Documents with matches", report.documents_with_matches)
-            col3.metric("Total extracted values", len(report.all_values))
-
-            with st.expander("📄 Show full JSON report", expanded=True):
-                st.json(report.model_dump())
-
-            # Download button
-            st.download_button(
-                "⬇️ Download JSON",
-                report.to_json(),
-                file_name=f"{query.replace(' ', '_')}_report.json",
-                mime="application/json"
+def llm_completion(model, prompt, chat_history=None, return_finish_reason=False):
+    """Synchronous LLM completion with retries."""
+    if not LITELLM_AVAILABLE:
+        raise Exception("LiteLLM is not installed.")
+    
+    max_retries = 3
+    messages = list(chat_history) + [{"role": "user", "content": prompt}] if chat_history else [{"role": "user", "content": prompt}]
+    
+    for i in range(max_retries):
+        try:
+            response = completion(
+                model=model,
+                messages=messages,
+                temperature=0.0,
             )
+            content = response.choices[0].message.content
+            if return_finish_reason:
+                finish_reason = "max_output_reached" if response.choices[0].finish_reason == "length" else "finished"
+                return content, finish_reason
+            return content
+        except Exception as e:
+            logger.error(f"LLM Error (Retry {i+1}): {e}")
+            if i < max_retries - 1:
+                time.sleep(2)
+            else:
+                return ""
 
-            # Cleanup
-            index.cleanup()
+async def llm_acompletion(model, prompt):
+    """Asynchronous LLM completion with retries."""
+    if not LITELLM_AVAILABLE:
+        raise Exception("LiteLLM is not installed.")
+    
+    max_retries = 3
+    messages = [{"role": "user", "content": prompt}]
+    
+    for i in range(max_retries):
+        try:
+            response = await acompletion(
+                model=model,
+                messages=messages,
+                temperature=0.0,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Async LLM Error (Retry {i+1}): {e}")
+            if i < max_retries - 1:
+                await asyncio.sleep(2)
+            else:
+                return ""
 
-    elif not uploaded_files:
-        st.info("Upload one or more PDF files to begin.")
+def extract_json(content):
+    """Robust JSON extraction from LLM string response."""
+    try:
+        # Clean common issues
+        content = content.replace('None', 'null').replace('\n', ' ').replace('\r', ' ')
+        content = ' '.join(content.split())
+        
+        # Extract code block
+        start_idx = content.find("```json")
+        if start_idx != -1:
+            start_idx += 7
+            content = content[start_idx:]
+        end_idx = content.rfind("```")
+        if end_idx != -1:
+            content = content[:end_idx]
+            
+        return json.loads(content)
+    except json.JSONDecodeError:
+        # Fallback cleanup
+        try:
+            content = content.replace(',]', ']').replace(',}', '}')
+            return json.loads(content)
+        except:
+            return {}
 
-# ============================================================================
-# 6. COMMAND-LINE INTERFACE
-# ============================================================================
-def main_cli():
-    import argparse
-    parser = argparse.ArgumentParser(description="DECLARMIMA - Query PDF documents")
-    parser.add_argument("files", nargs="+", help="PDF files to process")
-    parser.add_argument("-q", "--query", default="laser power", help="Query term to extract")
-    parser.add_argument("-o", "--output", help="Output JSON file")
-    parser.add_argument("--max-workers", type=int, default=4, help="Parallel workers")
-    args = parser.parse_args()
+def remove_fields(data, fields=['text']):
+    """Recursively remove keys from dict/list structure."""
+    if isinstance(data, dict):
+        return {k: remove_fields(v, fields)
+                for k, v in data.items() if k not in fields}
+    elif isinstance(data, list):
+        return [remove_fields(item, fields) for item in data]
+    return data
 
-    # Load files
-    file_buffers = []
-    for fpath in args.files:
-        if not fpath.lower().endswith(".pdf"):
-            continue
-        with open(fpath, "rb") as f:
-            buf = BytesIO(f.read())
-            buf.name = os.path.basename(fpath)
-            file_buffers.append(buf)
+def structure_to_list(structure):
+    """Flatten tree structure to list."""
+    if isinstance(structure, dict):
+        nodes = [structure]
+        if 'nodes' in structure:
+            nodes.extend(structure_to_list(structure['nodes']))
+        return nodes
+    elif isinstance(structure, list):
+        nodes = []
+        for item in structure:
+            nodes.extend(structure_to_list(item))
+        return nodes
 
-    if not file_buffers:
-        print("No valid PDF files provided.")
-        return
+# =====================================================================
+# SECTION 4: PAGE INDEX & DOCUMENT PARSING CORE
+# =====================================================================
 
-    print(f"Processing {len(file_buffers)} files with query: {args.query}")
-    index = HierarchicalIndex()
-    index.build_from_pdfs(file_buffers, parallel=True, max_workers=args.max_workers)
-    engine = ParallelQueryEngine(index, max_workers=args.max_workers)
-    report = asyncio.run(engine.run_query(args.query))
+class DocumentProcessor:
+    """
+    Handles the parsing of individual documents (PDF or MD)
+    into a hierarchical tree structure using PageIndex logic.
+    """
+    
+    def __init__(self, model_name):
+        self.model = model_name
 
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(report.to_json())
-        print(f"Report saved to {args.output}")
-    else:
-        print(report.to_json(indent=2))
+    def parse_document(self, file_obj) -> Dict:
+        """
+        Route document to correct parser (PDF vs MD) and return tree.
+        """
+        file_name = file_obj.name
+        suffix = Path(file_name).suffix.lower()
+        
+        try:
+            if suffix == '.pdf':
+                return self._parse_pdf(file_obj)
+            elif suffix in ['.md', '.markdown', '.txt']:
+                return self._parse_markdown(file_obj)
+            else:
+                return {"error": "Unsupported file format", "doc_name": file_name}
+        except Exception as e:
+            logger.error(f"Error parsing {file_name}: {e}")
+            return {"error": str(e), "doc_name": file_name}
 
-    index.cleanup()
+    def _parse_markdown(self, file_obj) -> Dict:
+        """Parse Markdown using the provided md_to_tree logic."""
+        # Read content
+        raw_bytes = file_obj.read()
+        file_obj.seek(0)
+        content = raw_bytes.decode('utf-8')
+        
+        # Simple Node Extraction (Regex based for MD)
+        header_pattern = r'^(#{1,6})\s+(.+)$'
+        node_list = []
+        lines = content.split('\n')
+        
+        for line_num, line in enumerate(lines, 1):
+            match = re.match(header_pattern, line.strip())
+            if match:
+                node_list.append({
+                    'node_title': match.group(2).strip(),
+                    'line_num': line_num,
+                    'level': len(match.group(1))
+                })
+        
+        # Build text content for nodes
+        for i, node in enumerate(node_list):
+            start = node['line_num'] - 1
+            end = node_list[i + 1]['line_num'] - 1 if i + 1 < len(node_list) else len(lines)
+            node['text'] = '\n'.join(lines[start:end]).strip()
+            node['token_count'] = count_tokens(node['text'], self.model)
+
+        # Build Tree
+        tree = self._build_tree_from_nodes(node_list)
+        
+        return {
+            "doc_name": file_obj.name,
+            "doc_type": "markdown",
+            "structure": tree
+        }
+
+    def _parse_pdf(self, file_obj) -> Dict:
+        """Parse PDF using PyMuPDF/PyPDF2 hybrid approach."""
+        file_buffer = BytesIO(file_obj.read())
+        file_obj.seek(0)
+        
+        # Prefer PyMuPDF for text extraction if available
+        if PYMUPDF_AVAILABLE:
+            return self._parse_pymupdf(file_buffer, file_obj.name)
+        elif PYPDF2_AVAILABLE:
+            return self._parse_pypdf2(file_buffer, file_obj.name)
+        else:
+            return {"error": "No PDF parser available", "doc_name": file_obj.name}
+
+    def _parse_pymupdf(self, file_buffer, filename) -> Dict:
+        doc = pymupdf.open(stream=file_buffer, filetype="pdf")
+        toc = doc.get_toc()
+        
+        # Strategy: Use TOC if available, otherwise chunk by pages
+        if toc:
+            nodes = []
+            for level, title, page_num in toc:
+                # Extract text from page
+                page = doc[page_num - 1]
+                text = page.get_text("text")
+                nodes.append({
+                    'title': title,
+                    'level': level,
+                    'page_start': page_num,
+                    'page_end': page_num + 5, # Approximation
+                    'text': text[:2000], # Truncate for node preview
+                    'token_count': count_tokens(text, self.model)
+                })
+            # Re-build ranges properly
+            for i in range(len(nodes) - 1):
+                nodes[i]['page_end'] = nodes[i+1]['page_start']
+            if nodes:
+                nodes[-1]['page_end'] = len(doc)
+                
+            tree = self._build_tree_from_pdf_nodes(nodes)
+        else:
+            # Fallback: Treat pages as nodes
+            nodes = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text("text")
+                if text.strip():
+                    nodes.append({
+                        'title': f"Page {page_num + 1}",
+                        'level': 1,
+                        'page_start': page_num + 1,
+                        'page_end': page_num + 1,
+                        'text': text,
+                        'token_count': count_tokens(text, self.model)
+                    })
+            tree = nodes
+            
+        doc.close()
+        return {"doc_name": filename, "doc_type": "pdf", "structure": tree}
+
+    def _build_tree_from_nodes(self, node_list):
+        """Convert flat list to tree structure."""
+        stack = []
+        root_nodes = []
+        
+        for i, node in enumerate(node_list):
+            current_level = node.get('level', 1)
+            tree_node = {
+                'title': node.get('node_title', node.get('title')),
+                'text': node.get('text', ''),
+                'page_start': node.get('page_start', node.get('line_num')),
+                'page_end': node.get('page_end'),
+                'nodes': []
+            }
+            
+            while stack and stack[-1][1] >= current_level:
+                stack.pop()
+            
+            if not stack:
+                root_nodes.append(tree_node)
+            else:
+                parent_node, _ = stack[-1]
+                parent_node['nodes'].append(tree_node)
+            
+            stack.append((tree_node, current_level))
+            
+        return root_nodes
+
+    def _build_tree_from_pdf_nodes(self, node_list):
+        # Similar logic but handling page indices
+        stack = []
+        root_nodes = []
+        
+        for node in node_list:
+            current_level = node['level']
+            tree_node = {
+                'title': node['title'],
+                'page_start': node['page_start'],
+                'page_end': node['page_end'],
+                'text': node['text'],
+                'nodes': []
+            }
+            
+            while stack and stack[-1][1] >= current_level:
+                stack.pop()
+            
+            if not stack:
+                root_nodes.append(tree_node)
+            else:
+                parent_node, _ = stack[-1]
+                parent_node['nodes'].append(tree_node)
+                
+            stack.append((tree_node, current_level))
+            
+        return root_nodes
+
+    def _parse_pypdf2(self, file_buffer, filename):
+        # Basic fallback for PyPDF2
+        reader = PyPDF2.PdfReader(file_buffer)
+        nodes = []
+        for i, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text:
+                nodes.append({
+                    'title': f"Page {i+1}",
+                    'level': 1,
+                    'page_start': i+1,
+                    'page_end': i+1,
+                    'text': text
+                })
+        return {"doc_name": filename, "doc_type": "pdf", "structure": nodes}
+
+# =====================================================================
+# SECTION 5: QUERY & EXTRACTION ENGINE
+# =====================================================================
+
+class ExtractionEngine:
+    """
+    Handles the retrieval and extraction of information based on user query.
+    Uses LLM to find and extract specific parameters (e.g., "laser power").
+    """
+    
+    def __init__(self, model_name):
+        self.model = model_name
+    
+    async def extract_from_document(self, doc_data: Dict, query: str) -> Dict:
+        """
+        Main extraction logic for a single document.
+        1. Flatten tree to list of chunks.
+        2. Filter chunks by relevance (Keyword match).
+        3. Extract data using LLM.
+        """
+        doc_name = doc_data.get('doc_name', 'Unknown')
+        structure = doc_data.get('structure', [])
+        
+        # Flatten structure
+        chunks = structure_to_list(structure)
+        
+        # Heuristic filtering to save tokens (find chunks mentioning the query)
+        # This makes it "Vectorless" but efficient
+        query_lower = query.lower()
+        relevant_chunks = []
+        
+        for chunk in chunks:
+            text_content = chunk.get('text', '')
+            title = chunk.get('title', '')
+            
+            # If query is found in title or text, or if text is short enough to scan
+            if query_lower in text_content.lower() or query_lower in title.lower():
+                relevant_chunks.append(chunk)
+            elif len(text_content) < 500: # Check short texts anyway
+                relevant_chunks.append(chunk)
+        
+        if not relevant_chunks:
+            return {
+                "doc_name": doc_name,
+                "status": "no_match",
+                "found_data": [],
+                "reason": f"Query '{query}' not found in text index."
+            }
+            
+        # Batch chunks for LLM context (avoid context limit)
+        extraction_results = []
+        
+        # Limit chunks to top 5 most relevant by simple score to save costs/time
+        relevant_chunks.sort(key=lambda x: x.get('text', '').count(query_lower), reverse=True)
+        selected_chunks = relevant_chunks[:5]
+        
+        for chunk in selected_chunks:
+            result = await self._llm_extract(query, chunk, doc_name)
+            if result:
+                extraction_results.append(result)
+                
+        return {
+            "doc_name": doc_name,
+            "status": "success",
+            "found_data": extraction_results
+        }
+
+    async def _llm_extract(self, query, chunk, doc_name):
+        """
+        Ask LLM to find specific values related to the query in the chunk.
+        """
+        text = chunk.get('text', '')
+        page = chunk.get('page_start', 'N/A')
+        title = chunk.get('title', 'Unknown Section')
+        
+        prompt = f"""
+        You are an expert data extraction assistant. 
+        Your task is to find information related to the query: "{query}".
+        
+        Analyze the following text snippet from a document:
+        Document: {doc_name}
+        Section: {title}
+        Page: {page}
+        
+        Text Content:
+        {text[:3000]} 
+        
+        Instructions:
+        1. Identify if the text contains specific values, settings, or descriptions related to "{query}".
+        2. If found, extract the exact value, unit, and context sentence.
+        3. If the text discusses the query but provides no specific value, summarize the discussion.
+        
+        Return ONLY a valid JSON object with this structure:
+        {{
+            "query": "{query}",
+            "value_found": <boolean>,
+            "value": <string or number or null>,
+            "unit": <string or null>,
+            "context_sentence": <string or null>,
+            "confidence": <float 0.0 to 1.0>,
+            "notes": <string explaining extraction logic>
+        }}
+        """
+        
+        try:
+            response_str = await llm_acompletion(self.model, prompt)
+            response_json = extract_json(response_str)
+            
+            # Augment with metadata
+            response_json['source_page'] = page
+            response_json['source_section'] = title
+            return response_json
+        except Exception as e:
+            logger.error(f"LLM Extraction error: {e}")
+            return None
+
+# =====================================================================
+# SECTION 6: PARALLEL ORCHESTRATOR
+# =====================================================================
+
+class OmniscientProcessor:
+    """
+    Manages parallel processing of multiple documents, grouped by size.
+    """
+    
+    def __init__(self, model_name):
+        self.model = model_name
+        self.parser = DocumentProcessor(model_name)
+        self.extractor = ExtractionEngine(model_name)
+    
+    def _get_file_group(self, file_obj) -> str:
+        """Determine processing group based on file size."""
+        size_mb = len(file_obj.getbuffer()) / (1024 * 1024)
+        if size_mb < PROCESSING_GROUPS["small"]["max_mb"]:
+            return "small"
+        elif size_mb < PROCESSING_GROUPS["medium"]["max_mb"]:
+            return "medium"
+        elif size_mb < PROCESSING_GROUPS["large"]["max_mb"]:
+            return "large"
+        else:
+            return "extra_large"
+
+    async def process_all(self, files: List, query: str) -> Dict:
+        """
+        Main entry point for processing.
+        1. Group files.
+        2. Parse documents (Tree building).
+        3. Extract info (LLM).
+        """
+        start_time = time.time()
+        
+        # 1. Group files
+        groups = defaultdict(list)
+        for f in files:
+            groups[self._get_file_group(f)].append(f)
+            
+        logger.info(f"File groups: {[(k, len(v)) for k, v in groups.items()]}")
+        
+        # 2. Parse Documents in parallel
+        # We use ThreadPoolExecutor for IO bound parsing tasks
+        doc_data_map = {} # filename -> parsed_tree
+        
+        def parse_task(f):
+            return f.name, self.parser.parse_document(f)
+        
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(parse_task, f): f for f in files}
+            for future in as_completed(futures):
+                fname, data = future.result()
+                doc_data_map[fname] = data
+        
+        # 3. Extract Information from parsed data
+        # This is CPU/LLM bound, so we use asyncio.gather
+        extraction_tasks = []
+        for fname, data in doc_data_map.items():
+            if "error" not in data:
+                extraction_tasks.append(self.extractor.extract_from_document(data, query))
+            else:
+                # Return error immediately
+                extraction_tasks.append(asyncio.coroutine(lambda: data)())
+        
+        results = await asyncio.gather(*extraction_tasks)
+        
+        # 4. Format Final Output
+        final_report = {
+            "query": query,
+            "timestamp": datetime.now().isoformat(),
+            "processing_time_seconds": round(time.time() - start_time, 2),
+            "total_files_processed": len(files),
+            "successful_extractions": 0,
+            "failed_extractions": 0,
+            "results": results
+        }
+        
+        # Stats
+        for r in results:
+            if r.get('status') == 'success' and r.get('found_data'):
+                final_report['successful_extractions'] += 1
+            else:
+                final_report['failed_extractions'] += 1
+                
+        return final_report
+
+# =====================================================================
+# SECTION 7: STREAMLIT UI
+# =====================================================================
+
+def render_ui():
+    st.set_page_config(
+        page_title="DECLARMIMA v6.2-ACCELERATED",
+        page_icon="⚡",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Custom CSS for better look
+    st.markdown("""
+        <style>
+        .main .block-container { padding-top: 2rem; }
+        h1 { color: #1f77b4; }
+        .stAlert { border-radius: 5px; }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    st.title("⚡ DECLARMIMA v6.2-ACCELERATED")
+    st.markdown("### Omniscient Vectorless RAG System")
+    st.markdown("Upload documents to check for specific parameters (e.g., *Laser Power*) in parallel.")
+    
+    # Sidebar Configuration
+    with st.sidebar:
+        st.header("🔧 Configuration")
+        model_name = st.text_input("LLM Model", DEFAULT_MODEL, help="Model name (e.g., gpt-4o, claude-3-opus)")
+        
+        if os.getenv("OPENAI_API_KEY"):
+            st.success("OpenAI Key detected")
+        elif os.getenv("ANTHROPIC_API_KEY"):
+            st.success("Anthropic Key detected")
+        else:
+            st.warning("API Key not found. Please set OPENAI_API_KEY in environment variables.")
+            
+        st.markdown("---")
+        st.markdown("**File Groups:**")
+        st.info(f"Small: <{PROCESSING_GROUPS['small']['max_mb']}MB\n"
+                f"Medium: <{PROCESSING_GROUPS['medium']['max_mb']}MB\n"
+                f"Large: <{PROCESSING_GROUPS['large']['max_mb']}MB")
+
+    # Main Area
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        uploaded_files = st.file_uploader(
+            "📂 Upload Documents (PDF, MD)",
+            type=['pdf', 'md', 'txt'],
+            accept_multiple_files=True,
+            help="Upload multiple files. They will be grouped by size and processed in parallel."
+        )
+        
+        query_input = st.text_input(
+            "🎯 Search Query / Parameter",
+            value="laser power",
+            help="Enter the parameter to search for (e.g., 'laser power', 'temperature', 'voltage')."
+        )
+        
+        process_btn = st.button("🚀 Start Accelerated Extraction", type="primary", use_container_width=True)
+
+    with col2:
+        st.metric("Documents Ready", len(uploaded_files) if uploaded_files else 0)
+        st.metric("Workers Available", os.cpu_count() or 4)
+
+    # Processing Logic
+    if process_btn:
+        if not uploaded_files:
+            st.error("Please upload at least one document.")
+        elif not query_input:
+            st.error("Please enter a search query.")
+        elif not LITELLM_AVAILABLE:
+            st.error("Litellm library is required. Run: pip install litellm")
+        else:
+            # Run Async Process
+            with st.spinner(f"Processing {len(uploaded_files)} documents in parallel groups..."):
+                
+                # Progress Bar Logic placeholder (async doesn't play nice with st natively without complex callbacks)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                try:
+                    processor = OmniscientProcessor(model_name=model_name)
+                    status_text.text("Initializing processor...")
+                    progress_bar.progress(10)
+                    
+                    # Run the async loop
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    result_report = loop.run_until_complete(
+                        processor.process_all(uploaded_files, query_input)
+                    )
+                    
+                    progress_bar.progress(90)
+                    status_text.text("Finalizing results...")
+                    
+                    # Display Results
+                    st.success(f"✅ Processing Complete in {result_report['processing_time_seconds']}s")
+                    progress_bar.progress(100)
+                    
+                    # Summary Stats
+                    st.subheader("📊 Summary")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Total Docs", result_report['total_files_processed'])
+                    c2.metric("With Matches", result_report['successful_extractions'])
+                    c3.metric("No Matches", result_report['failed_extractions'])
+                    c4.metric("Query", query_input)
+                    
+                    # Detailed Results
+                    st.subheader("🔍 Detailed Findings")
+                    
+                    # Filter successful results
+                    successful = [r for r in result_report['results'] if r.get('status') == 'success']
+                    
+                    if successful:
+                        for doc_res in successful:
+                            with st.expander(f"📄 {doc_res['doc_name']} ({len(doc_res['found_data'])} hits)"):
+                                for hit in doc_res['found_data']:
+                                    st.markdown(f"**Value:** {hit.get('value', 'N/A')} {hit.get('unit', '')}")
+                                    st.markdown(f"**Context:** {hit.get('context_sentence', '')}")
+                                    st.caption(f"Page {hit.get('source_page')} | Section: {hit.get('source_section')} | Confidence: {hit.get('confidence')}")
+                                    st.json(hit)
+                    else:
+                        st.info("No specific values found for the query in the provided documents.")
+                    
+                    # JSON Download
+                    st.subheader("💾 Export Data")
+                    json_str = json.dumps(result_report, indent=2)
+                    st.download_button(
+                        label="Download Full JSON Report",
+                        data=json_str,
+                        file_name=f"DECLARMIMA_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                    
+                    # Show raw JSON in viewer
+                    with st.expander("View Raw JSON"):
+                        st.json(result_report)
+                        
+                except Exception as e:
+                    st.error(f"An error occurred during processing: {e}")
+                    logger.exception("Processing failed")
+
+# =====================================================================
+# SECTION 8: MAIN ENTRY POINT
+# =====================================================================
 
 if __name__ == "__main__":
-    # Detect if Streamlit is called
-    if len(sys.argv) > 1 and sys.argv[1] == "ui":
-        run_streamlit()
-    elif STREAMLIT_AVAILABLE and not sys.argv[1:]:
-        run_streamlit()
+    # Check for dependencies
+    missing_deps = []
+    if not LITELLM_AVAILABLE: missing_deps.append("litellm")
+    if not PYPDF2_AVAILABLE: missing_deps.append("PyPDF2")
+    if not PYMUPDF_AVAILABLE: missing_deps.append("pymupdf")
+    
+    if missing_deps:
+        st.error("Missing required libraries. Please install:")
+        st.code(f"pip install {' '.join(missing_deps)}")
     else:
-        main_cli()
+        render_ui()

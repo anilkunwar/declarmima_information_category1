@@ -467,7 +467,7 @@ class HierarchicalIndex:
                 tmp.write(buf.getbuffer())
                 tmp_path = tmp.name
             doc = fitz.open(tmp_path)
-            root = self.(doc, doc_name, tmp_path)
+            root = self._build_tree(doc, doc_name, tmp_path)
             doc.close()
             
             try:
@@ -703,7 +703,7 @@ Return ONLY valid JSON."""
                 except:
                     continue
         return None
-    #
+
     def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
         # ROBUST: toc title may be explicit None
         safe_title = toc.get("suggested_root_title") or doc_name
@@ -1681,11 +1681,12 @@ def run_streamlit():
             # Display cached results if they exist
             if st.session_state.cached_query_result and st.session_state.cached_query_result.get("prompt") == prompt:
                 cached = st.session_state.cached_query_result
+                answer = cached["answer"]
+                retrieved = cached["retrieved"]
+                items = cached["items"]
+                extracted_values = cached["extracted_values"]
                 with st.chat_message("assistant"):
                     st.markdown(cached["answer"])
-                    retrieved = cached["retrieved"]
-                    items = cached["items"]
-                    extracted_values = cached["extracted_values"]
             else:
                 # No query yet
                 st.info("Ask a question about the documents.")

@@ -1,32 +1,3 @@
-Here is the full, expanded code for **DECLARMIMA v7.0-OMNISCIENT**. 
-
-This application is designed to run entirely locally (or with Ollama) to analyze documents. It uses "laser power" as a benchmark for quantitative extraction but supports universal queries (qualitative, definitional, comparative, etc.).
-
-### Prerequisites
-
-You will need to install the required libraries before running the application:
-
-```bash
-# Core libraries
-pip install streamlit pymupdf pypdf pandas numpy pydantic requests
-
-# Local LLM Support
-pip install torch transformers accelerate bitsandbytes
-
-# Optional: Ollama Python library (if using Ollama backend)
-pip install ollama
-```
-
-If using Ollama, ensure the service is running:
-```bash
-ollama serve
-```
-
-### The Application Code
-
-Save the following code as `app.py` and run it with `streamlit run app.py`.
-
-```python
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """

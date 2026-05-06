@@ -133,7 +133,7 @@ V36-V37: Regex-Free, QBQE + Query Attention, VECTOR Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/salienceawareragmodel-v40.0-yellow)](https://information-retrieval-reasoning-visualization41.streamlit.app/) (Optimized with speed and number of chunks for quantitative and qualitative reason based information retrieval, Excellent and faster than V36, v30 and includes multicomponent alloys, API Key Not Required, runs with GPT-2 in cloud, can run with any models installed in local computer, hugging face transformers and ollama interfaces, metadata, cross-document reasoning element introduced, THIS CODE HAS BEEN USED TO MEASURE THE RAG METRICS, Salient concepts count in histogram, hierarchical entity treemap, knowledge graphs, chord diagram, V17 relevant )
 
-V42: Vectorless Reasoning Based RAG
+V42-: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v42.0-orange)](https://vectorless-reasoning-rag-information-retrieval42.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
 
@@ -141,7 +141,13 @@ V42: Vectorless Reasoning Based RAG
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v44.0-orange)](https://vectorless-reasoning-rag-information-retrieval44.streamlit.app/) (Excellent qualitative and quantitative reasoning, Slow)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v45.0-red)](https://vectorless-reasoning-rag-information-retrieval45.streamlit.app/) (Excellent qualitative and quantitative reasoning, Output in json format)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v45.0-red)](https://vectorless-reasoning-rag-information-retrieval45.streamlit.app/) (Excellent qualitative and quantitative reasoning, Output in json format, Still Empty list of Variables)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v46.0-orange)](https://vectorless-reasoning-rag-information-retrieval46.streamlit.app/) (Excellent qualitative and quantitative reasoning, Finds better)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v47.0-orange)](https://vectorless-reasoning-rag-information-retrieval47.streamlit.app/) (Excellent qualitative and quantitative reasoning, Finds better but still not inferring)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v48.0-orange)](https://vectorless-reasoning-rag-information-retrieval48.streamlit.app/) (Excellent qualitative and quantitative reasoning, Finds better but still not inferring)
 
 
 Multicomponent Alloy Microstructure Focus :

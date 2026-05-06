@@ -2685,115 +2685,164 @@ def format_universal_answer(items: List[UniversalExtractionItem],
 # =====================================================================
 # SECTION 14: STREAMLIT UI COMPONENTS
 # =====================================================================
+#
 def render_sidebar():
     """Render sidebar with configuration options."""
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
         
+        # 1. Initialize Session State defaults safely
+        # This prevents errors when widgets try to read/write state
+        if "inference_backend" not in st.session_state:
+            st.session_state.inference_backend = "Ollama (if installed)" if OLLAMA_AVAILABLE else "Hugging Face Transformers"
+        
+        if "llm_model_choice" not in st.session_state:
+            st.session_state.llm_model_choice = "[Ollama] qwen2.5:7b" if OLLAMA_AVAILABLE else "Qwen/Qwen2.5-7B-Instruct"
+            
+        if "use_4bit" not in st.session_state:
+            st.session_state.use_4bit = True
+            
+        if "ollama_host" not in st.session_state:
+            st.session_state.ollama_host = "http://localhost:11434"
+            
+        if "max_navigation_steps" not in st.session_state:
+            st.session_state.max_navigation_steps = 1
+            
+        if "max_results" not in st.session_state:
+            st.session_state.max_results = 30
+            
+        if "min_confidence" not in st.session_state:
+            st.session_state.min_confidence = 0.55
+            
+        if "show_reasoning_trace" not in st.session_state:
+            st.session_state.show_reasoning_trace = True
+            
+        if "show_metrics" not in st.session_state:
+            st.session_state.show_metrics = True
+            
+        if "debug_mode" not in st.session_state:
+            st.session_state.debug_mode = False
+            
+        if "profile_select" not in st.session_state:
+            st.session_state.profile_select = "balanced"
+            app_config.apply_profile("balanced")
+
+        # 2. Widgets using 'key' argument to bind to session state
+        # This replaces the assignment pattern which causes StreamlitAPIException
+        
         # Backend selection
-        backend_option = st.radio(
+        backend_options = ["Hugging Face Transformers", "Ollama (if installed)"]
+        default_index = 1 if OLLAMA_AVAILABLE else 0
+        
+        st.radio(
             "🔧 Inference Backend", 
-            options=["Hugging Face Transformers", "Ollama (if installed)"], 
-            index=1 if OLLAMA_AVAILABLE else 0,
-            key="backend_radio"
+            options=backend_options, 
+            index=default_index,
+            key="inference_backend"
         )
-        st.session_state.inference_backend = backend_option
         
         # Model selection
-        local_models = [
-            "Qwen/Qwen2.5-0.5B-Instruct",
-            "Qwen/Qwen2.5-1.5B-Instruct", 
-            "Qwen/Qwen2.5-3B-Instruct",
-            "Qwen/Qwen2.5-7B-Instruct",
-            "meta-llama/Llama-3.2-3B-Instruct",
-            "meta-llama/Llama-3.1-8B-Instruct",
-            "mistralai/Mistral-7B-Instruct-v0.3",
-            "google/gemma-2-9b-it",
-        ]
-        ollama_models = [
-            "qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b", "qwen2.5:7b",
-            "llama3.1:8b", "llama3.2:3b", "mistral:7b", "gemma2:9b"
-        ]
-        
-        if backend_option == "Ollama (if installed)" and OLLAMA_AVAILABLE:
-            model_choice = st.selectbox(
+        if st.session_state.inference_backend == "Ollama (if installed)" and OLLAMA_AVAILABLE:
+            ollama_models = ["qwen2.5:0.5b", "qwen2.5:1.5b", "qwen2.5:3b", "qwen2.5:7b", "llama3.1:8b"]
+            st.selectbox(
                 "🧠 Local LLM (Ollama)", 
                 options=[f"[Ollama] {m}" for m in ollama_models],
                 index=3 if len(ollama_models) > 3 else 0,
-                key="ollama_model"
+                key="llm_model_choice"
             )
         else:
-            model_choice = st.selectbox(
+            hf_models = [
+                "Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen2.5-1.5B-Instruct", 
+                "Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-7B-Instruct",
+                "meta-llama/Llama-3.2-3B-Instruct", "meta-llama/Llama-3.1-8B-Instruct",
+                "mistralai/Mistral-7B-Instruct-v0.3"
+            ]
+            # Ensure current choice is valid for HF list
+            current_choice = st.session_state.llm_model_choice
+            if not current_choice or current_choice.startswith("[Ollama]") or current_choice not in hf_models:
+                current_choice = "Qwen/Qwen2.5-7B-Instruct"
+                st.session_state.llm_model_choice = current_choice
+            
+            idx = hf_models.index(current_choice) if current_choice in hf_models else 3
+            st.selectbox(
                 "🧠 Local LLM (Hugging Face)", 
-                options=local_models,
-                index=3 if len(local_models) > 3 else 0,
-                key="hf_model"
+                options=hf_models,
+                index=min(idx, len(hf_models)-1),
+                key="llm_model_choice"
             )
         
-        st.session_state.llm_model_choice = model_choice
-        
-        # 4-bit quantization for Transformers
-        if backend_option == "Hugging Face Transformers":
-            st.session_state.use_4bit = st.checkbox(
+        # 4-bit quantization (Only for Transformers)
+        if st.session_state.inference_backend == "Hugging Face Transformers":
+            st.checkbox(
                 "🗜️ Use 4-bit quantization", 
                 value=True,
                 help="Reduces VRAM usage (~4.5GB for 7B model)",
                 key="use_4bit"
             )
         
-        # Ollama host
-        if backend_option == "Ollama (if installed)" or model_choice.startswith("[Ollama]"):
-            st.session_state.ollama_host = st.text_input(
+        # Ollama host (Only if Ollama backend or model selected)
+        if st.session_state.inference_backend == "Ollama (if installed)" or \
+           (st.session_state.llm_model_choice and st.session_state.llm_model_choice.startswith("[Ollama]")):
+            st.text_input(
                 "🌐 Ollama Host", 
-                value=st.session_state.get("ollama_host", "http://localhost:11434"),
-                key="ollama_host_input"
+                value="http://localhost:11434",
+                key="ollama_host"
             )
         
-        # Query settings
-        st.markdown("#### 🔍 Query Settings")
-        st.session_state.max_navigation_steps = st.slider(
+        # Reasoning settings
+        st.markdown("#### 🔬 Reasoning Settings")
+        st.checkbox(
+            "🧠 Cross-document reasoning", value=True, key="reasoning_mode"
+        )
+        st.checkbox(
+            "🔍 Show reasoning trace", value=True, key="show_reasoning_trace"
+        )
+        
+        # Performance settings
+        st.markdown("#### ⚡ Performance")
+        st.slider(
             "Max navigation steps", min_value=1, max_value=3, value=1,
             help="Fewer steps = faster but may miss deep content",
-            key="nav_steps"
+            key="max_navigation_steps"
         )
-        st.session_state.max_results = st.slider(
+        st.slider(
             "Max sections to retrieve", min_value=10, max_value=50, value=30,
             key="max_results"
         )
-        st.session_state.min_confidence = st.slider(
+        st.slider(
             "Min confidence threshold", min_value=0.3, max_value=0.9, value=0.55, step=0.05,
             help="Filter out low-confidence extractions",
-            key="min_conf"
+            key="min_confidence"
+        )
+        
+        # Citation format
+        st.markdown("#### 📝 Citations")
+        st.selectbox(
+            "Citation style", 
+            options=["apa", "doi", "full", "short"], 
+            index=0,
+            key="citation_style"
         )
         
         # Performance profile
-        st.markdown("#### ⚡ Performance Profile")
+        st.markdown("#### 🚀 Profile")
         profile = st.selectbox(
             "Select profile",
             options=["balanced", "speed", "accuracy", "debug"],
             index=0,
             key="profile_select"
         )
-        if profile != app_config.get_current_profile():
+        # Apply profile if changed
+        if app_config.get_current_profile() != profile:
             app_config.apply_profile(profile)
             st.success(f"Applied {profile} profile")
         
         # Debug options
         st.markdown("#### 🐛 Debug Options")
-        st.session_state.debug_mode = st.checkbox(
+        st.checkbox(
             "🔍 Enable debug logging", 
             value=app_config.get("debug_mode_default", False),
-            key="debug_check"
-        )
-        st.session_state.show_reasoning_trace = st.checkbox(
-            "🔍 Show reasoning trace", 
-            value=True,
-            key="show_trace"
-        )
-        st.session_state.show_metrics = st.checkbox(
-            "📊 Show performance metrics", 
-            value=True,
-            key="show_metrics"
+            key="debug_mode"
         )
         
         # Device info

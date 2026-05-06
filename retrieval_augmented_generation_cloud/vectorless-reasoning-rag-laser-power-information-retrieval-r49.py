@@ -8,8 +8,6 @@ Examples: laser power, scan speed, temperature, pressure.
 
 Outputs JSON with exact citations and cross‑document consensus.
 Zero false positives: rejects 0.0, nonsense units, and out‑of‑context numbers.
-
-FIXED: Runs Streamlit UI automatically when no CLI arguments are provided.
 """
 
 import streamlit as st
@@ -475,45 +473,45 @@ def run_streamlit():
         st.info("Upload one or more PDFs, enter a query, then click 'Extract'.")
 
 # ============================================================================
-# 6. Entry Point – Auto‑detect UI or CLI
+# 6. Command‑Line Interface
 # ============================================================================
 if __name__ == "__main__":
     import sys
-    # If script is run with no arguments, launch Streamlit UI (for Cloud or local testing)
-    if len(sys.argv) == 1:
+    import argparse
+
+    if len(sys.argv) > 1 and sys.argv[1] == "ui":
         run_streamlit()
+        sys.exit(0)
+
+    parser = argparse.ArgumentParser(description="DECLARMIMA - Precise value extraction from PDFs")
+    parser.add_argument("files", nargs="+", help="PDF files to process")
+    parser.add_argument("-q", "--query", default="laser power", help="Query (e.g., 'laser power', 'scan speed')")
+    parser.add_argument("-o", "--output", help="Output JSON file")
+    parser.add_argument("--max-workers", type=int, default=8, help="Parallel workers")
+    args = parser.parse_args()
+
+    # Load files
+    file_buffers = []
+    for f in args.files:
+        if f.endswith(".pdf"):
+            with open(f, "rb") as fp:
+                buf = BytesIO(fp.read())
+                buf.name = os.path.basename(f)
+                file_buffers.append(buf)
+    if not file_buffers:
+        print("No valid PDF files found.")
+        sys.exit(1)
+
+    print(f"Processing {len(file_buffers)} files with query: '{args.query}'")
+    idx = HierarchicalIndex()
+    idx.build_from_pdfs(file_buffers, parallel=True, max_workers=args.max_workers)
+    engine = ParallelQueryEngine(idx, max_workers=args.max_workers)
+    report = asyncio.run(engine.run_query(args.query))
+    idx.cleanup()
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(report.to_json())
+        print(f"Report saved to {args.output}")
     else:
-        # Otherwise, parse arguments for CLI mode
-        import argparse
-        parser = argparse.ArgumentParser(description="DECLARMIMA - Precise value extraction from PDFs")
-        parser.add_argument("files", nargs="+", help="PDF files to process")
-        parser.add_argument("-q", "--query", default="laser power", help="Query (e.g., 'laser power', 'scan speed')")
-        parser.add_argument("-o", "--output", help="Output JSON file")
-        parser.add_argument("--max-workers", type=int, default=8, help="Parallel workers")
-        args = parser.parse_args()
-
-        # Load files
-        file_buffers = []
-        for f in args.files:
-            if f.endswith(".pdf"):
-                with open(f, "rb") as fp:
-                    buf = BytesIO(fp.read())
-                    buf.name = os.path.basename(f)
-                    file_buffers.append(buf)
-        if not file_buffers:
-            print("No valid PDF files found.")
-            sys.exit(1)
-
-        print(f"Processing {len(file_buffers)} files with query: '{args.query}'")
-        idx = HierarchicalIndex()
-        idx.build_from_pdfs(file_buffers, parallel=True, max_workers=args.max_workers)
-        engine = ParallelQueryEngine(idx, max_workers=args.max_workers)
-        report = asyncio.run(engine.run_query(args.query))
-        idx.cleanup()
-
-        if args.output:
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(report.to_json())
-            print(f"Report saved to {args.output}")
-        else:
-            print(report.to_json(indent=2))
+        print(report.to_json(indent=2))

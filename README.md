@@ -164,7 +164,8 @@ V42-v54: Vectorless Reasoning Based RAG
 
 
 V55- : Vectorless Reasoning Based RAG and Parallelization (No Series)
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v48.0-orange)](https://vectorless-reasoning-rag-information-retrieval-parallel55.streamlit.app/) (V45+V49 features with parallelization for faster processing, hierarchical navigation and quantitative cross-document analysis)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v55.0-orange)](https://vectorless-reasoning-rag-information-retrieval-parallel55.streamlit.app/) (V45+V49 features with parallelization for faster processing, hierarchical navigation and quantitative cross-document analysis)
 
 
 Multicomponent Alloy Microstructure Focus :

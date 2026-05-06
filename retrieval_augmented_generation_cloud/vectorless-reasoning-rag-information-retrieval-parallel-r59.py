@@ -804,7 +804,7 @@ Return ONLY valid JSON."""
                     continue
         return None
     #
-        def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
+    def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
         # ROBUST: toc title may be explicit None
         safe_title = toc.get("suggested_root_title") or doc_name
         root = PageNode(

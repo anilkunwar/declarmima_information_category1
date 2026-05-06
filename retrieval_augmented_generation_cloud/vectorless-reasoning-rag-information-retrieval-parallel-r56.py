@@ -19,7 +19,7 @@ FEATURES:
 
 AUTHOR: DECLARMIMA Team
 LICENSE: MIT
-VERSION: 12.0-VECTORLESS-FINAL
+VERSION: 12.1-VECTORLESS-FIXED
 DATE: 2026-05-06
 """
 
@@ -195,6 +195,10 @@ UNIVERSAL_CONFIG = {
     "tree_search_depth": 3,
     "max_tree_nodes_per_prompt": 50,
     "enable_orjson": ORJSON_AVAILABLE,
+    # FIX: Increase text limit for retrieval (was 500)
+    "max_retrieval_text_chars": 8000,
+    # FIX: Wider leaf node pages (was 3)
+    "leaf_node_page_window": 7,
 }
 
 # Expanded Ollama model registry with prompt templates
@@ -399,8 +403,20 @@ class PageNode:
         }
         if self.children:
             result["nodes"] = [c.to_tree_format() for c in self.children]
+        # FIX: Remove truncation – provide full text or up to max_retrieval_text_chars
+        # But we must avoid blowing context; use a generous configurable limit.
+        max_chars = UNIVERSAL_CONFIG.get("max_retrieval_text_chars", 8000)
         if self.full_text:
-            result["text"] = self.full_text[:500] + "..." if len(self.full_text) > 500 else self.full_text
+            if len(self.full_text) > max_chars:
+                result["text"] = self.full_text[:max_chars] + "..."
+            else:
+                result["text"] = self.full_text
+        elif self._pdf_path and self.get_text():
+            full = self.get_text()
+            if len(full) > max_chars:
+                result["text"] = full[:max_chars] + "..."
+            else:
+                result["text"] = full
         return result
 
     @classmethod
@@ -500,12 +516,15 @@ class HierarchicalIndex:
         )
         
         toc = doc.get_toc()
+        # FIX: wider page window for leaf nodes
+        window = UNIVERSAL_CONFIG.get("leaf_node_page_window", 7)
+        
         if toc:
             nodes_by_level = {}
             for level, title, page in toc:
                 if page > len(doc):
                     continue
-                end = min(page + 3, len(doc))
+                end = min(page + window, len(doc))   # increased from 3
                 text = self._extract_range(doc, page, end)
                 node = PageNode(
                     f"{doc_id}_toc_{level}_{title[:20]}",
@@ -523,7 +542,7 @@ class HierarchicalIndex:
         headings = self._detect_headings(doc)
         if headings:
             for i, (title, page) in enumerate(headings):
-                end = min(page + 3, len(doc))
+                end = min(page + window, len(doc))
                 text = self._extract_range(doc, page, end)
                 node = PageNode(
                     f"{doc_id}_h{i}", title, page, end, text, text[:200],
@@ -609,7 +628,7 @@ class FastHierarchicalIndex(HierarchicalIndex):
     async def build_from_pdfs_fast(self, files: List, max_workers: int = 4) -> Dict[str, PageNode]:
         loop = asyncio.get_event_loop()
         
-        # Stage 1: Extract raw pages using ThreadPoolExecutor (NOT ProcessPoolExecutor - avoids pickle issues)
+        # Stage 1: Extract raw pages using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 loop.run_in_executor(pool, self._extract_pages_raw, f)
@@ -720,6 +739,7 @@ Return ONLY valid JSON, no other text."""
         )
         
         entries = toc.get("toc_entries", []) or toc.get("headings_detected", [])
+        window = UNIVERSAL_CONFIG.get("leaf_node_page_window", 7)
         
         if entries:
             nodes_by_level = {}
@@ -731,7 +751,7 @@ Return ONLY valid JSON, no other text."""
                 if page > len(pages):
                     continue
                     
-                end = min(page + 3, len(pages))
+                end = min(page + window, len(pages))
                 text = "\n\n".join(pages[i - 1]['text'] for i in range(page, min(end + 1, len(pages) + 1)))
                 
                 node = PageNode(
@@ -1134,8 +1154,14 @@ class HierarchicalTreeRetriever:
             node = self._find_node_by_id(annotated_trees, doc_id, node_id)
             
             if node:
+                # FIX: retrieve full text (or up to limit) without truncation
+                full_text = node.get('text', '')
+                # Ensure we don't exceed context (but keep it full)
+                max_chars = UNIVERSAL_CONFIG.get("max_retrieval_text_chars", 8000)
+                if len(full_text) > max_chars:
+                    full_text = full_text[:max_chars] + "..."
                 results.append({
-                    "full_text": node.get('text', ''),
+                    "full_text": full_text,
                     "page_start": node.get('start_index'),
                     "doc_id": doc_id,
                     "section_title": node.get('title'),
@@ -1171,6 +1197,14 @@ class HierarchicalTreeRetriever:
                 ))
                 if params:
                     result["has_quantitative"] = params[:5]
+            else:
+                # FIX: add regex-based candidate values even without KG
+                text = node.get("text", "")
+                if text:
+                    # simple regex for numbers with common units
+                    candidates = re.findall(r'(\d+(?:\.\d+)?)\s*(W|kW|mW|J|mm/s|°C|K|MPa|GPa|nm|µm|mm|s|m/s)', text, re.IGNORECASE)
+                    if candidates:
+                        result["candidate_values"] = [f"{v}{u}" for v, u in candidates[:3]]
             
             children = node.get("nodes", [])
             if children and depth < max_depth:
@@ -1213,10 +1247,10 @@ Given a query about quantitative parameters, identify which document nodes are M
 QUERY: {query}
 
 INSTRUCTIONS:
-1. Analyze each document's tree structure (titles, summaries, quantitative hints)
+1. Analyze each document's tree structure (titles, summaries, quantitative hints, candidate values)
 2. Select nodes that likely contain specific numerical values, parameters, or measurements
 3. For cross-document queries like "laser power across all papers", select nodes from MULTIPLE documents
-4. Prefer nodes with "has_quantitative" hints matching the query topic
+4. Prefer nodes with "has_quantitative" or "candidate_values" hints matching the query topic
 5. Return selections sorted by confidence (highest first)
 
 DOCUMENT TREES:
@@ -1288,9 +1322,10 @@ Include up to {self.max_results} selections across all documents."""
 
 
 # ============================================================================
-# 10. UNIVERSAL LLM EXTRACTOR
+# 10. UNIVERSAL LLM EXTRACTOR (IMPROVED PROMPT)
 # ============================================================================
 class UniversalLLMExtractor:
+    # FIX: improved extraction prompt with explicit numeric instructions
     EXTRACTION_PROMPT = """Extract information relevant to the query from these document sections.
 QUERY: {query}
 QUERY TYPE: {query_type}
@@ -1299,14 +1334,14 @@ SECTIONS:
 
 Return JSON array of extracted items with fields:
 {{"item_type": "quantitative|qualitative|definition|comparison|relationship|process|material|method",
-  "content": "...",
+  "content": "exact phrase with full numerical value (never truncate numbers)",
   "confidence": 0.0-1.0,
   "context": "exact sentence from text",
   "doc_source": "{doc_id}",
   "page": page_number}}
 
 ADDITIONAL FIELDS (include if applicable):
-- For quantitative: "parameter_name", "value", "unit"
+- For quantitative: "parameter_name" (e.g., "laser power"), "value" (full number, never truncated), "unit" (e.g., "W", "kW", "mm/s")
 - For qualitative: "subject", "predicate", "object_val"
 - For definition: "definition_term", "definition_text"
 - For comparison: "comparison_entities", "comparison_aspect"
@@ -1318,7 +1353,8 @@ STRICT RULES:
 3. Use filename '{doc_id}' as doc_source
 4. Return [] if no relevant information found
 5. Return ONLY valid JSON, no extra text
-6. Set confidence based on clarity: 0.9+ for explicit statements, 0.6-0.8 for inferred, <0.6 for uncertain"""
+6. Set confidence based on clarity: 0.9+ for explicit statements, 0.6-0.8 for inferred, <0.6 for uncertain
+7. CRITICAL: When you see a number like "1000 W", output value=1000, never "1..." or any truncation. Output the complete number."""
 
     def __init__(self, llm: HybridLLM):
         self.llm = llm
@@ -1334,13 +1370,14 @@ STRICT RULES:
             doc = chunk["doc_id"]
             page = chunk["page_start"]
             
+            # Skip if query_type is quantitative but no digits in text (optimization)
             if qa.get("query_type") == "quantitative" and not re.search(r'\d+', text):
                 continue
             
             prompt = self.EXTRACTION_PROMPT.format(
                 query=query,
                 query_type=qa.get("query_type", "mixed"),
-                sections_text=text[:4000],
+                sections_text=text[:4000],  # keep within token limits
                 doc_id=doc
             )
             
@@ -1368,7 +1405,7 @@ STRICT RULES:
             if key not in unique or i.confidence > unique[key].confidence:
                 unique[key] = i
         
-        min_conf = 0.55
+        min_conf = UNIVERSAL_CONFIG.get("min_confidence_threshold", 0.55)
         return [i for i in unique.values() if i.confidence >= min_conf]
 
     def _extract_json(self, text: str) -> Optional[str]:
@@ -1600,9 +1637,9 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
 
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v12 - Vectorless RAG", layout="wide")
-    st.markdown("# 🔬 DECLARMIMA v12.0-VECTORLESS")
-    st.caption("Hierarchical tree navigation with LLM-powered quantitative reasoning")
+    st.set_page_config(page_title="DECLARMIMA v12.1 - Vectorless RAG (Fixed)", layout="wide")
+    st.markdown("# 🔬 DECLARMIMA v12.1-VECTORLESS-FIXED")
+    st.caption("Hierarchical tree navigation with LLM-powered quantitative reasoning (full text retrieval)")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -1671,10 +1708,9 @@ def run_streamlit():
                         collect_leaves(c)
                 
                 collect_leaves(tree)
-                items = extractor.extract_from_chunks(
-                    leaf_texts,
-                    "extract all quantitative parameters, materials, methods, and process conditions"
-                )
+                # FIX: use a more targeted extraction prompt for initial indexing
+                initial_prompt = "Extract all quantitative parameters (especially laser power, scan speed, temperature, energy density), materials, methods, and process conditions with full numerical values."
+                items = extractor.extract_from_chunks(leaf_texts, initial_prompt)
                 all_items.extend(items)
                 kg.add_extractions(doc_name, items)
             
@@ -1743,7 +1779,7 @@ def run_streamlit():
                 is_parameter_query = any(
                     kw in query_lower for kw in
                     ["laser power", "scan speed", "temperature", "energy density",
-                     "parameter", "value", "what is the", "how much"]
+                     "parameter", "value", "what is the", "how much", "laser power"]
                 )
                 
                 progress.text("Reasoning over document trees...")
@@ -1768,13 +1804,38 @@ def run_streamlit():
                 progress.text("Synthesizing cross-document answer...")
                 synthesizer = LLMReasoningSynthesizer(llm)
                 
-                if is_parameter_query:
-                    for param in ["laser power", "scan speed", "temperature", "energy density"]:
-                        if param in query_lower:
-                            answer = synthesizer.synthesize_cross_document_quantitative(
-                                param, st.session_state.knowledge_graph
-                            )
-                            break
+                # FIX: Use freshly extracted items for the answer
+                if is_parameter_query and items:
+                    # Build a temporary report from items
+                    temp_values = []
+                    for item in items:
+                        if item.item_type == "quantitative" and item.value is not None:
+                            temp_values.append(ExtractedValue(
+                                query=prompt,
+                                value=item.value,
+                                unit=item.unit or "",
+                                quantity_type="laser_power" if "power" in prompt.lower() else "unknown",
+                                confidence=item.confidence,
+                                context=item.context,
+                                doc_name=item.doc_source,
+                                page=item.page,
+                                section_title=item.section_title
+                            ))
+                    if temp_values:
+                        # Generate human conclusion directly from items
+                        report = QueryReport(
+                            query=prompt,
+                            total_docs=len(st.session_state.annotated_trees),
+                            docs_with_results=len(set(v.doc_name for v in temp_values)),
+                            all_values=temp_values,
+                            consensus={},
+                            processing_time_sec=0.0
+                        )
+                        answer = synthesizer.generate_human_conclusion(prompt, report)
+                        # Also add evidence synthesis
+                        answer += "\n\n**Detailed Extractions:**\n"
+                        for v in temp_values:
+                            answer += f"- {v.doc_name} (p.{v.page}): {v.value} {v.unit}\n"
                     else:
                         answer = synthesizer.synthesize(prompt, items)
                 else:
@@ -1794,13 +1855,21 @@ def run_streamlit():
                     key="display_mode"
                 )
                 
-                # Build extracted values from knowledge graph
-                kg = st.session_state.knowledge_graph
+                # Build extracted values from fresh items (not KG)
                 extracted_values = []
-                for param in ["laser power", "scan speed", "temperature", "energy density"]:
-                    if param in query_lower:
-                        extracted_values = kg.build_extracted_values(param)
-                        break
+                for item in items:
+                    if item.item_type == "quantitative" and item.value is not None:
+                        extracted_values.append(ExtractedValue(
+                            query=prompt,
+                            value=item.value,
+                            unit=item.unit or "",
+                            quantity_type="laser_power" if "power" in prompt.lower() else "unknown",
+                            confidence=item.confidence,
+                            context=item.context,
+                            doc_name=item.doc_source,
+                            page=item.page,
+                            section_title=item.section_title
+                        ))
                 
                 if display_mode == "Table" and extracted_values:
                     import pandas as pd
@@ -1826,9 +1895,7 @@ def run_streamlit():
                         total_docs=len(st.session_state.annotated_trees),
                         docs_with_results=len(set(v.doc_name for v in extracted_values)),
                         all_values=extracted_values,
-                        consensus=kg.get_summary_stats(
-                            next(p for p in ["laser power", "scan speed", "temperature", "energy density"] if p in query_lower)
-                        ) if any(p in query_lower for p in ["laser power", "scan speed", "temperature", "energy density"]) else {},
+                        consensus={},
                         processing_time_sec=0.0
                     )
                     conclusion = synthesizer.generate_human_conclusion(prompt, report)
@@ -1851,20 +1918,15 @@ def run_streamlit():
                     with st.expander("🔍 Extracted Items (Raw)", expanded=False):
                         st.json([i.to_dict() for i in items[:10]])
                 
-                # Statistics
-                if is_parameter_query:
-                    for param in ["laser power", "scan speed", "temperature", "energy density"]:
-                        if param in query_lower:
-                            stats = kg.get_summary_stats(param)
-                            if stats.get("count", 0) > 0:
-                                with st.expander(f"📊 {param.title()} Statistics", expanded=False):
-                                    cols = st.columns(4)
-                                    cols[0].metric("Documents", len(stats.get("documents", [])))
-                                    cols[1].metric("Occurrences", stats["count"])
-                                    if stats.get("values"):
-                                        cols[2].metric("Min", f"{stats['min']:.2f}")
-                                        cols[3].metric("Max", f"{stats['max']:.2f}")
-                                        st.write(f"**Mean**: {stats['mean']:.2f} | **Std**: {stats['std']:.2f}")
+                # Statistics from fresh items
+                if extracted_values:
+                    with st.expander(f"📊 Quick Statistics", expanded=False):
+                        vals = [v.value for v in extracted_values if v.unit]
+                        if vals:
+                            st.metric("Count", len(vals))
+                            st.metric("Min", f"{min(vals):.2f}")
+                            st.metric("Max", f"{max(vals):.2f}")
+                            st.metric("Mean", f"{np.mean(vals):.2f}")
                 
                 # Download buttons
                 report = CrossDocumentQueryReport(

@@ -9,14 +9,16 @@ Examples: laser power, scan speed, temperature, pressure.
 Outputs JSON with exact citations and cross‑document consensus.
 Zero false positives: rejects 0.0, nonsense units, and out‑of‑context numbers.
 
-FIXED: Runs Streamlit UI automatically when no CLI arguments are provided.
+USAGE:
+    streamlit run app.py          # Launch interactive UI
+    python app.py file1.pdf ...   # CLI batch mode (no UI)
 """
 
-import streamlit as st
+import sys
+import os
 import asyncio
 import json
 import re
-import os
 import tempfile
 import time
 import hashlib
@@ -30,13 +32,30 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 
-# PDF processing (PyMuPDF required)
+# ----------------------------------------------------------------------
+# 1. Check if running under Streamlit (for UI mode)
+# ----------------------------------------------------------------------
+def is_streamlit_running() -> bool:
+    """Return True if the script is executed by `streamlit run`."""
+    return "streamlit" in sys.modules and hasattr(sys, '_getframe') and \
+           any("streamlit" in str(frame) for frame in sys._current_frames().values())
+
+# ----------------------------------------------------------------------
+# 2. Imports that depend on Streamlit (only if UI mode)
+# ----------------------------------------------------------------------
+if is_streamlit_running():
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+else:
+    STREAMLIT_AVAILABLE = False
+
+# PDF processing (always required)
 try:
     import fitz
 except ImportError:
     raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
 
-# Optional LLM backends (not needed for extraction, only for advanced fallback)
+# Optional LLM backends (not used in extraction, only for future extension)
 try:
     import ollama
     OLLAMA_AVAILABLE = True
@@ -54,7 +73,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("DECLARMIMA")
 
 # ============================================================================
-# 1. Pydantic Models for Structured Output
+# 3. Pydantic Models for Structured Output
 # ============================================================================
 from pydantic import BaseModel, Field, field_validator
 
@@ -105,7 +124,7 @@ class QueryReport(BaseModel):
         return json.dumps(self.model_dump(), indent=indent, ensure_ascii=False)
 
 # ============================================================================
-# 2. Hierarchical PDF Index (Vectorless)
+# 4. Hierarchical PDF Index (Vectorless)
 # ============================================================================
 @dataclass
 class PageNode:
@@ -285,37 +304,27 @@ class HierarchicalIndex:
         self._pdf_cache.clear()
 
 # ============================================================================
-# 3. Precise Extractor with Strict Validation
+# 5. Precise Extractor with Strict Validation
 # ============================================================================
 class PreciseExtractor:
     """Extracts only real, non‑zero, properly‑unit values relevant to the query."""
     def __init__(self, query: str):
         self.query = query.lower()
-        # Allowed units for power / intensity
         self.allowed_units = {"W", "kW", "mW", "MW", "W/cm", "kW/cm", "W/cm²", "kW/cm²",
                               "W/cm2", "kW/cm2", "W/m²", "kW/m²", "W/m2", "kW/m2"}
-        # Patterns that indicate a genuine extraction
         self.patterns = [
-            # "laser power = 250 W"
             rf'{self.query}\s*[=:]\s*(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)',
-            # "laser power of 250 W"
             rf'{self.query}\s+of\s+(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)',
-            # "250 W laser power"
             rf'(\d+(?:\.\d+)?)\s*([a-zA-Z²0-9/]+)\s+{self.query}',
-            # "power = 250 W" (only if query contains "power")
             r'power\s*[=:]\s*(\d+(?:\.\d+)?)\s*([WkWMm]{1,3})',
-            # "P = 250 W"
             r'P\s*[=:]\s*(\d+(?:\.\d+)?)\s*([WkWMm]{1,3})',
         ]
 
     def _is_valid(self, value: float, unit: str, context: str) -> bool:
-        # 1. Zero is never a real measurement
         if value == 0.0:
             return False
-        # 2. Unit must be in whitelist
         if not any(unit.startswith(u) for u in self.allowed_units):
             return False
-        # 3. Context must contain a power‑related phrase
         power_phrases = ["power", "input power", "laser power", "beam power", "P =", "power =", "irradiance"]
         if not any(phrase in context.lower() for phrase in power_phrases):
             return False
@@ -330,18 +339,16 @@ class PreciseExtractor:
                     if len(groups) == 2:
                         val_str, unit = groups
                     else:
-                        # fallback: first group is value, unit may be empty
                         val_str = groups[0]
                         unit = ""
                     value = float(val_str)
                     unit = unit.strip().upper().replace("²", "2")
-                    # Get context around the match
                     start = max(0, match.start() - 100)
                     end = min(len(text), match.end() + 100)
                     context = text[start:end].strip()
                     if not self._is_valid(value, unit, context):
                         continue
-                    # Extract exact sentence as context
+                    # exact sentence
                     sentences = re.split(r'(?<=[.!?])\s+', text)
                     exact_context = ""
                     for sent in sentences:
@@ -350,7 +357,6 @@ class PreciseExtractor:
                             break
                     if not exact_context:
                         exact_context = context[:200]
-                    # Simple material heuristic
                     material = None
                     for mat in ["AlSiMg", "SDSS", "Ti6Al4V", "Ti-Cr", "Cu6Sn5", "Al-Cu-Ni", "Ti3Au", "Inconel"]:
                         if mat in exact_context:
@@ -369,7 +375,6 @@ class PreciseExtractor:
                     ))
                 except (ValueError, IndexError):
                     continue
-        # Deduplication by (value, unit, page, doc)
         unique = {}
         for v in results:
             key = (v.value, v.unit, v.page, v.doc_name)
@@ -378,7 +383,7 @@ class PreciseExtractor:
         return list(unique.values())
 
 # ============================================================================
-# 4. Parallel Query Engine
+# 6. Parallel Query Engine
 # ============================================================================
 class ParallelQueryEngine:
     def __init__(self, index: HierarchicalIndex, max_workers=8):
@@ -408,7 +413,6 @@ class ParallelQueryEngine:
             else:
                 docs_without.append(doc_name)
                 doc_res.append(DocumentResult(doc_name=doc_name, values=[]))
-        # Consensus analysis (only for power‑like units)
         power_vals = [v for v in all_vals if any(v.unit.startswith(u) for u in ["W", "kW", "mW"])]
         consensus = {}
         if power_vals:
@@ -453,7 +457,7 @@ class ParallelQueryEngine:
         return doc_name, values
 
 # ============================================================================
-# 5. Streamlit UI
+# 7. Streamlit UI (only called when running under `streamlit run`)
 # ============================================================================
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v7 - Accurate Extraction", layout="wide")
@@ -475,16 +479,23 @@ def run_streamlit():
         st.info("Upload one or more PDFs, enter a query, then click 'Extract'.")
 
 # ============================================================================
-# 6. Entry Point – Auto‑detect UI or CLI
+# 8. Entry Point – Detect Mode and Run
 # ============================================================================
 if __name__ == "__main__":
-    import sys
-    # If script is run with no arguments, launch Streamlit UI (for Cloud or local testing)
-    if len(sys.argv) == 1:
+    # If running under Streamlit, launch the UI
+    if is_streamlit_running():
         run_streamlit()
     else:
-        # Otherwise, parse arguments for CLI mode
+        # Otherwise, treat as CLI (requires file arguments)
         import argparse
+        if len(sys.argv) == 1:
+            print("\n" + "="*60)
+            print("DECLARMIMA v7.0 - Command Line Interface")
+            print("="*60)
+            print("To launch the interactive UI, run:  streamlit run app.py")
+            print("\nFor batch processing, provide PDF files as arguments:")
+            print("  python app.py paper1.pdf paper2.pdf -q 'laser power' -o results.json\n")
+            sys.exit(0)
         parser = argparse.ArgumentParser(description="DECLARMIMA - Precise value extraction from PDFs")
         parser.add_argument("files", nargs="+", help="PDF files to process")
         parser.add_argument("-q", "--query", default="laser power", help="Query (e.g., 'laser power', 'scan speed')")

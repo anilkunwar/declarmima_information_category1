@@ -1360,6 +1360,7 @@ Include up to {self.max_results} selections."""
 # ============================================================================
 # 12. PUBLICATION-QUALITY VISUALIZATION ENGINE (FIXED)
 # ============================================================================
+#
 class PublicationVisualizationEngine:
     """Generates publication-quality plots from DECLARMIMA's QuantitativeKnowledgeGraph."""
     
@@ -1397,7 +1398,37 @@ class PublicationVisualizationEngine:
         plt.rcParams['savefig.dpi'] = figure_dpi
     
     def _get_colormap(self, name: Optional[str] = None) -> str:
+        """Return a matplotlib‑compatible colormap name."""
         return self.COLORMAP_OPTIONS.get(name or self.default_colormap, "viridis")
+    
+    def _get_plotly_colorscale(self, name: Optional[str] = None) -> str:
+        """Return a Plotly‑valid colorscale name from a matplotlib or custom name."""
+        name = name or self.default_colormap
+        mapping = {
+            "coolwarm": "RdBu", "RdBu": "RdBu", "seismic": "RdBu", "bwr": "RdBu",
+            "PiYG": "PiYG", "PRGn": "PRGn", "BrBG": "BrBG", "PuOr": "PuOr",
+            "RdGy": "RdGy", "RdYlBu": "RdYlBu", "RdYlGn": "RdYlGn", "Spectral": "Spectral",
+        }
+        plotly_builtins = [
+            'aggrnyl', 'agsunset', 'algae', 'amp', 'armyrose', 'balance',
+            'blackbody', 'bluered', 'blues', 'blugrn', 'bluyl', 'brbg',
+            'brwnyl', 'bugn', 'bupu', 'burg', 'burgyl', 'cividis', 'curl',
+            'darkmint', 'deep', 'delta', 'dense', 'earth', 'edge', 'electric',
+            'emrld', 'fall', 'geyser', 'gnbu', 'gray', 'greens', 'greys',
+            'haline', 'hot', 'hsv', 'ice', 'icefire', 'inferno', 'jet',
+            'magenta', 'magma', 'matter', 'mint', 'mrybm', 'mygbm', 'oranges',
+            'orrd', 'oryel', 'oxy', 'peach', 'phase', 'picnic', 'pinkyl',
+            'piyg', 'plasma', 'plotly3', 'portland', 'prgn', 'pubu', 'pubugn',
+            'puor', 'purd', 'purp', 'purples', 'purpor', 'rainbow', 'rdbu',
+            'rdgy', 'rdpu', 'rdylbu', 'rdylgn', 'redor', 'reds', 'solar',
+            'spectral', 'speed', 'sunset', 'sunsetdark', 'teal', 'tealgrn',
+            'tealrose', 'tempo', 'temps', 'thermal', 'tropic', 'turbid',
+            'turbo', 'twilight', 'viridis', 'ylgn', 'ylgnbu', 'ylorbr', 'ylorrd'
+        ]
+        lowered = name.lower()
+        if lowered in [x.lower() for x in plotly_builtins]:
+            return lowered
+        return mapping.get(lowered, 'viridis')
     
     def extract_dataframe(self) -> pd.DataFrame:
         """Convert kgraph into a pandas DataFrame for plotting."""
@@ -1424,16 +1455,15 @@ class PublicationVisualizationEngine:
     
     def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str,
                                     group_by: str = "material", colormap: Optional[str] = None) -> go.Figure:
-        """✅ FIXED: Safely handle None/NaN/empty strings in group_by column."""
+        """Histogram with error bars, safely handling None/NaN in group_by column."""
         if df.empty:
             return go.Figure().update_layout(title=f"No {quantity_name} data")
         
-        # Filter out invalid group values before sorting
         subset = df[df["physical_quantity"] == quantity_name]
         if subset.empty:
             return go.Figure()
         
-        # Clean the group column: replace None/NaN with "Unknown" and filter out empty strings
+        # Clean the group column
         clean_col = subset[group_by].fillna("Unknown").replace("", "Unknown")
         subset = subset.assign(clean_group=clean_col)
         groups = sorted(subset["clean_group"].unique())
@@ -1477,7 +1507,7 @@ class PublicationVisualizationEngine:
         subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str)
         fig = px.sunburst(subset, path=["material", "doc_stem", "value_range"],
                           values="value", color="value",
-                          color_continuous_scale=self._get_colormap(colormap),
+                          color_continuous_scale=self._get_plotly_colorscale(colormap),
                           title=f"{quantity.replace('_',' ').title()} Distribution Hierarchy")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
@@ -1555,7 +1585,7 @@ class PublicationVisualizationEngine:
         agg = df.groupby(["material", "physical_quantity"]).size().reset_index(name="count")
         fig = px.sunburst(agg, path=["material", "physical_quantity"], values="count",
                           title="Material & Quantity Hierarchy",
-                          color="count", color_continuous_scale=self._get_colormap(colormap))
+                          color="count", color_continuous_scale=self._get_plotly_colorscale(colormap))
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
     
@@ -1579,7 +1609,7 @@ class PublicationVisualizationEngine:
                 if v2 != 0:
                     mat[i,j] = abs(v1 - v2) / v2
         fig = go.Figure(data=go.Heatmap(z=mat, x=docs, y=docs,
-                                        colorscale=self._get_colormap(colormap),
+                                        colorscale=self._get_plotly_colorscale(colormap),
                                         hoverongaps=False))
         fig.update_layout(title=f"Contradiction Matrix for {quantity if quantity else 'All Quantities'}",
                           font=dict(family=self.font_family, size=self.font_size),
@@ -1663,10 +1693,11 @@ class PublicationVisualizationEngine:
         agg = df.groupby(["physical_quantity", "material"]).size().reset_index(name="count")
         fig = px.treemap(agg, path=["physical_quantity", "material"], values="count",
                          title="Entity Treemap: Quantities and Materials",
-                         color="count", color_continuous_scale=self._get_colormap(colormap))
+                         color="count", color_continuous_scale=self._get_plotly_colorscale(colormap))
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
     
+    # ========== Dimensionality reduction plots ==========
     def _get_context_embeddings(self, embedding_fn: Callable, df: pd.DataFrame,
                                 quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
         if quantity:

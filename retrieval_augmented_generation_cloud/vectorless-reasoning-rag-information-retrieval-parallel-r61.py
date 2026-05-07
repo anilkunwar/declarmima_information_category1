@@ -1579,7 +1579,6 @@ def run_streamlit():
         st.session_state.annotated_trees = []
     if "cached_query_result" not in st.session_state:
         st.session_state.cached_query_result = None
-    # Persist the current query across reruns caused by downloads/radio changes
     if "active_prompt" not in st.session_state:
         st.session_state.active_prompt = ""
 
@@ -1661,27 +1660,24 @@ def run_streamlit():
             prompt_input = default_query
             st.session_state.quick_query = ""
 
-        # Persist the active prompt across Streamlit reruns (downloads, radio changes, etc.)
         if prompt_input:
             st.session_state.active_prompt = prompt_input
             st.session_state.messages.append({"role": "user", "content": prompt_input})
             with st.chat_message("user"):
                 st.markdown(prompt_input)
         elif st.session_state.active_prompt:
-            # Re-render user message on widget-triggered reruns so chat history doesn't vanish
             with st.chat_message("user"):
                 st.markdown(st.session_state.active_prompt)
 
         active_prompt = st.session_state.get("active_prompt", "")
 
-        # Determine whether we need to run a fresh query or can safely use cached results
         run_query = False
         if active_prompt:
             cached = st.session_state.cached_query_result
             has_valid_cache = (
                 cached is not None
                 and cached.get("prompt") == active_prompt
-                and "answer" in cached          # ensure cache is complete, not partial
+                and "answer" in cached
             )
             if not has_valid_cache:
                 run_query = True
@@ -1740,7 +1736,7 @@ def run_streamlit():
                     answer = synthesizer.synthesize(active_prompt, items)
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
-                # Store complete result as plain dicts so Pydantic classes can be re-instantiated safely on rerun
+                # Store as plain dicts to survive Streamlit reruns
                 st.session_state.cached_query_result = {
                     "prompt": active_prompt,
                     "retrieved": retrieved,
@@ -1756,17 +1752,16 @@ def run_streamlit():
                     st.markdown(cached["answer"])
                 answer = cached["answer"]
                 retrieved = cached.get("retrieved", [])
-                # Reconstruct Pydantic models from dicts so they belong to the current class definition
                 raw_items = cached.get("items", [])
                 if raw_items and isinstance(raw_items[0], dict):
                     items = [UniversalExtractionItem(**d) for d in raw_items]
                 else:
-                    items = raw_items  # legacy fallback (already objects)
+                    items = raw_items
                 raw_vals = cached.get("extracted_values", [])
                 if raw_vals and isinstance(raw_vals[0], dict):
                     extracted_values = [ExtractedValue(**d) for d in raw_vals]
                 else:
-                    extracted_values = raw_vals  # legacy fallback
+                    extracted_values = raw_vals
             else:
                 if not active_prompt:
                     st.info("Ask a question about the documents.")
@@ -1793,6 +1788,10 @@ def run_streamlit():
         elif display_mode == "JSON" and extracted_values:
             st.json([v.model_dump() for v in extracted_values])
         elif display_mode == "Human Summary" and extracted_values:
+            # FIX: Use a properly initialized synthesizer instead of LLMReasoningSynthesizer(None)
+            synthesizer = LLMReasoningSynthesizer(
+                get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
+            )
             report = QueryReport(
                 query=active_prompt,
                 total_docs=len(st.session_state.annotated_trees),
@@ -1801,7 +1800,7 @@ def run_streamlit():
                 consensus={},
                 processing_time_sec=0.0
             )
-            conclusion = LLMReasoningSynthesizer(None).generate_human_conclusion(active_prompt, report)
+            conclusion = synthesizer.generate_human_conclusion(active_prompt, report)
             st.markdown(conclusion)
 
         if st.session_state.get("show_tree_nav") and retrieved:
@@ -1825,7 +1824,7 @@ def run_streamlit():
                         st.metric(f"{readable} max", f"{max(vals):.2f}")
                         st.metric(f"{readable} mean", f"{np.mean(vals):.2f}")
 
-        # Build CrossDocumentQueryReport from fresh model instances (or dicts) to avoid stale-class ValidationError
+        # FIX: Pass dicts to CrossDocumentQueryReport to avoid stale-class ValidationError
         report = CrossDocumentQueryReport(
             query=active_prompt,
             total_documents=len(st.session_state.annotated_trees),

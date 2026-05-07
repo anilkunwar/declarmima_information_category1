@@ -875,8 +875,12 @@ Return ONLY valid JSON."""
                 except:
                     continue
         return None
-
+    #
     def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
+        """
+        Build a hierarchical tree from a document's table of contents (LLM-extracted).
+        Handles missing or invalid page numbers safely.
+        """
         safe_title = toc.get("suggested_root_title") or doc_name
         root = PageNode(
             f"{doc_name}_root",
@@ -885,43 +889,84 @@ Return ONLY valid JSON."""
             f"Document {doc_name}", 0,
             doc_id=doc_name, node_id="0000"
         )
+        
         entries = toc.get("toc_entries", []) or toc.get("headings_detected", [])
         window = UNIVERSAL_CONFIG.get("leaf_node_page_window", 7)
+        
         if entries:
             nodes_by_level = {}
             for entry in entries:
-                level = entry.get("level", 1)
-                title = entry.get("title", "Unknown")
-                page = entry.get("page", 1)
+                # Extract level (default 1 if missing/invalid)
+                level_val = entry.get("level")
+                if level_val is None:
+                    level = 1
+                else:
+                    try:
+                        level = int(level_val)
+                    except (ValueError, TypeError):
+                        level = 1
+                
+                # Extract title (default "Unknown")
+                title = entry.get("title")
+                if title is None:
+                    title = "Unknown"
+                title = str(title).strip()
+                
+                # ---------- CRITICAL FIX: safe page number conversion ----------
+                page_raw = entry.get("page")
+                if page_raw is None:
+                    page = 1
+                else:
+                    try:
+                        page = int(page_raw)
+                    except (ValueError, TypeError):
+                        page = 1
+                # -----------------------------------------------------------------
+                
+                # Validate page range
                 if page < 1 or page > len(pages):
                     continue
+                
+                # Determine end page (window size)
                 end = min(page + window, len(pages))
+                
+                # Extract text for this node
                 text_parts = []
                 for i in range(page, min(end + 1, len(pages) + 1)):
                     try:
-                        page_data = pages[i-1]
+                        page_data = pages[i - 1]
                         if isinstance(page_data, dict) and 'text' in page_data:
                             text_parts.append(page_data['text'])
                     except (IndexError, KeyError, TypeError):
                         continue
                 text = "\n\n".join(text_parts)
+                
+                # Create the node
+                node_id = f"{doc_name}_toc_{level}_{title[:20]}"
                 node = PageNode(
-                    f"{doc_name}_toc_{level}_{title[:20]}",
+                    node_id,
                     title, page, end,
                     text, text[:200], level,
                     doc_id=doc_name
                 )
                 nodes_by_level.setdefault(level, []).append(node)
+            
+            # Attach children to parents based on level
             for level in sorted(nodes_by_level.keys()):
                 for node in nodes_by_level[level]:
                     parent = self._find_parent(root, level - 1, node.page_start)
                     parent.children.append(node)
         else:
+            # No TOC entries – use page-by-page fallback
             for p in pages:
                 text = p.get('text', '')
                 if not str(text).strip():
                     continue
                 page_num = p.get('page_num', 1)
+                try:
+                    page_num = int(page_num)
+                except (ValueError, TypeError):
+                    page_num = 1
                 node = PageNode(
                     f"{doc_name}_p{page_num}",
                     f"Page {page_num}", page_num, page_num,
@@ -929,9 +974,10 @@ Return ONLY valid JSON."""
                     doc_id=doc_name
                 )
                 root.children.append(node)
+        
         self._assign_node_ids(root)
         return root
-
+    
     async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
         all_nodes = []
         def collect_nodes(node: PageNode):

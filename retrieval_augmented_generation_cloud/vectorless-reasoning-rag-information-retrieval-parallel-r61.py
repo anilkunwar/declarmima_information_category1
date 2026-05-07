@@ -1579,7 +1579,7 @@ def run_streamlit():
         st.session_state.annotated_trees = []
     if "cached_query_result" not in st.session_state:
         st.session_state.cached_query_result = None
-    # NEW: persist the current query across reruns caused by downloads/radio changes
+    # Persist the current query across reruns caused by downloads/radio changes
     if "active_prompt" not in st.session_state:
         st.session_state.active_prompt = ""
 
@@ -1686,6 +1686,11 @@ def run_streamlit():
             if not has_valid_cache:
                 run_query = True
 
+        answer = None
+        extracted_values = []
+        retrieved = []
+        items = []
+
         if run_query:
             with st.chat_message("assistant"):
                 progress = st.progress(0)
@@ -1735,12 +1740,12 @@ def run_streamlit():
                     answer = synthesizer.synthesize(active_prompt, items)
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
-                # Store complete result so reruns (downloads, radio changes) don't recompute
+                # Store complete result as plain dicts so Pydantic classes can be re-instantiated safely on rerun
                 st.session_state.cached_query_result = {
                     "prompt": active_prompt,
                     "retrieved": retrieved,
-                    "items": items,
-                    "extracted_values": extracted_values,
+                    "items": [i.model_dump() for i in items],
+                    "extracted_values": [v.model_dump() for v in extracted_values],
                     "answer": answer
                 }
                 st.session_state.messages.append({"role": "assistant", "content": answer})
@@ -1749,10 +1754,19 @@ def run_streamlit():
                 cached = st.session_state.cached_query_result
                 with st.chat_message("assistant"):
                     st.markdown(cached["answer"])
-                retrieved = cached["retrieved"]
-                items = cached["items"]
-                extracted_values = cached["extracted_values"]
                 answer = cached["answer"]
+                retrieved = cached.get("retrieved", [])
+                # Reconstruct Pydantic models from dicts so they belong to the current class definition
+                raw_items = cached.get("items", [])
+                if raw_items and isinstance(raw_items[0], dict):
+                    items = [UniversalExtractionItem(**d) for d in raw_items]
+                else:
+                    items = raw_items  # legacy fallback (already objects)
+                raw_vals = cached.get("extracted_values", [])
+                if raw_vals and isinstance(raw_vals[0], dict):
+                    extracted_values = [ExtractedValue(**d) for d in raw_vals]
+                else:
+                    extracted_values = raw_vals  # legacy fallback
             else:
                 if not active_prompt:
                     st.info("Ask a question about the documents.")
@@ -1811,11 +1825,12 @@ def run_streamlit():
                         st.metric(f"{readable} max", f"{max(vals):.2f}")
                         st.metric(f"{readable} mean", f"{np.mean(vals):.2f}")
 
+        # Build CrossDocumentQueryReport from fresh model instances (or dicts) to avoid stale-class ValidationError
         report = CrossDocumentQueryReport(
             query=active_prompt,
             total_documents=len(st.session_state.annotated_trees),
             documents_with_results=len(set(i.doc_source for i in items)),
-            all_items=items
+            all_items=[i.model_dump() if hasattr(i, "model_dump") else i for i in items]
         )
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
@@ -1834,7 +1849,6 @@ def run_streamlit():
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("👆 Upload PDF files to begin.")
-
 
 
 if __name__ == "__main__":

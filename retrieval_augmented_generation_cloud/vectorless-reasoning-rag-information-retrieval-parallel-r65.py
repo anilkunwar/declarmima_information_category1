@@ -3,15 +3,9 @@
 """
 DECLARMIMA v13.1 - ENHANCED WITH PUBLICATION-QUALITY VISUALISATIONS
 ==================================================================
-Fully integrated from v13.0 (vectorless extraction) and extended with:
-- PublicationQualityVisualizationEngine (50+ colormaps, UMAP, t-SNE, PCA, chord diagrams, PyVis, sunbursts, contradiction matrices, etc.)
-- Dynamic concept selector (filter by domain, top‑N, salience threshold, LLM ranking)
-- Quantitative explorer (browse all extracted parameters without a query)
-- All plots exportable as PNG, HTML, CSV, JSON
-- All original functionality (two‑stage retrieval, hierarchical index, material extraction) preserved
-
-Usage:
-  streamlit run declarmima_v13.1.py
+FIXED: TypeError when group_by column contains None/NaN (plot_quantitative_histogram)
+FIXED: Expanded LOCAL_LLM_OPTIONS with all requested Ollama models
+All original functionality preserved.
 """
 
 import streamlit as st
@@ -1364,7 +1358,7 @@ Include up to {self.max_results} selections."""
         return None
 
 # ============================================================================
-# 12. PUBLICATION-QUALITY VISUALIZATION ENGINE (NEW, adapted from second code)
+# 12. PUBLICATION-QUALITY VISUALIZATION ENGINE (FIXED)
 # ============================================================================
 class PublicationVisualizationEngine:
     """Generates publication-quality plots from DECLARMIMA's QuantitativeKnowledgeGraph."""
@@ -1428,43 +1422,56 @@ class PublicationVisualizationEngine:
                     })
         return pd.DataFrame(rows)
     
-    def plot_quantitative_histogram(self, df: pd.DataFrame, quantity: str,
+    def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str,
                                     group_by: str = "material", colormap: Optional[str] = None) -> go.Figure:
-        """Histogram with error bars (mean ± std) grouped by material or doc."""
+        """✅ FIXED: Safely handle None/NaN/empty strings in group_by column."""
         if df.empty:
-            return go.Figure()
-        subset = df[df["physical_quantity"] == quantity]
+            return go.Figure().update_layout(title=f"No {quantity_name} data")
+        
+        # Filter out invalid group values before sorting
+        subset = df[df["physical_quantity"] == quantity_name]
         if subset.empty:
             return go.Figure()
-        groups = sorted(subset[group_by].unique())
+        
+        # Clean the group column: replace None/NaN with "Unknown" and filter out empty strings
+        clean_col = subset[group_by].fillna("Unknown").replace("", "Unknown")
+        subset = subset.assign(clean_group=clean_col)
+        groups = sorted(subset["clean_group"].unique())
+        
         fig = go.Figure()
-        cmap = plt.get_cmap(self._get_colormap(colormap))
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap))
+        
         for i, grp in enumerate(groups):
-            data = subset[subset[group_by] == grp]["value"]
-            color = mcolors.to_hex(cmap(i / max(len(groups)-1, 1))) if len(groups)>1 else "#3b82f6"
+            data = subset[subset["clean_group"] == grp]["value"]
+            color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1))) if len(groups) > 1 else "#3b82f6"
             fig.add_trace(go.Bar(
-                name=grp, x=[grp], y=[data.mean()],
-                error_y=dict(type='data', array=[data.std() if len(data)>1 else 0]),
+                name=str(grp),
+                x=[grp],
+                y=[data.mean()],
+                error_y=dict(type='data', array=[data.std()] if len(data) > 1 else [0], visible=True),
                 marker_color=color,
                 text=[f"n={len(data)}<br>μ={data.mean():.2f}<br>σ={data.std():.2f}"],
                 textposition="outside"
             ))
+        
         unit = subset["unit"].iloc[0] if not subset.empty else ""
-        fig.update_layout(title=f"{quantity.replace('_',' ').title()} by {group_by.title()}",
-                          yaxis_title=unit, xaxis_title=group_by.title(),
-                          font=dict(family=self.font_family, size=self.font_size),
-                          height=500)
+        fig.update_layout(
+            barmode='group',
+            title=f"{quantity_name.replace('_', ' ').title()} Values by {group_by.title()}",
+            xaxis_title=group_by.title(),
+            yaxis_title=f"{quantity_name.replace('_', ' ').title()} ({unit})",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500
+        )
         return fig
     
     def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity: str,
                                    colormap: Optional[str] = None) -> go.Figure:
-        """Sunburst hierarchy: physical_quantity -> material -> value_range."""
         if df.empty:
             return go.Figure()
         subset = df[df["physical_quantity"] == quantity]
         if subset.empty:
             return go.Figure()
-        # Create coarse bins for readability
         n_bins = min(5, max(2, len(subset)//3))
         subset = subset.copy()
         subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str)
@@ -1478,7 +1485,6 @@ class PublicationVisualizationEngine:
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity: str,
                                           colormap: Optional[str] = None,
                                           figsize: Tuple[int, int] = (14,12)) -> plt.Figure:
-        """Network connecting quantity hub -> materials -> documents -> top values."""
         G = nx.Graph()
         hub = f"{quantity}_hub"
         G.add_node(hub, node_type="hub")
@@ -1486,26 +1492,30 @@ class PublicationVisualizationEngine:
         if subset.empty:
             return plt.figure()
         for mat in subset["material"].unique():
-            G.add_node(mat, node_type="material")
-            G.add_edge(hub, mat, weight=len(subset[subset["material"] == mat]))
+            if pd.notna(mat) and str(mat).strip():
+                G.add_node(mat, node_type="material")
+                G.add_edge(hub, mat, weight=len(subset[subset["material"] == mat]))
         for doc in subset["doc_stem"].unique():
-            G.add_node(doc, node_type="doc")
-            G.add_edge(hub, doc, weight=len(subset[subset["doc_stem"] == doc]))
+            if pd.notna(doc) and str(doc).strip():
+                G.add_node(doc, node_type="doc")
+                G.add_edge(hub, doc, weight=len(subset[subset["doc_stem"] == doc]))
         top = subset.nlargest(min(25, len(subset)), "value")
         for _, row in top.iterrows():
             leaf = f"{row['value']:.1f} {row['unit']}"
             G.add_node(leaf, node_type="value", value=row["value"])
-            G.add_edge(row["material"], leaf, weight=1)
-            G.add_edge(row["doc_stem"], leaf, weight=1)
+            if pd.notna(row["material"]) and str(row["material"]).strip():
+                G.add_edge(row["material"], leaf, weight=1)
+            if pd.notna(row["doc_stem"]) and str(row["doc_stem"]).strip():
+                G.add_edge(row["doc_stem"], leaf, weight=1)
         pos = nx.spring_layout(G, k=0.6, seed=42)
         fig, ax = plt.subplots(figsize=figsize)
         nx.draw_networkx_nodes(G, pos, nodelist=[hub], node_color="#dc2626", node_size=2500, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=[n for n,d in G.nodes(data=True) if d.get("node_type")=="material"],
-                               node_color="#3b82f6", node_size=800, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=[n for n,d in G.nodes(data=True) if d.get("node_type")=="doc"],
-                               node_color="#10b981", node_size=600, ax=ax)
-        val_nodes = [n for n,d in G.nodes(data=True) if d.get("node_type")=="value"]
-        nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#f59e0b", node_size=300, ax=ax)
+        materials = [n for n,d in G.nodes(data=True) if d.get("node_type")=="material"]
+        docs = [n for n,d in G.nodes(data=True) if d.get("node_type")=="doc"]
+        vals = [n for n,d in G.nodes(data=True) if d.get("node_type")=="value"]
+        nx.draw_networkx_nodes(G, pos, nodelist=materials, node_color="#3b82f6", node_size=800, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=docs, node_color="#10b981", node_size=600, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=vals, node_color="#f59e0b", node_size=300, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.25, width=0.8, ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax,
                                 font_family=self.font_family)
@@ -1517,7 +1527,6 @@ class PublicationVisualizationEngine:
     
     def plot_consensus_waterfall(self, quantity: Optional[str] = None,
                                  colormap: Optional[str] = None) -> go.Figure:
-        """Mean ± std across materials for a given quantity (or all)."""
         df = self.extract_dataframe()
         if quantity:
             df = df[df["physical_quantity"] == quantity]
@@ -1540,11 +1549,9 @@ class PublicationVisualizationEngine:
         return fig
     
     def plot_material_sunburst(self, colormap: Optional[str] = None) -> go.Figure:
-        """Sunburst of materials and their associated physical quantities."""
         df = self.extract_dataframe()
         if df.empty:
             return go.Figure()
-        # Count occurrences per material and physical_quantity
         agg = df.groupby(["material", "physical_quantity"]).size().reset_index(name="count")
         fig = px.sunburst(agg, path=["material", "physical_quantity"], values="count",
                           title="Material & Quantity Hierarchy",
@@ -1554,7 +1561,6 @@ class PublicationVisualizationEngine:
     
     def plot_contradiction_matrix(self, quantity: Optional[str] = None,
                                   colormap: Optional[str] = None) -> go.Figure:
-        """Heatmap of relative differences between document means for a quantity."""
         df = self.extract_dataframe()
         if quantity:
             df = df[df["physical_quantity"] == quantity]
@@ -1581,13 +1587,10 @@ class PublicationVisualizationEngine:
         return fig
     
     def plot_radar_by_material(self, colormap: Optional[str] = None) -> go.Figure:
-        """Radar chart showing average values of top physical quantities per material."""
         df = self.extract_dataframe()
         if df.empty:
             return go.Figure()
-        # Select top 5 most frequent physical quantities
         top_quantities = df["physical_quantity"].value_counts().head(5).index.tolist()
-        # Pivot: materials x quantities
         pivot = df[df["physical_quantity"].isin(top_quantities)].pivot_table(
             index="material", columns="physical_quantity", values="value", aggfunc="mean"
         ).fillna(0)
@@ -1598,7 +1601,7 @@ class PublicationVisualizationEngine:
         materials = pivot.index.tolist()
         for i, mat in enumerate(materials):
             values = pivot.loc[mat].tolist()
-            values += values[:1]  # close the loop
+            values += values[:1]
             color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
             fig.add_trace(go.Scatterpolar(
                 r=values, theta=top_quantities + [top_quantities[0]],
@@ -1610,11 +1613,9 @@ class PublicationVisualizationEngine:
         return fig
     
     def plot_document_radar(self, colormap: Optional[str] = None) -> go.Figure:
-        """Radar chart per document: coverage of different physical quantity categories."""
         df = self.extract_dataframe()
         if df.empty:
             return go.Figure()
-        # Aggregate counts per document per physical_quantity
         pivot = df.pivot_table(index="doc_stem", columns="physical_quantity", values="value", aggfunc="count").fillna(0)
         if pivot.empty:
             return go.Figure()
@@ -1635,21 +1636,17 @@ class PublicationVisualizationEngine:
         return fig
     
     def plot_timeline(self, colormap: Optional[str] = None) -> go.Figure:
-        """Scatter timeline: documents vs top physical quantities, using year if available."""
         df = self.extract_dataframe()
         if df.empty:
             return go.Figure()
-        # Try to extract year from doc metadata if available
         years = {}
         for doc_id in self.kgraph.doc_graphs.keys():
-            # Heuristic: look for 4-digit year in doc name or metadata
             match = re.search(r'\b(19|20)\d{2}\b', doc_id)
             if match:
                 years[doc_id] = int(match.group(0))
             else:
-                years[doc_id] = 2023  # default
+                years[doc_id] = 2023
         df["year"] = df["doc"].map(years)
-        # Top quantities
         top_q = df["physical_quantity"].value_counts().head(5).index.tolist()
         df_top = df[df["physical_quantity"].isin(top_q)]
         fig = px.scatter(df_top, x="year", y="physical_quantity", color="material",
@@ -1660,7 +1657,6 @@ class PublicationVisualizationEngine:
         return fig
     
     def plot_treemap(self, colormap: Optional[str] = None) -> go.Figure:
-        """Treemap of physical_quantity -> material -> count."""
         df = self.extract_dataframe()
         if df.empty:
             return go.Figure()
@@ -1671,10 +1667,8 @@ class PublicationVisualizationEngine:
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
     
-    # ========== Dimensionality reduction plots (if sklearn/umap available) ==========
     def _get_context_embeddings(self, embedding_fn: Callable, df: pd.DataFrame,
                                 quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
-        """Generate embeddings for each extraction context (for t-SNE/PCA/UMAP)."""
         if quantity:
             df = df[df["physical_quantity"] == quantity]
         if len(df) < 5:
@@ -1770,17 +1764,32 @@ class PublicationVisualizationEngine:
 # ============================================================================
 # 13. STREAMLIT UI WITH INTEGRATED VISUALISATIONS
 # ============================================================================
+# UPDATED LOCAL_LLM_OPTIONS with all requested models
 LOCAL_LLM_OPTIONS = {
-    "[Ollama] qwen2.5:0.5b (Fastest)": "ollama:qwen2.5:0.5b",
+    "[Ollama] qwen2.5:0.5b (Fastest, CPU OK)": "ollama:qwen2.5:0.5b",
     "[Ollama] qwen2.5:1.5b (Balanced)": "ollama:qwen2.5:1.5b",
-    "[Ollama] qwen2.5:7b (Recommended)": "ollama:qwen2.5:7b",
-    "[Ollama] llama3.1:8b": "ollama:llama3.1:8b",
-    "[Transformers] Qwen2-0.5B-Instruct": "Qwen/Qwen2-0.5B-Instruct",
-    "[Transformers] Qwen2.5-1.5B-Instruct": "Qwen/Qwen2.5-1.5B-Instruct",
-    "[Transformers] Mistral-7B-Instruct": "mistralai/Mistral-7B-Instruct-v0.3",
+    "[Ollama] qwen2.5:7b (Recommended for RAG)": "ollama:qwen2.5:7b",
+    "[Ollama] qwen2.5:14b (Max Reasoning)": "ollama:qwen2.5:14b",
+    "[Ollama] llama3.1:8b (Meta Standard)": "ollama:llama3.1:8b",
+    "[Ollama] mistral:7b (High JSON Reliability)": "ollama:mistral:7b",
+    "[Ollama] gemma2:9b (Scientific Nuance)": "ollama:gemma2:9b",
+    "[Ollama] falcon3:10b (Instruction Following)": "ollama:falcon3:10b",
+    # Optional HF fallbacks (if transformers backend used)
+    "[HF] Qwen2.5-0.5B-Instruct": "Qwen/Qwen2.5-0.5B-Instruct",
+    "[HF] Qwen2.5-1.5B-Instruct": "Qwen/Qwen2.5-1.5B-Instruct",
+    "[HF] Mistral-7B-Instruct-v0.3": "mistralai/Mistral-7B-Instruct-v0.3",
+    "[HF] Llama-3.2-3B-Instruct": "meta-llama/Llama-3.2-3B-Instruct",
 }
+
 MODEL_PROMPT_TEMPLATES = {
     "qwen2.5:0.5b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "qwen2.5:1.5b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "qwen2.5:7b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "qwen2.5:14b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "llama3.1:8b": {"system": "You analyze document structures. Be concise.", "json_reminder": "Output must be parseable JSON."},
+    "mistral:7b": {"system": "You analyze document structures. Be concise.", "json_reminder": "Output must be parseable JSON."},
+    "gemma2:9b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "falcon3:10b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
     "default": {"system": "You are a document navigation agent.", "json_reminder": "Return valid JSON only."}
 }
 def get_model_template(model_name: str) -> Dict[str, Any]:
@@ -1795,7 +1804,7 @@ def render_sidebar():
         st.markdown("### ⚙️ Configuration")
         model_keys = list(LOCAL_LLM_OPTIONS.keys())
         if "llm_model_choice" not in st.session_state:
-            st.session_state.llm_model_choice = model_keys[2]
+            st.session_state.llm_model_choice = model_keys[2]  # default to qwen2.5:7b
         selected = st.selectbox("🧠 Select Local LLM", options=model_keys, index=model_keys.index(st.session_state.llm_model_choice), key="llm_model_select")
         st.session_state.llm_model_choice = selected
         st.checkbox("🗜️ Use 4-bit quantization (if Transformers)", value=True, key="use_4bit")
@@ -2105,16 +2114,17 @@ def run_streamlit():
                 
                 with tabs[5]:
                     if st.session_state.embedding_model is not None:
-                        emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
+                        def embed_fn(x):
+                            return np.array(st.session_state.embedding_model.encode(x))
                         if SKLEARN_AVAILABLE:
-                            fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap)
+                            fig_tsne = viz.plot_tsne(embed_fn, None if selected_qty=="All" else selected_qty, colormap)
                             if fig_tsne:
                                 st.pyplot(fig_tsne)
-                            fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap)
+                            fig_pca = viz.plot_pca(embed_fn, None if selected_qty=="All" else selected_qty, colormap)
                             if fig_pca:
                                 st.pyplot(fig_pca)
                         if UMAP_AVAILABLE:
-                            fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap)
+                            fig_umap = viz.plot_umap(embed_fn, None if selected_qty=="All" else selected_qty, colormap)
                             if fig_umap:
                                 st.pyplot(fig_umap)
                     else:

@@ -1610,7 +1610,6 @@ def run_streamlit():
     st.markdown("# 🔬 DECLARMIMA v12.3-VECTORLESS (Stress/Speed Distinction + Unit Conversion)")
     st.caption("Hierarchical tree navigation with advanced physical quantity classification (MPa=N/mm², scan vs flow speed)")
 
-    # Initialize session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "query_processor" not in st.session_state:
@@ -1621,9 +1620,12 @@ def run_streamlit():
         st.session_state.annotated_trees = []
     if "cached_query_result" not in st.session_state:
         st.session_state.cached_query_result = None
-    # NEW: persist the active query across widget-triggered reruns
     if "active_prompt" not in st.session_state:
         st.session_state.active_prompt = ""
+    # FIX: Invalidate stale cache from pre-dict-fix versions
+    if "cache_version" not in st.session_state:
+        st.session_state.cache_version = "v2"
+        st.session_state.cached_query_result = None
 
     render_sidebar()
     max_retrieval_chars = st.session_state.get("max_retrieval_chars", 20000)
@@ -1654,16 +1656,13 @@ def run_streamlit():
                     st.session_state.query_processor["files"],
                     max_workers=4
                 )
-            # Handle asyncio in existing loop (Streamlit)
             try:
                 loop = asyncio.get_running_loop()
-                # If already running, we need to run in a new thread (simplify: use asyncio.run in thread)
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, build_index())
                     trees = future.result()
             except RuntimeError:
-                # No running loop, safe to use asyncio.run
                 trees = asyncio.run(build_index())
             st.session_state.query_processor["index"] = idx
             st.session_state.query_processor["doc_trees"] = trees
@@ -1725,14 +1724,12 @@ def run_streamlit():
             prompt_input = default_query
             st.session_state.quick_query = ""
 
-        # Persist active prompt across reruns (downloads, radio changes, etc.)
         if prompt_input:
             st.session_state.active_prompt = prompt_input
             st.session_state.messages.append({"role": "user", "content": prompt_input})
             with st.chat_message("user"):
                 st.markdown(prompt_input)
         elif st.session_state.active_prompt:
-            # Re-render user message on widget-triggered reruns
             with st.chat_message("user"):
                 st.markdown(st.session_state.active_prompt)
 
@@ -1742,13 +1739,12 @@ def run_streamlit():
             st.info("Ask a question about the documents.")
             return
 
-        # Determine whether we need to run a fresh query or can safely use cached results
         run_query = False
         cached = st.session_state.cached_query_result
         has_valid_cache = (
             cached is not None
             and cached.get("prompt") == active_prompt
-            and "answer" in cached          # ensure cache is complete, not partial
+            and "answer" in cached
         )
         if not has_valid_cache:
             run_query = True
@@ -1771,7 +1767,6 @@ def run_streamlit():
                 is_parameter_query = any(kw in query_lower for kw in ["laser power", "scan speed", "temperature", "energy density", "parameter", "value", "what is the", "how much", "yield strength", "stress"])
                 progress.text("Reasoning over document trees...")
                 retriever = HierarchicalTreeRetriever(llm, max_results=30, max_text_chars=max_retrieval_chars)
-                # Need async again
                 try:
                     loop = asyncio.get_running_loop()
                     import concurrent.futures
@@ -1792,20 +1787,20 @@ def run_streamlit():
                 progress.progress(0.6)
                 progress.text("Synthesizing cross-document answer...")
                 synthesizer = LLMReasoningSynthesizer(llm)
-                # Build extracted values via KG
                 kg = st.session_state.knowledge_graph
                 extracted_values = kg.build_extracted_values(active_prompt, items)
                 if is_parameter_query and extracted_values:
+                    # FIX: Reconstruct ExtractedValue to ensure fresh Pydantic instances
+                    fresh_values = [ExtractedValue(**v.model_dump()) for v in extracted_values]
                     report = QueryReport(
                         query=active_prompt,
                         total_docs=len(st.session_state.annotated_trees),
-                        docs_with_results=len(set(v.doc_name for v in extracted_values)),
-                        all_values=extracted_values,
+                        docs_with_results=len(set(v.doc_name for v in fresh_values)),
+                        all_values=fresh_values,
                         consensus={},
                         processing_time_sec=0.0
                     )
                     answer = synthesizer.generate_human_conclusion(active_prompt, report)
-                    # Append detailed extractions
                     answer += "\n\n**Detailed Extractions (with normalized units where applicable):**\n"
                     for v in extracted_values:
                         orig = f"{v.value} {v.unit}"
@@ -1816,7 +1811,7 @@ def run_streamlit():
                     answer = synthesizer.synthesize(active_prompt, items)
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
-                # FIX: Store complete results as plain dicts so Pydantic classes survive Streamlit reruns
+                # FIX: Cache as dicts
                 st.session_state.cached_query_result = {
                     "prompt": active_prompt,
                     "retrieved": retrieved,
@@ -1824,28 +1819,24 @@ def run_streamlit():
                     "extracted_values": [v.model_dump() for v in extracted_values],
                     "answer": answer
                 }
-                # Only append assistant message once per actual generation
                 st.session_state.messages.append({"role": "assistant", "content": answer})
         else:
-            # Use cached result on widget-triggered reruns
             cached = st.session_state.cached_query_result
             with st.chat_message("assistant"):
                 st.markdown(cached["answer"])
             answer = cached["answer"]
             retrieved = cached.get("retrieved", [])
-            # FIX: Reconstruct Pydantic models from dicts so they belong to current class definition
             raw_items = cached.get("items", [])
             if raw_items and isinstance(raw_items[0], dict):
                 items = [UniversalExtractionItem(**d) for d in raw_items]
             else:
-                items = raw_items  # legacy fallback (already objects)
+                items = raw_items
             raw_vals = cached.get("extracted_values", [])
             if raw_vals and isinstance(raw_vals[0], dict):
                 extracted_values = [ExtractedValue(**d) for d in raw_vals]
             else:
-                extracted_values = raw_vals  # legacy fallback
+                extracted_values = raw_vals
 
-        # Display quantitative results with toggle
         st.markdown("---")
         st.subheader("📊 Quantitative Results")
         display_mode = st.radio("Display format", ["Table", "JSON", "Human Summary"], horizontal=True, key="display_mode")
@@ -1867,15 +1858,24 @@ def run_streamlit():
         elif display_mode == "JSON" and extracted_values:
             st.json([v.model_dump() for v in extracted_values])
         elif display_mode == "Human Summary" and extracted_values:
-            # FIX: Use properly initialized synthesizer instead of LLMReasoningSynthesizer(None)
+            # FIX: Ensure fresh ExtractedValue instances before QueryReport
+            fresh_values = []
+            for v in extracted_values:
+                if isinstance(v, dict):
+                    fresh_values.append(ExtractedValue(**v))
+                elif isinstance(v, ExtractedValue):
+                    fresh_values.append(ExtractedValue(**v.model_dump()))
+                else:
+                    fresh_values.append(v)
+            
             synthesizer = LLMReasoningSynthesizer(
                 get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
             )
             report = QueryReport(
                 query=active_prompt,
                 total_docs=len(st.session_state.annotated_trees),
-                docs_with_results=len(set(v.doc_name for v in extracted_values)),
-                all_values=extracted_values,
+                docs_with_results=len(set(v.doc_name for v in fresh_values)),
+                all_values=fresh_values,
                 consensus={},
                 processing_time_sec=0.0
             )
@@ -1903,8 +1903,8 @@ def run_streamlit():
                             st.metric(f"Min", f"{min(vals):.2f}")
                             st.metric(f"Max", f"{max(vals):.2f}")
                             st.metric(f"Mean", f"{np.mean(vals):.2f}")
-        # Download buttons
-        # FIX: Pass dicts to CrossDocumentQueryReport to avoid stale-class ValidationError
+        
+        # FIX: Pass dicts to CrossDocumentQueryReport
         report = CrossDocumentQueryReport(
             query=active_prompt,
             total_documents=len(st.session_state.annotated_trees),
@@ -1928,8 +1928,6 @@ def run_streamlit():
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("👆 Upload PDF files to begin.")
-
-
 
 
 if __name__ == "__main__":

@@ -1816,12 +1816,12 @@ def run_streamlit():
                     answer = synthesizer.synthesize(active_prompt, items)
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
-                # Cache complete results so reruns (downloads, radio changes) don't recompute
+                # FIX: Store complete results as plain dicts so Pydantic classes survive Streamlit reruns
                 st.session_state.cached_query_result = {
                     "prompt": active_prompt,
                     "retrieved": retrieved,
-                    "items": items,
-                    "extracted_values": extracted_values,
+                    "items": [i.model_dump() for i in items],
+                    "extracted_values": [v.model_dump() for v in extracted_values],
                     "answer": answer
                 }
                 # Only append assistant message once per actual generation
@@ -1832,9 +1832,18 @@ def run_streamlit():
             with st.chat_message("assistant"):
                 st.markdown(cached["answer"])
             answer = cached["answer"]
-            retrieved = cached["retrieved"]
-            items = cached["items"]
-            extracted_values = cached["extracted_values"]
+            retrieved = cached.get("retrieved", [])
+            # FIX: Reconstruct Pydantic models from dicts so they belong to current class definition
+            raw_items = cached.get("items", [])
+            if raw_items and isinstance(raw_items[0], dict):
+                items = [UniversalExtractionItem(**d) for d in raw_items]
+            else:
+                items = raw_items  # legacy fallback (already objects)
+            raw_vals = cached.get("extracted_values", [])
+            if raw_vals and isinstance(raw_vals[0], dict):
+                extracted_values = [ExtractedValue(**d) for d in raw_vals]
+            else:
+                extracted_values = raw_vals  # legacy fallback
 
         # Display quantitative results with toggle
         st.markdown("---")
@@ -1858,6 +1867,10 @@ def run_streamlit():
         elif display_mode == "JSON" and extracted_values:
             st.json([v.model_dump() for v in extracted_values])
         elif display_mode == "Human Summary" and extracted_values:
+            # FIX: Use properly initialized synthesizer instead of LLMReasoningSynthesizer(None)
+            synthesizer = LLMReasoningSynthesizer(
+                get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
+            )
             report = QueryReport(
                 query=active_prompt,
                 total_docs=len(st.session_state.annotated_trees),
@@ -1866,7 +1879,6 @@ def run_streamlit():
                 consensus={},
                 processing_time_sec=0.0
             )
-            synthesizer = LLMReasoningSynthesizer(None)  # no LLM for summary
             conclusion = synthesizer.generate_human_conclusion(active_prompt, report)
             st.markdown(conclusion)
 
@@ -1892,11 +1904,12 @@ def run_streamlit():
                             st.metric(f"Max", f"{max(vals):.2f}")
                             st.metric(f"Mean", f"{np.mean(vals):.2f}")
         # Download buttons
+        # FIX: Pass dicts to CrossDocumentQueryReport to avoid stale-class ValidationError
         report = CrossDocumentQueryReport(
             query=active_prompt,
             total_documents=len(st.session_state.annotated_trees),
             documents_with_results=len(set(i.doc_source for i in items)),
-            all_items=items
+            all_items=[i.model_dump() if hasattr(i, "model_dump") else i for i in items]
         )
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
@@ -1915,6 +1928,7 @@ def run_streamlit():
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("👆 Upload PDF files to begin.")
+
 
 
 

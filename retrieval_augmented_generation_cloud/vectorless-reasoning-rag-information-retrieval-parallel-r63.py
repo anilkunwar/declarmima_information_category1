@@ -456,18 +456,18 @@ class StructuredMetadataExtractor:
 class TwoStageRetriever:
     """First stage: fast search over document metadata and summaries.
        Second stage: read full pages only for top-k documents."""
-    
     def __init__(self, llm: Optional['HybridLLM'] = None, embedding_model: str = "all-MiniLM-L6-v2"):
         self.llm = llm
         self.embedding_model = None
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
-                self.embedding_model = SentenceTransformer(embedding_model)
-                logger.info(f"Loaded sentence-transformer model {embedding_model}")
+                # FORCE CPU TO AVOID CUDA KERNEL ERRORS
+                self.embedding_model = SentenceTransformer(embedding_model, device="cpu")
+                logger.info(f"Loaded sentence-transformer model {embedding_model} on CPU")
             except Exception as e:
                 logger.warning(f"Failed to load embedding model: {e}")
         self.doc_metadata: Dict[str, DocumentMetadata] = {}
-        self.doc_summaries: Dict[str, str] = {}  # doc_name -> summary text
+        self.doc_summaries: Dict[str, str] = {}
     
     def index_document(self, doc_name: str, metadata: DocumentMetadata, summary: str):
         self.doc_metadata[doc_name] = metadata

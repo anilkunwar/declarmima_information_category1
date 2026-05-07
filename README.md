@@ -183,6 +183,13 @@ V55-V63 : Vectorless Reasoning Based RAG and Parallelization (No Series), V55-V6
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v63.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel63.streamlit.app/) (CPU based Semantic Filtering when using Sentence-Transformers, Enabled Materials-Centric Queries, Added vocabulary of materials to assess materials along with the laser parameters indexed-knowledgeGraph, Stable Version of V59, WORKING CODE, simulation doesn't restart when download button is clicked, works for predefined/pretrained parameters such as laser, scan speed or yield strength but misses untrained parameter such as alloys names, Advanced V58  method, Node text truncated only after 500-50000 default 20000 Characters or Full Text,  Regex for Qty. and Units, Can distinguish Laser Power with Irradiance, and Scan Speed with Fluid Flow velocity,  Temporary Query Report instead of Stale or Static Knowledge Graph, V45+V49 features with parallelization for faster processing, hierarchical navigation and quantitative cross-document analysis)
 
+V64-VXX : Vectorless Reasoning Based RAG and Parallelization (No Series) - With Visualizations
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v64.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel64.streamlit.app/) (CPU based Semantic Filtering when using Sentence-Transformers, Enabled Materials-Centric Queries, Added vocabulary of materials to assess materials along with the laser parameters indexed-knowledgeGraph, Stable Version of V59, WORKING CODE, simulation doesn't restart when download button is clicked, works for predefined/pretrained parameters such as laser, scan speed or yield strength but misses untrained parameter such as alloys names, Advanced V58  method, Node text truncated only after 500-50000 default 20000 Characters or Full Text,  Regex for Qty. and Units, Can distinguish Laser Power with Irradiance, and Scan Speed with Fluid Flow velocity,  Temporary Query Report instead of Stale or Static Knowledge Graph, V45+V49 features with parallelization for faster processing, hierarchical navigation and quantitative cross-document analysis)
+
+
+
+
 
 Multicomponent Alloy Microstructure Focus :
 

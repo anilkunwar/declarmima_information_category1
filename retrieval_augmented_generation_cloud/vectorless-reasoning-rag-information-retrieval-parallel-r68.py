@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v14.0 - VECTORLESS RETRIEVAL + LASER POWER / SCAN SPEED VISUALIZATION SUITE
-========================================================================================
-- Focused extraction: laser power (W, kW), scan speed (mm/s, m/s, mm/min), materials/alloys/compounds
-- Two-stage retrieval using ONLY metadata & regex (no sentence-transformers required)
-- LLM reasoning explicitly separates quantifiable features
-- Rich visualizations: counts per material, sunburst, network, chord diagram, radar, contradiction matrix
-- Knowledge graph linking documents → materials → parameters
-- Full PyVis interactive network with salience
+DECLARMIMA v14.0 - VECTORLESS REASONING RAG WITH FOCUSED VISUALIZATION
+=======================================================================
+- Dedicated extraction of laser power, scan speed, materials/alloys/compounds
+- Vectorless retrieval (keyword + structural) – embeddings optional
+- Robust fallback mechanism for missing sentence-transformers
+- Full visualization suite: histograms, sunbursts, treemaps, networks, radar, contradiction matrix
+- Focused query mode: "Find laser power and/or scan speed for materials"
+- Fixed session state initialisation to prevent ValueError
 """
 
 import streamlit as st
@@ -38,23 +38,64 @@ import numpy as np
 import torch
 import threading
 import queue
-import pandas as pd
 
-# ============================================================================
-# VISUALIZATION DEPENDENCIES - ALL IMPORTED
-# ============================================================================
+# Suppress warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
+# Configure logging
+log_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(log_formatter)
+logging.basicConfig(level=logging.INFO, handlers=[console_handler], force=True)
+logger = logging.getLogger("DECLARMIMA")
+
+# ============================================================================
+# OPTIONAL IMPORTS
+# ============================================================================
+try:
+    import fitz
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
+
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
+    logger.warning("Ollama not installed. Ollama backend unavailable.")
+
+try:
+    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+
+try:
+    import orjson
+    ORJSON_AVAILABLE = True
+except ImportError:
+    ORJSON_AVAILABLE = False
+    logger.warning("orjson not installed. Using standard json (slower).")
+
+# Optional: sentence-transformers for semantic search (but we will use vectorless by default)
+try:
+    from sentence_transformers import SentenceTransformer, util
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    logger.warning("sentence-transformers not installed. Using vectorless keyword retrieval.")
+
+# =====================================================================
+# VISUALIZATION IMPORTS (optional but recommended)
+# =====================================================================
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 from matplotlib.colors import LinearSegmentedColormap
 import networkx as nx
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 try:
     import umap
@@ -84,39 +125,9 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
-# ============================================================================
-# OPTIONAL IMPORTS (LLM & PDF only)
-# ============================================================================
-try:
-    import fitz
-    PYMUPDF_AVAILABLE = True
-except ImportError:
-    raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
-
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-    logging.warning("Ollama not installed. Ollama backend unavailable.")
-
-try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-
-try:
-    import orjson
-    ORJSON_AVAILABLE = True
-except ImportError:
-    ORJSON_AVAILABLE = False
-
-# We deliberately do NOT import sentence_transformers – vectorless retrieval
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-logger = logging.getLogger("DECLARMIMA")
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -129,7 +140,7 @@ class UniversalExtractionItem(BaseModel):
     parameter_name: Optional[str] = None
     value: Optional[float] = None
     unit: Optional[str] = None
-    physical_quantity: Optional[str] = None   # "laser_power", "scan_speed", "material"
+    physical_quantity: Optional[str] = None
     material: Optional[str] = None
     subject: Optional[str] = None
     predicate: Optional[str] = None
@@ -217,17 +228,21 @@ class DocumentMetadata(BaseModel):
     other_parameters: Dict[str, List[float]] = {}
 
 # ============================================================================
-# PHYSICAL QUANTITY CLASSIFIER (focused on laser power & scan speed)
+# PHYSICAL QUANTITY CLASSIFIER (enhanced for laser power, scan speed, materials)
 # ============================================================================
 class PhysicalQuantityClassifier:
     CANONICAL = {
-        "laser_power": ["laser power", "laser beam power", "laser output power", "power", "p (w)"],
-        "scan_speed": ["scan speed", "scanning speed", "laser scan speed", "scan velocity", "v_scan", "vs"],
-        "material": ["alloy", "material", "compound", "composition", "aluminum", "titanium", "steel", "inconel", "ni", "ti", "al", "mg", "cu", "fe"],
+        "laser_power": ["laser power", "laser beam power", "laser output power", "laser power density (power)", "power", "p"],
+        "scan_speed": ["scan speed", "scanning speed", "laser scan speed", "beam scan speed", "scan velocity", "v_scan", "vs"],
+        "material": ["alloy", "material", "compound", "composition", "metal", "ceramic", "polymer"],
+        "yield_strength": ["yield strength", "ys", "0.2% offset strength", "proof stress", "yield stress"],
+        "tensile_strength": ["tensile strength", "uts", "ultimate tensile strength", "ultimate strength"],
+        "hardness": ["hardness", "vickers hardness", "microhardness", "hv"],
     }
     UNIT_HINTS = {
         "laser_power": ["w", "kw", "mw"],
         "scan_speed": ["mm/s", "cm/s", "m/s", "mm/min", "in/min"],
+        "material": [],  # no unit
     }
     def __init__(self):
         self._build_keyword_index()
@@ -238,30 +253,35 @@ class PhysicalQuantityClassifier:
                 self.keyword_to_canonical[kw.lower()] = canonical
     def classify(self, parameter_name: Optional[str], unit: Optional[str], context: str) -> str:
         if parameter_name:
-            pname_lower = parameter_name.lower()
-            if "laser power" in pname_lower or "power" in pname_lower and ("w" in pname_lower or "kw" in pname_lower):
-                return "laser_power"
-            if "scan speed" in pname_lower or "scanning speed" in pname_lower or "scan velocity" in pname_lower:
-                return "scan_speed"
-            for kw in ["alloy", "material", "compound"]:
-                if kw in pname_lower:
-                    return "material"
+            pname_lower = parameter_name.lower().strip()
+            for canonical, keywords in self.CANONICAL.items():
+                for kw in keywords:
+                    if kw in pname_lower:
+                        return canonical
+            if pname_lower in self.keyword_to_canonical:
+                return self.keyword_to_canonical[pname_lower]
         context_lower = context.lower()
-        if "laser power" in context_lower or ("power" in context_lower and ("w" in context_lower or "kw" in context_lower)):
-            return "laser_power"
-        if "scan speed" in context_lower or "scanning speed" in context_lower:
-            return "scan_speed"
-        if any(kw in context_lower for kw in ["alloy", "material", "compound", "ti6al4v", "alsi10mg", "inconel"]):
-            return "material"
+        for canonical, keywords in self.CANONICAL.items():
+            for kw in keywords:
+                if kw in context_lower:
+                    return canonical
         if unit:
             unit_lower = unit.lower()
-            if any(u in unit_lower for u in ["w", "kw", "mw"]):
-                return "laser_power"
-            if any(u in unit_lower for u in ["mm/s", "cm/s", "m/s", "mm/min"]):
-                return "scan_speed"
+            for canonical, units in self.UNIT_HINTS.items():
+                for u in units:
+                    if u in unit_lower:
+                        return canonical
         return "unknown"
     def get_human_readable(self, canonical: str) -> str:
-        mapping = {"laser_power": "Laser Power", "scan_speed": "Scan Speed", "material": "Material/Alloy", "unknown": "Other"}
+        mapping = {
+            "laser_power": "Laser Power",
+            "scan_speed": "Scan Speed",
+            "material": "Material/Alloy",
+            "yield_strength": "Yield Strength",
+            "tensile_strength": "Tensile Strength",
+            "hardness": "Hardness",
+            "unknown": "Other Quantities"
+        }
         return mapping.get(canonical, canonical.replace("_", " ").title())
 
 # ============================================================================
@@ -289,7 +309,7 @@ class PaginationAwareReader:
         return self.extract_pages(doc_path, pages)
 
 # ============================================================================
-# STRUCTURED METADATA EXTRACTOR (enhanced for laser power, scan speed, materials)
+# STRUCTURED METADATA EXTRACTOR (enhanced for laser power, scan speed, alloys)
 # ============================================================================
 class StructuredMetadataExtractor:
     ALLOY_PATTERNS = [
@@ -300,8 +320,10 @@ class StructuredMetadataExtractor:
     POWER_PATTERN = r'(?:laser\s+power|power|P)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(W|kW|mW)'
     SCAN_SPEED_PATTERN = r'(?:scan\s+speed|scanning\s+speed|v_scan|Vs)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(mm/s|cm/s|m/s|mm/min)'
     def __init__(self):
-        self.power_re = re.compile(self.POWER_PATTERN, re.IGNORECASE)
-        self.speed_re = re.compile(self.SCAN_SPEED_PATTERN, re.IGNORECASE)
+        self.compiled_patterns = {
+            "laser_power": (re.compile(self.POWER_PATTERN, re.IGNORECASE), float),
+            "scan_speed": (re.compile(self.SCAN_SPEED_PATTERN, re.IGNORECASE), float),
+        }
         self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
     def extract_metadata(self, doc_name: str, full_text: str) -> DocumentMetadata:
         meta = DocumentMetadata(doc_name=doc_name)
@@ -312,78 +334,67 @@ class StructuredMetadataExtractor:
                 if len(candidate) > 2 and candidate.lower() not in ["alloy", "composite", "metal"]:
                     alloys_set.add(candidate)
         meta.alloys = list(alloys_set)
-        # Laser power
-        power_matches = self.power_re.findall(full_text)
-        for val_str, unit in power_matches:
-            try:
-                val = float(val_str)
-                if unit.lower() == "kw":
-                    val *= 1000
-                elif unit.lower() == "mw":
-                    val /= 1000
-                meta.laser_power_values.append(val)
-            except:
-                pass
-        # Scan speed
-        speed_matches = self.speed_re.findall(full_text)
-        for val_str, unit in speed_matches:
-            try:
-                val = float(val_str)
-                if unit.lower() == "cm/s":
-                    val *= 10
-                elif unit.lower() == "m/s":
-                    val *= 1000
-                elif unit.lower() == "mm/min":
-                    val /= 60
-                meta.scan_speed_values.append(val)
-            except:
-                pass
+        for field, (pattern, cast_func) in self.compiled_patterns.items():
+            matches = pattern.findall(full_text)
+            values = []
+            for m in matches:
+                try:
+                    val = cast_func(m[0])
+                    values.append(val)
+                except:
+                    continue
+            setattr(meta, f"{field}_values", values)
         return meta
 
 # ============================================================================
-# TWO-STAGE RETRIEVER (VECTORLESS - pure keyword + metadata scoring)
+# TWO-STAGE RETRIEVER (vectorless fallback enhanced)
 # ============================================================================
 class TwoStageRetriever:
-    def __init__(self, llm: Optional['HybridLLM'] = None):
+    def __init__(self, llm: Optional['HybridLLM'] = None, embedding_model: str = "all-MiniLM-L6-v2"):
         self.llm = llm
+        self.embedding_model = None
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                self.embedding_model = SentenceTransformer(embedding_model, device="cpu")
+                logger.info(f"Loaded sentence-transformer model {embedding_model} on CPU")
+            except Exception as e:
+                logger.warning(f"Failed to load embedding model: {e}")
         self.doc_metadata: Dict[str, DocumentMetadata] = {}
         self.doc_summaries: Dict[str, str] = {}
     def index_document(self, doc_name: str, metadata: DocumentMetadata, summary: str):
         self.doc_metadata[doc_name] = metadata
         self.doc_summaries[doc_name] = summary
     def retrieve_relevant_docs(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
-        """Pure keyword/field matching – no embeddings."""
-        query_lower = query.lower()
+        # Vectorless fallback: always return all documents with a score based on relevance to laser power/scan speed/materials
         scores = []
+        query_lower = query.lower()
         for name, meta in self.doc_metadata.items():
             score = 0.0
-            # laser power mentioned in query?
-            if "laser power" in query_lower or "power" in query_lower:
-                if meta.laser_power_values:
-                    score += 0.5
-            # scan speed
-            if "scan speed" in query_lower or "scanning speed" in query_lower:
-                if meta.scan_speed_values:
-                    score += 0.5
-            # materials
-            if any(mat.lower() in query_lower for mat in meta.alloys):
-                score += 0.3
-            # process types
-            if any(proc.lower() in query_lower for proc in meta.process_types):
-                score += 0.2
-            # if query contains numeric hints like "100 W"
-            numeric_match = re.search(r'\d+\s*(W|kW|mm/s)', query_lower)
-            if numeric_match:
-                score += 0.2
+            # Boost if query mentions laser power / scan speed / alloys
+            if "laser power" in query_lower and meta.laser_power_values:
+                score += 0.5
+            if "scan speed" in query_lower and meta.scan_speed_values:
+                score += 0.5
+            for alloy in meta.alloys:
+                if alloy.lower() in query_lower:
+                    score += 0.3
+            # If query is about "materials" or "alloys", give higher base score
+            if any(term in query_lower for term in ["material", "alloy", "compound"]):
+                if meta.alloys:
+                    score += 0.4
+                else:
+                    score += 0.1
             scores.append((name, min(score, 1.0)))
         scores.sort(key=lambda x: x[1], reverse=True)
+        # Return top_k, but if none have positive score, return all docs with score 0.2
+        if not any(s[1] > 0 for s in scores):
+            return [(name, 0.2) for name in self.doc_metadata.keys()][:top_k]
         return scores[:top_k]
     def get_relevant_pages(self, doc_name: str, query: str, max_pages: int = 5) -> List[int]:
-        # Simple: return first max_pages (can be enhanced with keyword density)
         return list(range(1, max_pages+1))
 
 # ============================================================================
-# HIERARCHICAL PDF INDEX (unchanged structure, abbreviated for length)
+# HIERARCHICAL PDF INDEX (abbreviated, full version from first code)
 # ============================================================================
 @dataclass
 class PageNode:
@@ -504,8 +515,8 @@ class HierarchicalIndex:
                 with open(cache_path, "wb") as f:
                     data = orjson.dumps(cache_root.to_dict(), option=orjson.OPT_INDENT_2) if ORJSON_AVAILABLE else json.dumps(cache_root.to_dict(), indent=2).encode()
                     f.write(data)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Cache save failed: {e}")
             return doc_name, root
         if parallel and len(files) > 1:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -521,8 +532,32 @@ class HierarchicalIndex:
     def _build_tree(self, doc, doc_id, pdf_path):
         root = PageNode(f"{doc_id}_root", "Document Root", 1, len(doc), "",
                         f"Document {doc_id} root covering pages 1-{len(doc)}", 0, doc_id=doc_id, _pdf_path=pdf_path, node_id="0000")
+        toc = doc.get_toc()
         window = 7
-        # Fallback: page-by-page
+        if toc:
+            nodes_by_level = {}
+            for level, title, page in toc:
+                if page > len(doc):
+                    continue
+                end = min(page + window, len(doc))
+                text = self._extract_range(doc, page, end)
+                node = PageNode(f"{doc_id}_toc_{level}_{title[:20]}", title.strip(), page, end, text, text[:200], level, doc_id=doc_id, _pdf_path=pdf_path)
+                nodes_by_level.setdefault(level, []).append(node)
+            for level in sorted(nodes_by_level.keys()):
+                for node in nodes_by_level[level]:
+                    parent = self._find_parent(root, level-1, node.page_start)
+                    parent.children.append(node)
+            self._assign_node_ids(root)
+            return root
+        headings = self._detect_headings(doc)
+        if headings:
+            for i, (title, page) in enumerate(headings):
+                end = min(page + window, len(doc))
+                text = self._extract_range(doc, page, end)
+                node = PageNode(f"{doc_id}_h{i}", title, page, end, text, text[:200], 2, doc_id=doc_id, _pdf_path=pdf_path)
+                root.children.append(node)
+            self._assign_node_ids(root)
+            return root
         for p in range(1, len(doc)+1):
             text = doc[p-1].get_text("text")
             if not text.strip():
@@ -531,6 +566,23 @@ class HierarchicalIndex:
             root.children.append(node)
         self._assign_node_ids(root)
         return root
+    def _extract_range(self, doc, start, end):
+        return "\n\n".join(doc[p-1].get_text("text") for p in range(start, min(end, len(doc)+1)))
+    def _detect_headings(self, doc):
+        headings = []
+        for p in range(len(doc)):
+            lines = doc[p].get_text("text").split('\n')
+            for line in lines:
+                if re.match(r'^(?:[0-9]+\.?)+ +[A-Z]', line.strip()):
+                    headings.append((line.strip(), p+1))
+        return headings[:50]
+    def _find_parent(self, node, target_level, page_hint):
+        if target_level < 0:
+            return node
+        candidates = [c for c in node.children if c.level == target_level]
+        if not candidates:
+            return node
+        return min(candidates, key=lambda n: abs(n.page_start - page_hint))
     def _assign_node_ids(self, root: PageNode):
         def assign(node: PageNode, prefix: str = "", index: int = 1):
             if not prefix:
@@ -564,13 +616,20 @@ class FastHierarchicalIndex(HierarchicalIndex):
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [loop.run_in_executor(pool, self._extract_pages_raw, f) for f in files]
             raw_docs = await asyncio.gather(*futures)
+        if self.llm:
+            toc_tasks = [self._llm_extract_toc(doc_name, pages) for doc_name, pages in raw_docs]
+            toc_results = await asyncio.gather(*toc_tasks)
+        else:
+            toc_results = [{"has_toc": False, "headings_detected": []} for _ in raw_docs]
         trees = {}
-        for (doc_name, pages) in raw_docs:
-            tree = self._build_tree_from_pages(doc_name, pages)
+        for (doc_name, pages), toc in zip(raw_docs, toc_results):
+            tree = self._build_tree_from_toc(doc_name, pages, toc)
             full_text = "\n".join([p['text'] for p in pages])
             meta = self.metadata_extractor.extract_metadata(doc_name, full_text)
             tree.metadata = meta
             trees[doc_name] = tree
+        if self.llm:
+            await self._generate_summaries_async(trees)
         for doc_name, tree in trees.items():
             self.doc_trees[doc_name] = tree
             self._save_tree_fast(doc_name, tree)
@@ -589,17 +648,116 @@ class FastHierarchicalIndex(HierarchicalIndex):
             pages.append({'page_num': p+1, 'text': page.get_text("text"), 'images': len(page.get_images()), 'blocks': page.get_text("blocks")})
         doc.close()
         return doc_name, pages
-    def _build_tree_from_pages(self, doc_name: str, pages: List[Dict]) -> PageNode:
-        root = PageNode(f"{doc_name}_root", doc_name, 1, len(pages), "", f"Document {doc_name}", 0, doc_id=doc_name, node_id="0000")
-        for p in pages:
-            text = p.get('text', '')
-            if not str(text).strip():
-                continue
-            page_num = int(p.get('page_num', 1))
-            node = PageNode(f"{doc_name}_p{page_num}", f"Page {page_num}", page_num, page_num, text, str(text)[:200], 3, doc_id=doc_name)
-            root.children.append(node)
+    async def _llm_extract_toc(self, doc_name: str, pages: List[Dict]) -> Dict[str, Any]:
+        sample_text = "\n\n".join(p['text'][:1500] for p in pages[:5])
+        prompt = f"""Analyze this document and extract its hierarchical structure.
+Return JSON with:
+- "has_toc": bool
+- "toc_entries": list of {{"title": str, "level": int, "page": int}}
+- "headings_detected": list of {{"title": str, "level": int, "page": int}}
+- "doc_type": str
+- "suggested_root_title": str
+
+Document sample:
+{sample_text[:6000]}
+
+Return ONLY valid JSON."""
+        try:
+            response = await asyncio.to_thread(self.llm.generate, prompt, max_new_tokens=1024, fast_json=True)
+            result = self._extract_json_safe(response)
+            if result and isinstance(result, dict):
+                return result
+        except Exception as e:
+            logger.warning(f"LLM TOC extraction failed for {doc_name}: {e}")
+        return {"has_toc": False, "headings_detected": [], "doc_type": "unknown"}
+    def _extract_json_safe(self, text: str) -> Optional[Any]:
+        patterns = [r'\{.*\}', r'\[.*\]', r'```json\s*(\{.*?\})\s*```', r'```json\s*(\[.*?\])\s*```']
+        for pattern in patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                json_str = match.group(1) if match.groups() else match.group(0)
+                try:
+                    return json.loads(json_str)
+                except:
+                    continue
+        return None
+    def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
+        safe_title = toc.get("suggested_root_title") or doc_name
+        root = PageNode(f"{doc_name}_root", safe_title, 1, len(pages), "", f"Document {doc_name}", 0, doc_id=doc_name, node_id="0000")
+        entries = toc.get("toc_entries", []) or toc.get("headings_detected", [])
+        window = 7
+        if entries:
+            nodes_by_level = {}
+            for entry in entries:
+                level = int(entry.get("level", 1))
+                title = str(entry.get("title", "Unknown")).strip()
+                page_raw = entry.get("page")
+                if page_raw is None:
+                    page = 1
+                else:
+                    try:
+                        page = int(page_raw)
+                    except:
+                        page = 1
+                if page < 1 or page > len(pages):
+                    continue
+                end = min(page + window, len(pages))
+                text_parts = []
+                for i in range(page, min(end+1, len(pages)+1)):
+                    try:
+                        page_data = pages[i-1]
+                        if isinstance(page_data, dict) and 'text' in page_data:
+                            text_parts.append(page_data['text'])
+                    except:
+                        continue
+                text = "\n\n".join(text_parts)
+                node = PageNode(f"{doc_name}_toc_{level}_{title[:20]}", title, page, end, text, text[:200], level, doc_id=doc_name)
+                nodes_by_level.setdefault(level, []).append(node)
+            for level in sorted(nodes_by_level.keys()):
+                for node in nodes_by_level[level]:
+                    parent = self._find_parent(root, level-1, node.page_start)
+                    parent.children.append(node)
+        else:
+            for p in pages:
+                text = p.get('text', '')
+                if not str(text).strip():
+                    continue
+                page_num = int(p.get('page_num', 1))
+                node = PageNode(f"{doc_name}_p{page_num}", f"Page {page_num}", page_num, page_num, text, str(text)[:200], 3, doc_id=doc_name)
+                root.children.append(node)
         self._assign_node_ids(root)
         return root
+    async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
+        all_nodes = []
+        def collect_nodes(node: PageNode):
+            all_nodes.append(node)
+            for c in node.children:
+                collect_nodes(c)
+        for tree in trees.values():
+            collect_nodes(tree)
+        batch_size = 5
+        for i in range(0, len(all_nodes), batch_size):
+            batch = all_nodes[i:i+batch_size]
+            tasks = []
+            for node in batch:
+                if len(node.full_text) > 200:
+                    tasks.append(self._summarize_node(node))
+                else:
+                    node.summary = node.full_text[:200]
+            if tasks:
+                await asyncio.gather(*tasks)
+    async def _summarize_node(self, node: PageNode):
+        text = node.full_text[:3000]
+        prompt = f"""Summarize this document section in one sentence (max 200 chars).
+Focus on key parameters, methods, and findings.
+Text: {text}
+Summary:"""
+        try:
+            summary = await asyncio.to_thread(self.llm.generate, prompt, max_new_tokens=150, temperature=0.1)
+            node.summary = summary.strip()[:200]
+        except Exception as e:
+            logger.warning(f"Summary generation failed: {e}")
+            node.summary = text[:200]
     def _save_tree_fast(self, doc_name: str, tree: PageNode):
         safe = re.sub(r'[^\w\-_.]', '_', doc_name)
         doc_hash = hashlib.sha256(doc_name.encode()).hexdigest()[:16]
@@ -608,8 +766,8 @@ class FastHierarchicalIndex(HierarchicalIndex):
             with open(path, "wb") as f:
                 data = orjson.dumps(tree.to_dict(), option=orjson.OPT_INDENT_2) if ORJSON_AVAILABLE else json.dumps(tree.to_dict(), indent=2).encode()
                 f.write(data)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Fast save failed: {e}")
 
 # ============================================================================
 # HYBRID LLM CLIENT (unchanged)
@@ -702,7 +860,7 @@ class HybridLLM:
         logger.info("Model loaded.")
 
 # ============================================================================
-# QUANTITATIVE KNOWLEDGE GRAPH (enhanced for laser power, scan speed, materials)
+# QUANTITATIVE KNOWLEDGE GRAPH (enhanced)
 # ============================================================================
 class QuantitativeKnowledgeGraph:
     def __init__(self):
@@ -730,6 +888,14 @@ class QuantitativeKnowledgeGraph:
             if item.section_title:
                 graph["by_section"][item.section_title].append(item_dict)
         self.doc_graphs[doc_id] = dict(graph)
+    def get_parameter_across_docs(self, param_name: str) -> List[Dict]:
+        results = []
+        param_key = param_name.lower()
+        for doc_id, graph in self.doc_graphs.items():
+            if param_key in graph["parameters"]:
+                for item in graph["parameters"][param_key]:
+                    results.append({**item, "doc_id": doc_id})
+        return results
     def get_all_materials(self) -> Dict[str, List[str]]:
         mat_dict = {}
         for doc_id, graph in self.doc_graphs.items():
@@ -803,15 +969,50 @@ class QuantitativeKnowledgeGraph:
                 phys_q = item.get("physical_quantity") or self.phys_classifier.classify(item.get("parameter_name"), unit, item.get("context", ""))
                 all_values.append(ExtractedValue(query=query, value=val, unit=unit, physical_quantity=phys_q, parameter_name=item.get("parameter_name"), material=item.get("material"), confidence=item.get("confidence", 0.7), context=item.get("context", "")[:300], doc_name=doc_id, page=item.get("page", 1), section_title=item.get("section_title")))
         return all_values
-    # New methods for material/parameter network
-    def get_parameter_values_per_material(self, parameter: str) -> Dict[str, List[float]]:
-        result = defaultdict(list)
+    def get_entity_consensus(self, entity_name: str) -> Dict[str, Any]:
+        values = []
+        units = set()
+        docs = set()
         for doc_id, graph in self.doc_graphs.items():
             for item in graph["all_items"]:
-                if item.get("physical_quantity") == parameter and item.get("value") is not None:
-                    mat = item.get("material", "Unknown")
-                    result[mat].append(item["value"])
-        return result
+                if (item.get("material") == entity_name or item.get("physical_quantity") == entity_name):
+                    if item.get("value") is not None:
+                        values.append(item["value"])
+                        units.add(item.get("unit", ""))
+                        docs.add(doc_id)
+        if not values:
+            return {"found": False, "entity": entity_name}
+        return {"found": True, "entity": entity_name, "count": len(values), "unit": list(units)[0] if units else "unknown", "range": (min(values), max(values)), "mean": float(np.mean(values)), "std": float(np.std(values)) if len(values) > 1 else 0.0, "documents": list(docs), "values": values}
+    def get_entity_contradictions(self, entity_name: str, threshold_factor: float = 2.0) -> List[Dict[str, Any]]:
+        by_doc = defaultdict(list)
+        for doc_id, graph in self.doc_graphs.items():
+            for item in graph["all_items"]:
+                if (item.get("material") == entity_name or item.get("physical_quantity") == entity_name):
+                    if item.get("value") is not None:
+                        by_doc[doc_id].append(item["value"])
+        contradictions = []
+        docs = list(by_doc.keys())
+        for i in range(len(docs)):
+            for j in range(i+1, len(docs)):
+                if by_doc[docs[i]] and by_doc[docs[j]]:
+                    mean_i = np.mean(by_doc[docs[i]])
+                    mean_j = np.mean(by_doc[docs[j]])
+                    if mean_i > 0 and mean_j > 0:
+                        ratio = max(mean_i, mean_j) / min(mean_i, mean_j)
+                        if ratio > threshold_factor:
+                            contradictions.append({"entity": entity_name, "doc_a": docs[i], "value_a": mean_i, "doc_b": docs[j], "value_b": mean_j, "ratio": ratio, "severity": "high" if ratio > 5 else "moderate"})
+        return contradictions
+    def get_all_entity_names(self) -> List[str]:
+        entities = set()
+        for doc_id, graph in self.doc_graphs.items():
+            for item in graph["all_items"]:
+                if item.get("material"):
+                    entities.add(item["material"])
+                if item.get("physical_quantity"):
+                    entities.add(item["physical_quantity"])
+                if item.get("parameter_name"):
+                    entities.add(item["parameter_name"])
+        return sorted(entities)
 
 # ============================================================================
 # UNIVERSAL LLM EXTRACTOR (focused on laser power, scan speed, materials)
@@ -826,23 +1027,23 @@ SECTIONS:
 Return JSON array of extracted items with fields:
 {{
   "item_type": "quantitative|material",
-  "content": "exact phrase with full numerical value or material name",
+  "content": "exact phrase with full numerical value (never truncate numbers)",
   "confidence": 0.0-1.0,
   "context": "exact sentence from text",
   "doc_source": "{doc_id}",
   "page": page_number,
-  "parameter_name": "laser power or scan speed",
-  "value": number (only for quantitative),
-  "unit": "W, kW, mm/s, m/s, mm/min",
+  "parameter_name": "...",
+  "value": number,
+  "unit": "e.g., W, kW, mm/s, m/s",
   "physical_quantity": "laser_power or scan_speed or material",
   "material": "alloy or material name if mentioned"
 }}
 
 CRITICAL RULES:
-1. For laser power: use physical_quantity="laser_power", unit in W (convert kW to W)
-2. For scan speed: use physical_quantity="scan_speed", unit in mm/s (convert cm/s, m/s, mm/min to mm/s)
-3. For materials: create item with item_type="material", physical_quantity="material", material=name
-4. Always extract the numerical value exactly as in text
+1. Focus on laser power (W, kW) and scan speed (mm/s, m/s).
+2. For materials: create item_type="material", content=the name, material=the name, no value.
+3. If a sentence contains both a material and a numerical value for laser power or scan speed, extract them separately.
+4. NEVER truncate numbers.
 5. Return ONLY valid JSON, no extra text.
 
 Return [] if no relevant information found."""
@@ -858,8 +1059,7 @@ Return [] if no relevant information found."""
             text = chunk["full_text"]
             doc = chunk["doc_id"]
             page = chunk["page_start"]
-            # Skip if no numeric and no alloy pattern
-            if not re.search(r'\d+', text) and not re.search(r'(Al|Ti|Ni|Fe|Mg|Cu|Inconel|alloy|material)', text, re.I):
+            if qa.get("query_type") == "quantitative" and not re.search(r'\d+', text):
                 continue
             prompt = self.EXTRACTION_PROMPT.format(query=query, query_type=qa.get("query_type","mixed"), sections_text=text[:4000], doc_id=doc)
             try:
@@ -871,26 +1071,6 @@ Return [] if no relevant information found."""
                         if "physical_quantity" not in item_data or not item_data["physical_quantity"]:
                             item_data["physical_quantity"] = self.phys_classifier.classify(item_data.get("parameter_name"), item_data.get("unit"), item_data.get("context", ""))
                         item_data.setdefault("material", None)
-                        # Unit conversion
-                        if item_data.get("physical_quantity") == "laser_power" and item_data.get("unit"):
-                            unit = item_data["unit"].lower()
-                            if unit == "kw":
-                                item_data["value"] *= 1000
-                                item_data["unit"] = "W"
-                            elif unit == "mw":
-                                item_data["value"] /= 1000
-                                item_data["unit"] = "W"
-                        if item_data.get("physical_quantity") == "scan_speed" and item_data.get("unit"):
-                            unit = item_data["unit"].lower()
-                            if unit == "cm/s":
-                                item_data["value"] *= 10
-                                item_data["unit"] = "mm/s"
-                            elif unit == "m/s":
-                                item_data["value"] *= 1000
-                                item_data["unit"] = "mm/s"
-                            elif unit == "mm/min":
-                                item_data["value"] /= 60
-                                item_data["unit"] = "mm/s"
                         try:
                             item = UniversalExtractionItem(**item_data)
                             if doc not in item.context:
@@ -923,7 +1103,7 @@ Return [] if no relevant information found."""
         return None
 
 # ============================================================================
-# LLM REASONING SYNTHESIZER (separates laser power, scan speed, materials)
+# LLM REASONING SYNTHESIZER (focused on laser power, scan speed, materials)
 # ============================================================================
 class LLMReasoningSynthesizer:
     def __init__(self, llm: HybridLLM):
@@ -940,29 +1120,29 @@ class LLMReasoningSynthesizer:
             line = f"- {pq_readable}{mat}: {item.content} ({item.confidence:.2f}) context: {item.context[:200]} {item.citation()}"
             extracted_lines.append(line)
         extracted_text = "\n".join(extracted_lines[:20])
-        prompt = f"""You are an expert scientific analyst. The user wants to find laser power and/or scan speed for materials/alloys/compounds.
+        prompt = f"""You are an expert scientific analyst. Given extracted values and the user query, produce a comprehensive answer.
 
 QUERY: {query}
 
 EXTRACTED VALUES (with citations):
 {extracted_text}
 
-TASK: Synthesize the extracted information into a structured answer that SEPARATES the three features:
+TASK: Synthesize the extracted information into a structured answer using the following format:
 
 **Direct Answer**
-(Concise answer listing found laser power values, scan speed values, and associated materials)
+(Concise answer to the query, citing sources)
 
-**Laser Power by Material**
-(For each material, list laser power values with units and citations)
+**Evidence by Physical Quantity**
+(Group findings by physical quantity: Laser Power, Scan Speed)
 
-**Scan Speed by Material**
-(For each material, list scan speed values with units and citations)
-
-**Materials / Alloys / Compounds Found**
-(List all unique materials mentioned, with document sources)
+**Evidence by Material/Alloy**
+(Group findings by alloy name)
 
 **Consensus & Variability**
-(If multiple values exist for same material/parameter, report range/mean)
+(For each physical quantity or material, report range/mean if multiple values exist)
+
+**Contradictions & Limitations**
+(If contradictory values exist, highlight them)
 
 **Confidence Assessment**
 (High/Medium/Low)
@@ -981,80 +1161,195 @@ Return ONLY the answer text."""
         values = report.all_values
         if not values:
             return f"No quantitative data found for '{query}' across the analyzed documents."
-        by_material = defaultdict(lambda: {"laser_power": [], "scan_speed": []})
+        by_phys = defaultdict(list)
+        by_material = defaultdict(list)
         for v in values:
+            by_phys[v.physical_quantity].append(v)
             if v.material:
-                if v.physical_quantity == "laser_power":
-                    by_material[v.material]["laser_power"].append(v.value)
-                elif v.physical_quantity == "scan_speed":
-                    by_material[v.material]["scan_speed"].append(v.value)
-        lines = [f"## Summary: {query.title()}", f"Across **{report.total_docs}** documents, **{report.docs_with_results}** contained relevant data.", f"Total extracted values: **{len(values)}**.", ""]
-        lines.append("### Laser Power per Material")
-        for mat, data in by_material.items():
-            if data["laser_power"]:
-                vals = data["laser_power"]
-                lines.append(f"- **{mat}**: {min(vals):.2f} to {max(vals):.2f} W (mean {np.mean(vals):.2f} W)")
-        lines.append("\n### Scan Speed per Material")
-        for mat, data in by_material.items():
-            if data["scan_speed"]:
-                vals = data["scan_speed"]
-                lines.append(f"- **{mat}**: {min(vals):.2f} to {max(vals):.2f} mm/s (mean {np.mean(vals):.2f} mm/s)")
-        lines.append("\n### Materials Found")
-        all_mats = set(v.material for v in values if v.material)
-        for mat in sorted(all_mats):
-            lines.append(f"- {mat}")
+                by_material[v.material].append(v)
+        lines = [f"## Summary: {query.title()}", f"Across **{report.total_docs}** documents analyzed, **{report.docs_with_results}** contained relevant quantitative data.", f"Total extracted values: **{len(values)}**.", ""]
+        lines.append("### By Physical Quantity")
+        for pq, vals in sorted(by_phys.items()):
+            readable = self.phys_classifier.get_human_readable(pq)
+            lines.append(f"#### {readable} ({len(vals)} values)")
+            nums = [v.value for v in vals]
+            units = list(set(v.unit for v in vals))
+            docs = list(set(v.doc_name for v in vals))
+            if nums:
+                lines.append(f"- **Range**: {min(nums):.2f} to {max(nums):.2f} {units[0] if units else ''}")
+                lines.append(f"- **Average**: {np.mean(nums):.2f}")
+                if len(nums) > 1:
+                    lines.append(f"- **Std Dev**: {np.std(nums):.2f}")
+            lines.append(f"- **Found in**: {', '.join(docs[:3])}{'...' if len(docs) > 3 else ''}")
+            lines.append("")
+        if by_material:
+            lines.append("### By Material/Alloy")
+            for mat, vals in sorted(by_material.items()):
+                lines.append(f"#### {mat} ({len(vals)} values)")
+                inner_pq = defaultdict(list)
+                for v in vals:
+                    inner_pq[v.physical_quantity].append(v.value)
+                for pq, nums in inner_pq.items():
+                    readable = self.phys_classifier.get_human_readable(pq)
+                    lines.append(f"- {readable}: min={min(nums):.2f}, max={max(nums):.2f}, mean={np.mean(nums):.2f}")
+                docs = list(set(v.doc_name for v in vals))
+                lines.append(f"- **Documents**: {', '.join(docs)}")
+                lines.append("")
+        lines.append("### Key Values by Document and Physical Quantity")
+        for v in sorted(values, key=lambda x: x.confidence, reverse=True)[:12]:
+            readable = self.phys_classifier.get_human_readable(v.physical_quantity)
+            mat_str = f" ({v.material})" if v.material else ""
+            lines.append(f"| {v.doc_name} | p.{v.page} | {v.value:.2f} {v.unit} | {readable}{mat_str} |")
         return "\n".join(lines)
 
 # ============================================================================
-# HIERARCHICAL TREE RETRIEVER (simplified, no embeddings)
+# HIERARCHICAL TREE RETRIEVER (abbreviated)
 # ============================================================================
 class HierarchicalTreeRetriever:
     def __init__(self, llm: HybridLLM, max_results=30, max_text_chars=20000):
         self.llm = llm
         self.max_results = max_results
         self.max_text_chars = max_text_chars
-        self.template = llm.template if hasattr(llm, 'template') else {"system": "", "json_reminder": ""}
+        self._condensed_cache: Dict[str, Dict] = {}
+        self.template = llm.template if hasattr(llm, 'template') else {"system": "", "json_reminder": "Return ONLY valid JSON."}
     async def retrieve_quantitative(self, query: str, annotated_trees: List[Dict]) -> List[Dict]:
-        # Simplified: return all leaf nodes that contain numeric values or material mentions
-        results = []
+        trees_json = []
         for tree in annotated_trees:
-            doc_id = tree.get("doc_id")
-            self._collect_leaf_nodes(tree, doc_id, results)
-        # Remove duplicates by page and doc
-        unique = {}
-        for r in results:
-            key = (r["doc_id"], r["page_start"])
-            if key not in unique:
-                unique[key] = r
-        return list(unique.values())[:self.max_results]
-    def _collect_leaf_nodes(self, node: Dict, doc_id: str, results: List):
-        if "nodes" in node and node["nodes"]:
-            for child in node["nodes"]:
-                self._collect_leaf_nodes(child, doc_id, results)
-        else:
-            text = node.get("text", "")
-            if text and (re.search(r'\d+', text) or re.search(r'(Al|Ti|Ni|Fe|Mg|Cu|Inconel|alloy)', text, re.I)):
-                results.append({
-                    "full_text": text,
-                    "page_start": node.get("start_index"),
-                    "doc_id": doc_id,
-                    "section_title": node.get("title"),
-                    "quantitative_items": node.get("quantitative_items", [])
-                })
+            doc_id = tree.get("doc_id", "unknown")
+            if doc_id not in self._condensed_cache:
+                self._condensed_cache[doc_id] = self._condense_tree(tree)
+            trees_json.append(self._condensed_cache[doc_id])
+        batches = self._batch_trees(trees_json, max_tokens=6000)
+        all_selections = []
+        for batch in batches:
+            prompt = self._build_tree_search_prompt(query, batch)
+            response = await asyncio.to_thread(self.llm.generate, prompt, max_new_tokens=2048, fast_json=True, system_prompt=self.template.get("system"))
+            selections = self._parse_node_selections(response)
+            all_selections.extend(selections)
+        results = []
+        for sel in sorted(all_selections, key=lambda x: x.get('confidence', 0), reverse=True):
+            doc_id = sel.get('doc_id')
+            node_id = sel.get('node_id')
+            node = self._find_node_by_id(annotated_trees, doc_id, node_id)
+            if node:
+                full_text = node.get('text', '')
+                if len(full_text) > self.max_text_chars:
+                    full_text = full_text[:self.max_text_chars] + "..."
+                results.append({"full_text": full_text, "page_start": node.get('start_index'), "doc_id": doc_id, "section_title": node.get('title'), "quantitative_items": node.get('quantitative_items', []), "citation": f'<cite doc="{doc_id}" page="{node.get("start_index")}"/>', "selection_reasoning": sel.get('reasoning', ''), "confidence": sel.get('confidence', 0)})
+        return results[:self.max_results]
+    def _condense_tree(self, tree: Dict, max_depth: int = 3) -> Dict[str, Any]:
+        def condense(node: Dict, depth: int = 0) -> Dict[str, Any]:
+            if depth > max_depth:
+                return {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "leaf": True}
+            result = {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "summary": (node.get("summary", "") or "")[:150]}
+            if node.get("metadata"):
+                meta = node["metadata"]
+                if meta.get("alloys"):
+                    result["alloys"] = meta["alloys"][:3]
+                if meta.get("laser_power_values"):
+                    result["power_hint"] = f"{min(meta['laser_power_values'])}-{max(meta['laser_power_values'])} W"
+                if meta.get("scan_speed_values"):
+                    result["speed_hint"] = f"{min(meta['scan_speed_values'])}-{max(meta['scan_speed_values'])} mm/s"
+            q_items = node.get("quantitative_items", [])
+            if q_items:
+                params = list(set(item.get("parameter_name", "") for item in q_items if item.get("parameter_name")))
+                if params:
+                    result["has_quantitative"] = params[:5]
+            else:
+                text = node.get("text", "")
+                if text:
+                    candidates = re.findall(r'(\d+(?:\.\d+)?)\s*(W|kW|mW|mm/s|m/s)', text, re.IGNORECASE)
+                    if candidates:
+                        result["candidate_values"] = [f"{v}{u}" for v, u in candidates[:3]]
+            children = node.get("nodes", [])
+            if children and depth < max_depth:
+                result["nodes"] = [condense(c, depth+1) for c in children[:5]]
+            return result
+        return {"doc_id": tree.get("doc_id", tree.get("doc_name", "unknown")), "doc_name": tree.get("doc_name", ""), "structure": [condense(tree)] if not isinstance(tree, list) else [condense(t) for t in tree]}
+    def _batch_trees(self, trees: List[Dict], max_tokens: int = 6000) -> List[List[Dict]]:
+        batches = []
+        current = []
+        current_len = 0
+        for t in trees:
+            t_len = len(json.dumps(t))
+            if current_len + t_len > max_tokens and current:
+                batches.append(current)
+                current = [t]
+                current_len = t_len
+            else:
+                current.append(t)
+                current_len += t_len
+        if current:
+            batches.append(current)
+        return batches
+    def _build_tree_search_prompt(self, query: str, trees: List[Dict]) -> str:
+        trees_json = json.dumps(trees, ensure_ascii=False, indent=2)
+        return f"""You are an expert scientific document navigator.
+Given a query about quantitative parameters, identify which document nodes are MOST likely to contain the answer.
+
+QUERY: {query}
+
+INSTRUCTIONS:
+1. Analyze each document's tree structure (titles, summaries, quantitative hints, candidate values, alloys, power hints, speed hints)
+2. Select nodes that likely contain specific numerical values for laser power, scan speed, or material names
+3. For cross-document queries, select nodes from MULTIPLE documents
+4. Prefer nodes with "has_quantitative" or "candidate_values" hints matching the query topic
+5. Return selections sorted by confidence (highest first)
+
+DOCUMENT TREES:
+{trees_json}
+
+Return JSON:
+{{
+  "thinking": "Brief reasoning...",
+  "selections": [
+    {{"doc_id": "...", "node_id": "...", "reasoning": "...", "confidence": 0.95}}
+  ]
+}}
+
+{self.template.get('json_reminder', 'Return ONLY valid JSON.')}
+Include up to {self.max_results} selections."""
+    def _parse_node_selections(self, response: str) -> List[Dict]:
+        try:
+            data = self._extract_json_safe(response)
+            if data and isinstance(data, dict):
+                selections = data.get("selections", [])
+                return [s for s in selections if isinstance(s, dict) and "doc_id" in s and "node_id" in s]
+        except Exception as e:
+            logger.warning(f"Failed to parse selections: {e}")
+        return []
+    def _extract_json_safe(self, text: str) -> Optional[Any]:
+        patterns = [r'\{.*\}', r'\[.*\]', r'```json\s*(\{.*?\})\s*```']
+        for pattern in patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                json_str = match.group(1) if match.groups() else match.group(0)
+                try:
+                    return json.loads(json_str)
+                except:
+                    continue
+        return None
+    def _find_node_by_id(self, trees: List[Dict], doc_id: str, node_id: str) -> Optional[Dict]:
+        for tree in trees:
+            if tree.get("doc_id") == doc_id or tree.get("doc_name") == doc_id:
+                return self._search_node_recursive(tree, node_id)
+        return None
+    def _search_node_recursive(self, node: Dict, target_id: str) -> Optional[Dict]:
+        if node.get("node_id") == target_id:
+            return node
+        for child in node.get("nodes", []):
+            res = self._search_node_recursive(child, target_id)
+            if res:
+                return res
+        return None
 
 # ============================================================================
 # PUBLICATION-QUALITY VISUALIZATION ENGINE (focused on laser power, scan speed, materials)
 # ============================================================================
 class PublicationVisualizationEngine:
-    COLORMAP_OPTIONS = {
-        "viridis": "viridis", "plasma": "plasma", "inferno": "inferno", "magma": "magma",
-        "cividis": "cividis", "Blues": "Blues", "Greens": "Greens", "Oranges": "Oranges",
-        "Reds": "Reds", "coolwarm": "coolwarm", "Set1": "Set1", "tab10": "tab10"
-    }
-    def __init__(self, kgraph: QuantitativeKnowledgeGraph,
-                 font_family: str = "DejaVu Sans", font_size: int = 10,
-                 title_font_size: int = 14, label_font_size: int = 9,
-                 default_colormap: str = "viridis", figure_dpi: int = 300):
+    DOMAIN_COLORS = {"laser_power": "#3b82f6", "scan_speed": "#8b5cf6", "material": "#f59e0b", "unknown": "#6b7280"}
+    COLORMAP_OPTIONS = {"viridis": "viridis", "plasma": "plasma", "inferno": "inferno", "magma": "magma", "cividis": "cividis", "Blues": "Blues", "Greens": "Greens", "Oranges": "Oranges", "Reds": "Reds"}
+    def __init__(self, kgraph: QuantitativeKnowledgeGraph, font_family: str = "DejaVu Sans", font_size: int = 10, title_font_size: int = 14, label_font_size: int = 9, default_colormap: str = "viridis", figure_dpi: int = 300):
         self.kgraph = kgraph
         self.font_family = font_family
         self.font_size = font_size
@@ -1064,133 +1359,178 @@ class PublicationVisualizationEngine:
         self.figure_dpi = figure_dpi
         plt.rcParams['font.family'] = font_family
         plt.rcParams['font.size'] = font_size
+        plt.rcParams['axes.titlesize'] = title_font_size
+        plt.rcParams['axes.labelsize'] = label_font_size
+        plt.rcParams['figure.dpi'] = figure_dpi
+        plt.rcParams['savefig.dpi'] = figure_dpi
     def _get_colormap(self, name: Optional[str] = None) -> str:
         return self.COLORMAP_OPTIONS.get(name or self.default_colormap, "viridis")
-    def plot_laser_power_by_material(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        """Bar chart of laser power values grouped by material."""
+    def _get_plotly_colorscale(self, name: Optional[str] = None) -> str:
+        name = name or self.default_colormap
+        mapping = {"coolwarm": "RdBu", "RdBu": "RdBu"}
+        plotly_builtins = ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'blues', 'greens', 'oranges', 'reds']
+        lowered = name.lower()
+        if lowered in plotly_builtins:
+            return lowered
+        return mapping.get(lowered, 'viridis')
+    def extract_dataframe(self) -> pd.DataFrame:
+        rows = []
+        for doc_id, graph in self.kgraph.doc_graphs.items():
+            for item in graph["all_items"]:
+                phys = item.get("physical_quantity", "unknown")
+                if phys not in ["laser_power", "scan_speed", "material"]:
+                    continue  # focus only on these three
+                mat = item.get("material", "Unknown")
+                value = item.get("value")
+                unit = item.get("unit", "")
+                if phys == "material":
+                    # For materials, we treat them as categorical, no numeric value
+                    rows.append({"doc": doc_id, "doc_stem": Path(doc_id).stem, "physical_quantity": phys, "material": mat, "value": 1, "unit": "", "confidence": item.get("confidence", 0.5), "page": item.get("page", 0), "context": item.get("context", "")[:200]})
+                elif value is not None:
+                    rows.append({"doc": doc_id, "doc_stem": Path(doc_id).stem, "physical_quantity": phys, "material": mat, "value": value, "unit": unit, "confidence": item.get("confidence", 0.5), "page": item.get("page", 0), "context": item.get("context", "")[:200]})
+        return pd.DataFrame(rows)
+    def plot_quantities_bar(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
-            return go.Figure().update_layout(title="No laser power data")
-        subset = df[df["physical_quantity"] == "laser_power"]
-        if subset.empty:
-            return go.Figure().update_layout(title="No laser power extracted")
-        fig = px.bar(subset, x="material", y="value", color="material", title="Laser Power by Material",
-                     labels={"value": "Laser Power (W)", "material": "Material/Alloy"},
-                     color_discrete_sequence=px.colors.qualitative.Set1)
-        fig.update_layout(font=dict(family=self.font_family, size=self.font_size), height=500)
-        return fig
-    def plot_scan_speed_by_material(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        subset = df[df["physical_quantity"] == "scan_speed"]
-        if subset.empty:
-            return go.Figure().update_layout(title="No scan speed data")
-        fig = px.bar(subset, x="material", y="value", color="material", title="Scan Speed by Material",
-                     labels={"value": "Scan Speed (mm/s)", "material": "Material/Alloy"},
-                     color_discrete_sequence=px.colors.qualitative.Set2)
-        fig.update_layout(font=dict(family=self.font_family, size=self.font_size), height=500)
-        return fig
-    def plot_material_count_sunburst(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        """Sunburst showing hierarchy: Document -> Material -> Parameter (laser_power/scan_speed)"""
-        if df.empty:
-            return go.Figure()
-        # Build aggregated data
-        records = []
-        for _, row in df.iterrows():
-            records.append({"doc": row["doc_name"], "material": row["material"], "parameter": row["physical_quantity"]})
-        agg = pd.DataFrame(records).groupby(["doc", "material", "parameter"]).size().reset_index(name="count")
-        fig = px.sunburst(agg, path=["doc", "material", "parameter"], values="count", title="Document–Material–Parameter Hierarchy",
-                          color="parameter", color_discrete_map={"laser_power": "#3b82f6", "scan_speed": "#f59e0b"})
+            return go.Figure().update_layout(title="No data")
+        # Count occurrences of each physical quantity
+        counts = df["physical_quantity"].value_counts().reset_index()
+        counts.columns = ["Physical Quantity", "Count"]
+        fig = px.bar(counts, x="Physical Quantity", y="Count", color="Physical Quantity", title="Occurrence Counts of Laser Power, Scan Speed, and Materials", color_discrete_sequence=[self.DOMAIN_COLORS.get(q, "#6b7280") for q in counts["Physical Quantity"]])
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
-    def plot_knowledge_network(self, df: pd.DataFrame, colormap: Optional[str] = None,
-                               figsize=(12,10)) -> plt.Figure:
-        """Network graph connecting Documents -> Materials -> Parameters (laser_power, scan_speed)"""
+    def plot_material_counts(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        mat_df = df[df["physical_quantity"] == "material"]
+        if mat_df.empty:
+            return go.Figure().update_layout(title="No materials found")
+        counts = mat_df["material"].value_counts().head(10).reset_index()
+        counts.columns = ["Material", "Count"]
+        fig = px.bar(counts, x="Material", y="Count", color="Material", title="Top 10 Materials/Alloys Mentioned")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+    def plot_laser_power_histogram(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        sub = df[df["physical_quantity"] == "laser_power"]
+        if sub.empty:
+            return go.Figure().update_layout(title="No laser power data")
+        fig = px.histogram(sub, x="value", color="material", title="Laser Power Distribution by Material", labels={"value": "Laser Power (W)"}, nbins=20)
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+    def plot_scan_speed_histogram(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        sub = df[df["physical_quantity"] == "scan_speed"]
+        if sub.empty:
+            return go.Figure().update_layout(title="No scan speed data")
+        fig = px.histogram(sub, x="value", color="material", title="Scan Speed Distribution by Material", labels={"value": "Scan Speed (mm/s)"}, nbins=20)
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+    def plot_scatter_power_vs_speed(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        # Pivot to get power and speed in same row per material per document
+        power_df = df[df["physical_quantity"] == "laser_power"][["doc", "material", "value"]].rename(columns={"value": "laser_power"})
+        speed_df = df[df["physical_quantity"] == "scan_speed"][["doc", "material", "value"]].rename(columns={"value": "scan_speed"})
+        merged = pd.merge(power_df, speed_df, on=["doc", "material"], how="inner")
+        if merged.empty:
+            return go.Figure().update_layout(title="No paired laser power and scan speed data")
+        fig = px.scatter(merged, x="laser_power", y="scan_speed", color="material", title="Laser Power vs Scan Speed by Material", labels={"laser_power": "Laser Power (W)", "scan_speed": "Scan Speed (mm/s)"})
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+    def plot_sunburst_hierarchy(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        if df.empty:
+            return go.Figure().update_layout(title="No data")
+        # Create hierarchical: physical_quantity -> material -> doc
+        df_hier = df.copy()
+        df_hier["value_dummy"] = 1
+        fig = px.sunburst(df_hier, path=["physical_quantity", "material", "doc_stem"], values="value_dummy", title="Hierarchy of Physical Quantities, Materials, and Documents")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+    def plot_knowledge_network(self, df: pd.DataFrame, colormap: Optional[str] = None, figsize: Tuple[int,int] = (12,10)) -> plt.Figure:
         G = nx.Graph()
-        # Add nodes and edges
-        docs = set(df["doc_name"])
-        materials = set(df["material"].fillna("Unknown"))
-        parameters = set(df["physical_quantity"])
-        for d in docs:
-            G.add_node(d, node_type="doc", group="doc")
-        for m in materials:
-            G.add_node(m, node_type="material", group="material")
-        for p in parameters:
-            G.add_node(p, node_type="parameter", group="parameter")
+        # Add nodes for documents, physical quantities, materials
+        docs = df["doc_stem"].unique()
+        for doc in docs:
+            G.add_node(doc, node_type="doc", color="#1e40af")
+        pqs = df["physical_quantity"].unique()
+        for pq in pqs:
+            G.add_node(pq, node_type="pq", color=self.DOMAIN_COLORS.get(pq, "#6b7280"))
+        mats = df["material"].unique()
+        for mat in mats:
+            if mat != "Unknown":
+                G.add_node(mat, node_type="material", color="#f59e0b")
+        # Edges: doc-pq, doc-material, pq-material
         for _, row in df.iterrows():
-            d = row["doc_name"]
-            m = row["material"] if pd.notna(row["material"]) else "Unknown"
-            p = row["physical_quantity"]
-            G.add_edge(d, m)
-            G.add_edge(m, p)
-        pos = nx.spring_layout(G, k=0.8, seed=42)
+            doc = row["doc_stem"]
+            pq = row["physical_quantity"]
+            mat = row["material"]
+            if mat != "Unknown":
+                G.add_edge(doc, mat)
+                G.add_edge(pq, mat)
+            G.add_edge(doc, pq)
+        pos = nx.spring_layout(G, k=0.5, seed=42)
         fig, ax = plt.subplots(figsize=figsize)
-        node_colors = []
-        for node, data in G.nodes(data=True):
-            group = data.get("group", "unknown")
-            if group == "doc":
-                node_colors.append("#1e40af")
-            elif group == "material":
-                node_colors.append("#10b981")
-            else:
-                node_colors.append("#f59e0b")
-        nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=800, ax=ax)
-        nx.draw_networkx_edges(G, pos, alpha=0.3, width=0.8, ax=ax)
-        nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-        ax.set_title("Knowledge Graph: Documents → Materials → Parameters", fontsize=self.title_font_size, fontweight='bold')
+        node_colors = [G.nodes[n].get("color", "#6b7280") for n in G.nodes()]
+        nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=500, alpha=0.8, ax=ax)
+        nx.draw_networkx_edges(G, pos, alpha=0.3, ax=ax)
+        nx.draw_networkx_labels(G, pos, font_size=8, ax=ax)
+        ax.set_title("Knowledge Network: Documents ↔ Quantities ↔ Materials")
         ax.axis("off")
         plt.tight_layout()
         return fig
-    def plot_contradiction_heatmap(self, df: pd.DataFrame, parameter: str, colormap: Optional[str] = None) -> go.Figure:
-        """Heatmap of value differences between documents for a given parameter."""
-        subset = df[df["physical_quantity"] == parameter]
-        if subset.empty:
-            return go.Figure()
-        docs = subset["doc_name"].unique()
-        if len(docs) < 2:
-            return go.Figure()
-        # Build average per doc
-        avg_per_doc = subset.groupby("doc_name")["value"].mean()
-        mat = np.zeros((len(docs), len(docs)))
-        for i, d1 in enumerate(docs):
-            for j, d2 in enumerate(docs):
-                if i == j:
-                    continue
-                v1 = avg_per_doc[d1]
-                v2 = avg_per_doc[d2]
-                if v2 != 0:
-                    mat[i,j] = abs(v1 - v2) / v2
-        fig = go.Figure(data=go.Heatmap(z=mat, x=docs, y=docs, colorscale="RdBu", hoverongaps=False))
-        fig.update_layout(title=f"Contradiction Heatmap for {parameter.replace('_',' ').title()}", height=500)
-        return fig
-    def plot_radar_by_material(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        """Radar chart showing average laser power and scan speed per material."""
-        pivot = df.pivot_table(index="material", columns="physical_quantity", values="value", aggfunc="mean").fillna(0)
-        if pivot.empty or len(pivot.columns) < 2:
-            return go.Figure()
-        categories = ["laser_power", "scan_speed"]
+    def plot_radar_materials(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        # For each material, get average laser power and scan speed
+        power_mean = df[df["physical_quantity"] == "laser_power"].groupby("material")["value"].mean().reset_index().rename(columns={"value": "laser_power"})
+        speed_mean = df[df["physical_quantity"] == "scan_speed"].groupby("material")["value"].mean().reset_index().rename(columns={"value": "scan_speed"})
+        merged = pd.merge(power_mean, speed_mean, on="material", how="inner")
+        if merged.empty:
+            return go.Figure().update_layout(title="No data for radar")
+        categories = ["Laser Power", "Scan Speed"]
         fig = go.Figure()
-        for mat in pivot.index:
-            values = [pivot.loc[mat, c] for c in categories]
-            values += values[:1]
-            fig.add_trace(go.Scatterpolar(r=values, theta=categories + [categories[0]], fill='toself', name=mat))
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True)), title="Material Performance Radar (Laser Power & Scan Speed)")
+        for _, row in merged.iterrows():
+            fig.add_trace(go.Scatterpolar(r=[row["laser_power"], row["scan_speed"]], theta=categories, fill='toself', name=row["material"]))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True)), title="Material Radar: Laser Power vs Scan Speed")
+        return fig
+    def plot_contradiction_matrix(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        # For each physical quantity, build a document contradiction matrix
+        docs = df["doc_stem"].unique()
+        if len(docs) < 2:
+            return go.Figure().update_layout(title="Need at least 2 documents")
+        mat = np.zeros((len(docs), len(docs)))
+        for pq in ["laser_power", "scan_speed"]:
+            sub = df[df["physical_quantity"] == pq]
+            for i, d1 in enumerate(docs):
+                v1s = sub[sub["doc_stem"] == d1]["value"].values
+                mean1 = np.mean(v1s) if len(v1s) else np.nan
+                for j, d2 in enumerate(docs):
+                    if i == j:
+                        continue
+                    v2s = sub[sub["doc_stem"] == d2]["value"].values
+                    mean2 = np.mean(v2s) if len(v2s) else np.nan
+                    if not np.isnan(mean1) and not np.isnan(mean2) and mean2 != 0:
+                        ratio = abs(mean1 - mean2) / mean2
+                        mat[i,j] = max(mat[i,j], ratio)
+        fig = go.Figure(data=go.Heatmap(z=mat, x=docs, y=docs, colorscale="Reds", hoverongaps=False))
+        fig.update_layout(title="Cross-Document Contradiction Matrix (Laser Power & Scan Speed)", height=600, width=600)
         return fig
 
 # ============================================================================
-# STREAMLIT UI (focus on vectorless retrieval and visualization)
+# STREAMLIT UI WITH ENHANCED KNOWLEDGE GRAPH INTERACTION
 # ============================================================================
 LOCAL_LLM_OPTIONS = {
-    "[Ollama] qwen2.5:0.5b (Fastest)": "ollama:qwen2.5:0.5b",
+    "[Ollama] qwen2.5:0.5b (Fastest, CPU OK)": "ollama:qwen2.5:0.5b",
     "[Ollama] qwen2.5:1.5b (Balanced)": "ollama:qwen2.5:1.5b",
-    "[Ollama] qwen2.5:7b (Recommended)": "ollama:qwen2.5:7b",
-    "[Ollama] mistral:7b": "ollama:mistral:7b",
+    "[Ollama] qwen2.5:7b (Recommended for RAG)": "ollama:qwen2.5:7b",
+    "[Ollama] qwen2.5:14b (Max Reasoning)": "ollama:qwen2.5:14b",
+    "[Ollama] llama3.1:8b (Meta Standard)": "ollama:llama3.1:8b",
+    "[Ollama] mistral:7b (High JSON Reliability)": "ollama:mistral:7b",
+    "[Ollama] gemma2:9b (Scientific Nuance)": "ollama:gemma2:9b",
+    "[Ollama] falcon3:10b (Instruction Following)": "ollama:falcon3:10b",
 }
 MODEL_PROMPT_TEMPLATES = {
-    "qwen2.5": {"system": "You are a document analyst. Return JSON only.", "json_reminder": "Return ONLY valid JSON."},
-    "default": {"system": "", "json_reminder": "Return valid JSON only."}
+    "qwen2.5:0.5b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "qwen2.5:1.5b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "qwen2.5:7b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "default": {"system": "You are a document navigation agent.", "json_reminder": "Return valid JSON only."}
 }
 def get_model_template(model_name: str) -> Dict[str, Any]:
-    for key in MODEL_PROMPT_TEMPLATES:
+    for key, template in MODEL_PROMPT_TEMPLATES.items():
         if key in model_name.lower():
-            return MODEL_PROMPT_TEMPLATES[key]
+            return template
     return MODEL_PROMPT_TEMPLATES["default"]
 UNIVERSAL_CONFIG = {"leaf_node_page_window": 7, "min_confidence_threshold": 0.55}
 
@@ -1198,18 +1538,25 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
         model_keys = list(LOCAL_LLM_OPTIONS.keys())
+        # Initialize session state for llm_model_choice if not present
         if "llm_model_choice" not in st.session_state:
-            st.session_state.llm_model_choice = model_keys[2]
+            st.session_state.llm_model_choice = model_keys[2]  # default to qwen2.5:7b
         selected = st.selectbox("🧠 Select Local LLM", options=model_keys, index=model_keys.index(st.session_state.llm_model_choice), key="llm_model_select")
         st.session_state.llm_model_choice = selected
         st.checkbox("🗜️ Use 4-bit quantization (if Transformers)", value=True, key="use_4bit")
         st.slider("Confidence threshold", 0.3, 0.9, 0.55, 0.05, key="min_confidence")
         st.checkbox("Show reasoning trace", value=True, key="show_trace")
         st.checkbox("Show tree navigation", value=True, key="show_tree_nav")
-        st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
-        st.markdown("#### 🎨 Visualization Settings")
+        st.checkbox("Enable two-stage retrieval (semantic)", value=True, key="two_stage")
+        st.markdown("#### 🎨 Visualisation Settings")
         st.selectbox("Default colormap", list(PublicationVisualizationEngine.COLORMAP_OPTIONS.keys()), index=0, key="viz_colormap")
-        st.caption("Vectorless retrieval active (no sentence-transformers)")
+        st.slider("Top N concepts (via selector)", 5, 100, 25, key="viz_top_n")
+        st.multiselect("Filter domains", options=["laser_power","scan_speed","material"], default=["laser_power","scan_speed","material"], key="viz_domains")
+        st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+        if st.button("🗑️ Clear Cache & Reset", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
 
 @st.cache_resource(show_spinner="Initializing LLM...")
 def get_cached_llm(model_choice: str, use_4bit: bool):
@@ -1218,9 +1565,10 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
 
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v14.0 - Laser Power & Scan Speed Explorer", layout="wide")
-    st.markdown("# 🔬 DECLARMIMA v14.0 - Vectorless Retrieval + Material/Parameter Visualization")
-    st.caption("Focused on extracting **laser power**, **scan speed**, and **materials/alloys/compounds** from PDFs. Pure keyword/metadata retrieval – no embeddings required.")
+    st.markdown("# 🔬 DECLARMIMA v14.0 - Vectorless Reasoning RAG for Laser Power, Scan Speed, and Materials")
+    st.caption("Extract and visualize laser power, scan speed, and material/alloy information from PDF documents. Focused on quantitative feature separation.")
 
+    # Initialize all session state variables
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "query_processor" not in st.session_state:
@@ -1235,6 +1583,10 @@ def run_streamlit():
         st.session_state.active_prompt = ""
     if "two_stage_retriever" not in st.session_state:
         st.session_state.two_stage_retriever = None
+    if "embedding_model" not in st.session_state:
+        st.session_state.embedding_model = None
+    if "quick_query" not in st.session_state:
+        st.session_state.quick_query = ""
 
     render_sidebar()
     max_retrieval_chars = 20000
@@ -1271,7 +1623,7 @@ def run_streamlit():
                     for c in node.children:
                         collect_leaves(c)
                 collect_leaves(tree)
-                initial_prompt = "Extract laser power (W), scan speed (mm/s), and material/alloy/compound names from these document sections."
+                initial_prompt = "Extract all laser power values (in W or kW), scan speed values (in mm/s or m/s), and any material/alloy names. Return quantitative items for power and speed, and material items for alloys."
                 items = extractor.extract_from_chunks(leaf_texts, initial_prompt)
                 all_items.extend(items)
                 kg.add_extractions(doc_name, items)
@@ -1295,33 +1647,41 @@ def run_streamlit():
                 annotated.append(ann)
             st.session_state.annotated_trees = annotated
             progress.progress(1.0)
-            st.success(f"✅ Indexed {len(trees)} documents with {len(all_items)} extracted items")
-            with st.expander("📊 Detected Materials and Parameters", expanded=True):
+            st.success(f"✅ Indexed {len(trees)} documents with {len(all_items)} quantitative items")
+            with st.expander("📊 Detected Laser Power, Scan Speed, and Materials", expanded=True):
                 pq_counts = kg.get_all_physical_quantities()
                 if pq_counts:
                     st.write("**Physical Quantities:**")
                     for pq, count in sorted(pq_counts.items(), key=lambda x: x[1], reverse=True):
-                        st.write(f"- `{pq}`: {count} occurrences")
+                        if pq in ["laser_power", "scan_speed", "material"]:
+                            st.write(f"- `{pq}`: {count} occurrences")
                 mat_dict = kg.get_all_materials()
                 if mat_dict:
                     st.write("**Materials/Alloys per document:**")
                     for doc, mats in mat_dict.items():
                         if mats:
                             st.write(f"- {doc}: {', '.join(mats)}")
+            if SENTENCE_TRANSFORMERS_AVAILABLE and st.session_state.embedding_model is None:
+                st.session_state.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device="cpu")
 
     if st.session_state.annotated_trees:
-        st.markdown("### ⚡ Default Query (Laser Power & Scan Speed)")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔍 Run Default Query", use_container_width=True):
-                st.session_state.default_query = "Find out the laser power and/or scan speed for materials / alloys / compounds in the documents."
-                st.rerun()
-        with col2:
-            prompt_input = st.chat_input("Or ask a custom query...", key="chat_input")
-        default_query = st.session_state.get("default_query", "")
-        if default_query:
+        st.markdown("### ⚡ Focused Query: Laser Power and Scan Speed for Materials")
+        col1, col2, col3 = st.columns(3)
+        if col1.button("🔍 Find all laser power values"):
+            st.session_state.quick_query = "Find out the laser power and/or scan speed for materials / alloys / compounds in the documents"
+            st.rerun()
+        if col2.button("📊 Show material counts"):
+            st.session_state.quick_query = "List all materials and alloys mentioned"
+            st.rerun()
+        if col3.button("⚡ Power vs Speed scatter"):
+            st.session_state.quick_query = "Compare laser power and scan speed across materials"
+            st.rerun()
+
+        default_query = st.session_state.get("quick_query", "")
+        prompt_input = st.chat_input("Ask about laser power, scan speed, or materials...", key="chat_input")
+        if default_query and not prompt_input:
             prompt_input = default_query
-            st.session_state.default_query = ""
+            st.session_state.quick_query = ""
 
         if prompt_input:
             st.session_state.active_prompt = prompt_input
@@ -1351,9 +1711,8 @@ def run_streamlit():
                 progress.text("Initializing LLM...")
                 llm = get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
                 progress.progress(0.1)
-                # Two-stage retrieval (vectorless)
-                if st.session_state.two_stage_retriever is not None:
-                    progress.text("Stage 1: Metadata filtering...")
+                if st.session_state.get("two_stage", True) and st.session_state.two_stage_retriever is not None:
+                    progress.text("Stage 1: Document filtering (vectorless fallback)...")
                     relevant_docs = st.session_state.two_stage_retriever.retrieve_relevant_docs(active_prompt, top_k=8)
                     st.caption(f"Selected {len(relevant_docs)} relevant documents out of {len(st.session_state.annotated_trees)}.")
                     filtered_trees = [t for t in st.session_state.annotated_trees if t.get("doc_id") in [d[0] for d in relevant_docs]]
@@ -1404,112 +1763,101 @@ def run_streamlit():
                     extracted_values = raw_vals
             else:
                 if not active_prompt:
-                    st.info("Click 'Run Default Query' or ask a question about laser power and scan speed.")
+                    st.info("Ask a question about the documents, or use the focused query buttons above.")
                     return
 
-        # ========== VISUALIZATION DASHBOARD (focused on laser power, scan speed, materials) ==========
+        # --- Quantitative Results Display ---
         st.markdown("---")
-        st.subheader("📊 Visualization Dashboard: Laser Power & Scan Speed per Material")
+        st.subheader("📊 Extracted Laser Power, Scan Speed, and Materials")
+        display_mode = st.radio("Display format", ["Table", "JSON", "Human Summary"], horizontal=True, key="display_mode")
+        if display_mode == "Table" and extracted_values:
+            df_disp = pd.DataFrame([{"Document": v.doc_name, "Page": v.page, "Value": f"{v.value:.2f}" if v.value else "", "Unit": v.unit, "Physical Quantity": PhysicalQuantityClassifier().get_human_readable(v.physical_quantity), "Material": v.material or "", "Parameter": v.parameter_name or "", "Confidence": f"{v.confidence:.2f}"} for v in extracted_values])
+            st.dataframe(df_disp, use_container_width=True)
+        elif display_mode == "JSON" and extracted_values:
+            st.json([v.model_dump() for v in extracted_values])
+        elif display_mode == "Human Summary" and extracted_values:
+            synthesizer = LLMReasoningSynthesizer(get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True)))
+            report = QueryReport(query=active_prompt, total_docs=len(st.session_state.annotated_trees), docs_with_results=len(set(v.doc_name for v in extracted_values)), all_values=extracted_values, consensus={}, processing_time_sec=0.0)
+            conclusion = synthesizer.generate_human_conclusion(active_prompt, report)
+            st.markdown(conclusion)
 
-        if extracted_values:
-            df_viz = pd.DataFrame([{
-                "doc_name": v.doc_name,
-                "material": v.material or "Unknown",
-                "physical_quantity": v.physical_quantity,
-                "value": v.value,
-                "unit": v.unit,
-                "confidence": v.confidence
-            } for v in extracted_values])
-            viz_engine = PublicationVisualizationEngine(st.session_state.knowledge_graph,
-                default_colormap=st.session_state.get("viz_colormap", "viridis"))
-
-            tabs = st.tabs(["📊 Bar Charts", "🕸️ Network Graph", "☀️ Sunburst", "🔍 Radar & Heatmap"])
-            with tabs[0]:
-                col1, col2 = st.columns(2)
-                with col1:
-                    fig_power = viz_engine.plot_laser_power_by_material(df_viz)
+        # ============== ENHANCED VISUALISATION DASHBOARD ==============
+        if st.session_state.knowledge_graph and st.session_state.annotated_trees:
+            st.markdown("---")
+            st.subheader("📈 Focused Visualizations: Laser Power, Scan Speed, Materials")
+            viz = PublicationVisualizationEngine(st.session_state.knowledge_graph, font_family="DejaVu Sans", font_size=10, title_font_size=14, label_font_size=9, default_colormap=st.session_state.get("viz_colormap", "viridis"), figure_dpi=300)
+            df_all = viz.extract_dataframe()
+            if not df_all.empty:
+                tabs = st.tabs(["📊 Counts & Distributions", "🕸️ Network & Hierarchy", "📈 Scatter & Radar", "⚠️ Contradictions", "🧠 Entity Explorer"])
+                with tabs[0]:
+                    fig_bar = viz.plot_quantities_bar(df_all)
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                    fig_mat = viz.plot_material_counts(df_all)
+                    st.plotly_chart(fig_mat, use_container_width=True)
+                    fig_power = viz.plot_laser_power_histogram(df_all)
                     st.plotly_chart(fig_power, use_container_width=True)
-                with col2:
-                    fig_speed = viz_engine.plot_scan_speed_by_material(df_viz)
+                    fig_speed = viz.plot_scan_speed_histogram(df_all)
                     st.plotly_chart(fig_speed, use_container_width=True)
-            with tabs[1]:
-                fig_network = viz_engine.plot_knowledge_network(df_viz)
-                st.pyplot(fig_network)
-                if PYVIS_AVAILABLE:
-                    st.markdown("### Interactive PyVis Network")
-                    # Build network for PyVis
-                    G = nx.Graph()
-                    for _, row in df_viz.iterrows():
-                        doc = row["doc_name"]
-                        mat = row["material"] if pd.notna(row["material"]) else "Unknown"
-                        param = row["physical_quantity"]
-                        G.add_node(doc, group="doc")
-                        G.add_node(mat, group="material")
-                        G.add_node(param, group="param")
-                        G.add_edge(doc, mat)
-                        G.add_edge(mat, param)
-                    net = Network(height="600px", width="100%", bgcolor="#ffffff")
-                    for node in G.nodes():
-                        grp = G.nodes[node].get("group", "unknown")
-                        color = {"doc": "#1e40af", "material": "#10b981", "param": "#f59e0b"}.get(grp, "#6b7280")
-                        net.add_node(node, label=node[:25], color=color)
-                    for u, v in G.edges():
-                        net.add_edge(u, v)
-                    html = net.generate_html()
-                    st.components.v1.html(html, height=650, scrolling=True)
-                    st.download_button("📥 Download Network HTML", html.encode(), "network.html", "text/html")
-            with tabs[2]:
-                fig_sun = viz_engine.plot_material_count_sunburst(df_viz)
-                st.plotly_chart(fig_sun, use_container_width=True)
-            with tabs[3]:
-                col1, col2 = st.columns(2)
-                with col1:
-                    fig_radar = viz_engine.plot_radar_by_material(df_viz)
+                with tabs[1]:
+                    fig_sun = viz.plot_sunburst_hierarchy(df_all)
+                    st.plotly_chart(fig_sun, use_container_width=True)
+                    fig_net = viz.plot_knowledge_network(df_all)
+                    st.pyplot(fig_net)
+                with tabs[2]:
+                    fig_scatter = viz.plot_scatter_power_vs_speed(df_all)
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+                    fig_radar = viz.plot_radar_materials(df_all)
                     st.plotly_chart(fig_radar, use_container_width=True)
-                with col2:
-                    param_choice = st.selectbox("Select parameter for contradiction heatmap", ["laser_power", "scan_speed"])
-                    fig_contra = viz_engine.plot_contradiction_heatmap(df_viz, param_choice)
+                with tabs[3]:
+                    fig_contra = viz.plot_contradiction_matrix(df_all)
                     st.plotly_chart(fig_contra, use_container_width=True)
+                with tabs[4]:
+                    entities = st.session_state.knowledge_graph.get_all_entity_names()
+                    if entities:
+                        selected_entity = st.selectbox("Choose material or quantity", entities, key="kg_entity_select")
+                        if selected_entity:
+                            consensus = st.session_state.knowledge_graph.get_entity_consensus(selected_entity)
+                            if consensus["found"]:
+                                st.markdown(f"#### Consensus for **{selected_entity}**")
+                                col1, col2, col3, col4, col5 = st.columns(5)
+                                col1.metric("Count", consensus["count"])
+                                col2.metric("Mean", f"{consensus['mean']:.2f} {consensus['unit']}")
+                                col3.metric("Std Dev", f"{consensus['std']:.2f}")
+                                col4.metric("Min", f"{consensus['range'][0]:.2f}")
+                                col5.metric("Max", f"{consensus['range'][1]:.2f}")
+                            contradictions = st.session_state.knowledge_graph.get_entity_contradictions(selected_entity)
+                            if contradictions:
+                                st.warning("Contradictions detected")
+                                for c in contradictions:
+                                    st.write(f"{c['doc_a']} vs {c['doc_b']}: ratio {c['ratio']:.1f}")
+                            else:
+                                st.success("No contradictions")
+                    else:
+                        st.info("No entities found")
+            else:
+                st.info("No quantitative data extracted for laser power, scan speed, or materials. Run a query or check indexing.")
 
-        # Display raw extracted values table
-        st.markdown("### 📋 Extracted Values (Table)")
-        if extracted_values:
-            df_table = pd.DataFrame([{"Document": v.doc_name, "Page": v.page, "Material": v.material or "", "Parameter": v.physical_quantity, "Value": f"{v.value:.2f}", "Unit": v.unit} for v in extracted_values])
-            st.dataframe(df_table, use_container_width=True)
-            csv = df_table.to_csv(index=False).encode()
-            st.download_button("📥 Download CSV", csv, "extracted_data.csv", "text/csv")
-        else:
-            st.info("No quantitative values extracted yet. Run a query that asks for laser power or scan speed.")
-
-        # Tree navigation and raw items
         if st.session_state.get("show_tree_nav") and retrieved:
             with st.expander("🌳 Tree Navigation Trace", expanded=False):
                 for r in retrieved[:5]:
-                    st.markdown(f"**{r['doc_id']}** → p.{r['page_start']}")
+                    st.markdown(f"**{r['doc_id']}** → `{r['section_title']}` (p.{r['page_start']}) | confidence: {r.get('confidence', 0):.2f}")
+                    st.caption(r.get('selection_reasoning', ''))
         if items:
-            with st.expander("🔍 Raw Extraction Items", expanded=False):
+            with st.expander("🔍 Extracted Items (Raw)", expanded=False):
                 st.json([i.to_dict() for i in items[:10]])
 
-        # Cleanup
+        report = CrossDocumentQueryReport(query=active_prompt, total_documents=len(st.session_state.annotated_trees), documents_with_results=len(set(i.doc_source for i in items)), all_items=[i.model_dump() for i in items])
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button("📥 Download JSON Report", report.to_json(), "results.json", "application/json")
+        with col_dl2:
+            tree_export = {"query": active_prompt, "annotated_trees": st.session_state.annotated_trees, "retrieved_nodes": retrieved, "extracted_items": [i.to_dict() for i in items], "answer": answer}
+            st.download_button("📥 Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json")
+
         if "index" in st.session_state.query_processor:
             st.session_state.query_processor["index"].cleanup()
     else:
-        st.info("👆 Upload PDF files and click 'Build Index' to start.")
-
-def fast_json_dumps(obj: Any, indent: bool = False) -> bytes:
-    if ORJSON_AVAILABLE:
-        option = orjson.OPT_INDENT_2 if indent else 0
-        return orjson.dumps(obj, option=option, default=str)
-    return json.dumps(obj, indent=2 if indent else None, ensure_ascii=False, default=str).encode()
-
-def fast_json_loads(data: Union[bytes, str]) -> Any:
-    if ORJSON_AVAILABLE:
-        if isinstance(data, str):
-            data = data.encode()
-        return orjson.loads(data)
-    if isinstance(data, bytes):
-        data = data.decode()
-    return json.loads(data)
+        st.info("👆 Upload PDF files to begin.")
 
 if __name__ == "__main__":
     run_streamlit()

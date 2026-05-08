@@ -1692,15 +1692,35 @@ class PublicationVisualizationEngine:
         fig = px.treemap(agg, path=["physical_quantity", "material"], values="count", title="Entity Treemap: Quantities and Materials", color="count", color_continuous_scale=self._get_plotly_colorscale(colormap))
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
-    def _get_context_embeddings(self, embedding_fn: Callable, df: pd.DataFrame, quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
+    #
+    def _get_context_embeddings(self, embedding_fn: Callable, df: pd.DataFrame,
+                            quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Return embeddings and filtered DataFrame where embeddings succeeded."""
         if quantity:
-            df = df[df["physical_quantity"] == quantity]
+            df = df[df["physical_quantity"] == quantity].copy()
+        else:
+            df = df.copy()
         if len(df) < 5:
-            return np.array([]), df
+            return np.array([]), df.iloc[0:0]  # empty
+        
         contexts = df["context"].fillna("").tolist()
-        embs = np.array([embedding_fn(c) for c in contexts])
-        return embs, df
-    def plot_tsne(self, embedding_fn: Callable, quantity: Optional[str] = None, colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
+        embs = []
+        valid_indices = []
+        for idx, ctx in enumerate(contexts):
+            try:
+                emb = embedding_fn(ctx)
+                if emb is not None and len(emb) > 0:
+                    embs.append(emb)
+                    valid_indices.append(idx)
+            except Exception:
+                continue
+        if len(embs) < 5:
+            return np.array([]), df.iloc[0:0]
+        df_valid = df.iloc[valid_indices].copy()
+        return np.array(embs), df_valid
+    
+    def plot_tsne(self, embedding_fn: Callable, quantity: Optional[str] = None,
+                  colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
         if not SKLEARN_AVAILABLE:
             return None
         df = self.extract_dataframe()
@@ -1716,14 +1736,19 @@ class PublicationVisualizationEngine:
             mask = df_use["material"] == mat
             color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
             ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-        for idx, row in df_use.iterrows():
-            ax.annotate(f"{row['value']:.0f}", (coords[idx,0], coords[idx,1]), fontsize=self.label_font_size-1, alpha=0.8)
+        # Annotate using zip to ensure alignment
+        for (_, row), coord in zip(df_use.iterrows(), coords):
+            ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]),
+                        fontsize=self.label_font_size-1, alpha=0.8)
         ax.legend(loc='best', fontsize=self.label_font_size)
-        ax.set_title(f"t-SNE of Extraction Contexts{ ' ('+quantity+')' if quantity else ''}", fontsize=self.title_font_size, fontweight='bold')
+        ax.set_title(f"t-SNE of Extraction Contexts{ ' ('+quantity+')' if quantity else ''}",
+                     fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")
         plt.tight_layout()
         return fig
-    def plot_pca(self, embedding_fn: Callable, quantity: Optional[str] = None, colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
+    
+    def plot_pca(self, embedding_fn: Callable, quantity: Optional[str] = None,
+                 colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
         if not SKLEARN_AVAILABLE:
             return None
         df = self.extract_dataframe()
@@ -1740,15 +1765,20 @@ class PublicationVisualizationEngine:
             mask = df_use["material"] == mat
             color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
             ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-        for idx, row in df_use.iterrows():
-            ax.annotate(f"{row['value']:.0f}", (coords[idx,0], coords[idx,1]), fontsize=self.label_font_size-1, alpha=0.8)
+        for (_, row), coord in zip(df_use.iterrows(), coords):
+            ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]),
+                        fontsize=self.label_font_size-1, alpha=0.8)
         ax.legend(loc='best', fontsize=self.label_font_size)
-        ax.set_title(f"PCA of Extraction Contexts{ ' ('+quantity+')' if quantity else ''}\nPC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}", fontsize=self.title_font_size, fontweight='bold')
+        ax.set_title(f"PCA of Extraction Contexts{ ' ('+quantity+')' if quantity else ''}\n"
+                     f"PC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}",
+                     fontsize=self.title_font_size, fontweight='bold')
         ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%})")
         ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})")
         plt.tight_layout()
         return fig
-    def plot_umap(self, embedding_fn: Callable, quantity: Optional[str] = None, colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
+    
+    def plot_umap(self, embedding_fn: Callable, quantity: Optional[str] = None,
+                  colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
         if not UMAP_AVAILABLE:
             return None
         df = self.extract_dataframe()
@@ -1764,13 +1794,16 @@ class PublicationVisualizationEngine:
             mask = df_use["material"] == mat
             color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
             ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-        for idx, row in df_use.iterrows():
-            ax.annotate(f"{row['value']:.0f}", (coords[idx,0], coords[idx,1]), fontsize=self.label_font_size-1, alpha=0.8)
+        for (_, row), coord in zip(df_use.iterrows(), coords):
+            ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]),
+                        fontsize=self.label_font_size-1, alpha=0.8)
         ax.legend(loc='best', fontsize=self.label_font_size)
-        ax.set_title(f"UMAP of Extraction Contexts{ ' ('+quantity+')' if quantity else ''}", fontsize=self.title_font_size, fontweight='bold')
+        ax.set_title(f"UMAP of Extraction Contexts{ ' ('+quantity+')' if quantity else ''}",
+                     fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")
         plt.tight_layout()
         return fig
+    
 
 # ============================================================================
 # STREAMLIT UI WITH ENHANCED KNOWLEDGE GRAPH INTERACTION

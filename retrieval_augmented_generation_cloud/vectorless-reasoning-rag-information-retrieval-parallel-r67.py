@@ -1520,37 +1520,31 @@ class PublicationVisualizationEngine:
     #
     def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity: str,
                                colormap: Optional[str] = None) -> go.Figure:
-    if df.empty:
-        return go.Figure()
-    subset = df[df["physical_quantity"] == quantity].copy()
-    if subset.empty:
-        return go.Figure()
-    
-    # ---------- FIX: Clean hierarchy columns ----------
-    # Replace None/NaN/empty strings in material and doc_stem with "Unknown"
-    subset["material"] = subset["material"].fillna("Unknown").replace("", "Unknown")
-    subset["doc_stem"] = subset["doc_stem"].fillna("Unknown").replace("", "Unknown")
-    
-    # Remove rows where value is None (should not happen, but safe)
-    subset = subset.dropna(subset=["value"])
-    
-    # Create value bins
-    n_bins = min(5, max(2, len(subset)//3))
-    subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str)
-    # Replace any NaN in value_range (if binning fails for some reason)
-    subset["value_range"] = subset["value_range"].fillna("unknown")
-    
-    # Now all path columns have no None/NaN
-    fig = px.sunburst(
-        subset,
-        path=["material", "doc_stem", "value_range"],
-        values="value",
-        color="value",
-        color_continuous_scale=self._get_plotly_colorscale(colormap),
-        title=f"{quantity.replace('_',' ').title()} Distribution Hierarchy"
-    )
-    fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
-    return fig
+        if df.empty:
+            return go.Figure()
+        subset = df[df["physical_quantity"] == quantity].copy()
+        if subset.empty:
+            return go.Figure()
+        
+        # Clean hierarchy columns: replace None/NaN/empty strings
+        subset["material"] = subset["material"].fillna("Unknown").replace("", "Unknown")
+        subset["doc_stem"] = subset["doc_stem"].fillna("Unknown").replace("", "Unknown")
+        subset = subset.dropna(subset=["value"])
+        
+        n_bins = min(5, max(2, len(subset)//3))
+        subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str)
+        subset["value_range"] = subset["value_range"].fillna("unknown")
+        
+        fig = px.sunburst(
+            subset,
+            path=["material", "doc_stem", "value_range"],
+            values="value",
+            color="value",
+            color_continuous_scale=self._get_plotly_colorscale(colormap),
+            title=f"{quantity.replace('_',' ').title()} Distribution Hierarchy"
+        )
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
     
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, figsize: Tuple[int,int] = (14,12)) -> plt.Figure:
         G = nx.Graph()

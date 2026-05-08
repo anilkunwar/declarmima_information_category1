@@ -1526,11 +1526,17 @@ class PublicationVisualizationEngine:
         if subset.empty:
             return go.Figure()
         
-        # Clean hierarchy columns: replace None/NaN/empty strings
+        # Convert None/NaN to "Unknown" for material and doc_stem
         subset["material"] = subset["material"].fillna("Unknown").replace("", "Unknown")
         subset["doc_stem"] = subset["doc_stem"].fillna("Unknown").replace("", "Unknown")
+        
+        # Drop rows where material or doc_stem is still None (shouldn't happen after fillna, but safe)
+        subset = subset.dropna(subset=["material", "doc_stem"])
+        
+        # Remove rows with missing value
         subset = subset.dropna(subset=["value"])
         
+        # Create value bins
         n_bins = min(5, max(2, len(subset)//3))
         subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str)
         subset["value_range"] = subset["value_range"].fillna("unknown")
@@ -1545,6 +1551,7 @@ class PublicationVisualizationEngine:
         )
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
+    
     
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, figsize: Tuple[int,int] = (14,12)) -> plt.Figure:
         G = nx.Graph()

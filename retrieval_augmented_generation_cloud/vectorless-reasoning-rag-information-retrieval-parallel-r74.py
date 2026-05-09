@@ -1,15 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v17.1 - UNIFIED ROBUST VECTORLESS RAG WITH QUERY-DRIVEN VISUALIZATION
-================================================================================
+DECLARMIMA v17.1 - UNIFIED ROBUST VECTORLESS RAG WITH FULL VISUALIZATION
+========================================================================
 Merged strengths from v13.0+, v16.0, and v13.3 without weaknesses:
 - Comprehensive physical quantity classifier
 - Vectorless retrieval with robust semantic fallback
 - Fixed networkx "None cannot be a node" error
 - Fixed sunburst hierarchy error
 - Full visualization suite: 35+ chart types
-- Query-driven contextual visualization layer
 - Retrieval diagnostics dashboard
 - Concept normalization & synonym resolution
 - Enhanced structured metadata extraction
@@ -219,37 +218,6 @@ class DocumentMetadata(BaseModel):
     energy_density_values: List[float] = []
     process_types: List[str] = []
     other_parameters: Dict[str, List[float]] = {}
-
-
-# =============================================================================
-# QUERY CONTEXT FOR DRIVEN VISUALIZATIONS
-# =============================================================================
-@dataclass
-class QueryContext:
-    """Represents the context of the current user query for focused visualizations."""
-    query: str
-    relevant_doc_ids: Set[str]
-    physical_quantities: List[str]
-    materials: List[str]
-    extracted_values: List[ExtractedValue]
-    retrieved_nodes: List[Dict]
-    timestamp: datetime = field(default_factory=datetime.now)
-
-    @classmethod
-    def from_cache(cls, cache: Dict) -> 'QueryContext':
-        raw_vals = cache.get("extracted_values", [])
-        extracted_vals = [ExtractedValue(**v) for v in raw_vals] if raw_vals and isinstance(raw_vals[0], dict) else []
-        return cls(
-            query=cache.get("prompt", ""),
-            relevant_doc_ids={v.doc_name for v in extracted_vals},
-            physical_quantities=list({v.physical_quantity for v in extracted_vals if v.physical_quantity}),
-            materials=list({v.material for v in extracted_vals if v.material}),
-            extracted_values=extracted_vals,
-            retrieved_nodes=cache.get("retrieved", []),
-        )
-
-    def has_data(self) -> bool:
-        return len(self.extracted_values) > 0
 
 
 class PhysicalQuantityClassifier:
@@ -1259,7 +1227,7 @@ class QuantitativeKnowledgeGraph:
                 if item.get("physical_quantity"):
                     entities.add(item["physical_quantity"])
                 if item.get("parameter_name"):
-                    entities.add(item["parameter_name"])
+                    entities.add(item.get("parameter_name"))
         return sorted(entities)
 
 
@@ -1724,329 +1692,13 @@ class PublicationVisualizationEngine:
                     rows.append({"doc": doc_id, "doc_stem": display, "doc_citation": citation, "physical_quantity": phys, "material": mat, "value": value, "unit": unit, "confidence": item.get("confidence", 0.5), "page": item.get("page", 0), "context": item.get("context", "")[:200]})
         return pd.DataFrame(rows)
 
-    # =============================================================================
-    # QUERY-AWARE DATA FILTERING
-    # =============================================================================
-    def get_query_focused_df(self, query_ctx: QueryContext) -> pd.DataFrame:
-        """Return dataframe filtered to current query context."""
-        df = self.extract_dataframe(aliases=self.cfg.aliases, label_style=self.cfg.label_style)
-        if df.empty or not query_ctx.has_data():
-            return df
-        mask = (
-            df["doc"].isin(query_ctx.relevant_doc_ids) |
-            df["physical_quantity"].isin(query_ctx.physical_quantities) |
-            (df["material"].isin(query_ctx.materials) & df["material"].notna())
-        )
-        return df[mask].copy()
-
-    # =============================================================================
-    # QUERY-AWARE KNOWLEDGE GRAPH (NetworkX)
-    # =============================================================================
-    def plot_query_knowledge_graph(self, query_ctx: QueryContext, figsize=(14, 11)) -> plt.Figure:
-        """Query-focused interactive Knowledge Graph"""
-        if not query_ctx.has_data():
-            fig, ax = plt.subplots(figsize=figsize)
-            ax.text(0.5, 0.5, "No quantitative data for this query", ha='center', va='center', fontsize=14)
-            ax.axis("off")
-            return fig
-
-        df_focus = self.get_query_focused_df(query_ctx)
-        G = nx.Graph()
-
-        # Central Query Node
-        G.add_node("QUERY", node_type="query", label=query_ctx.query[:45] + "...", 
-                  title=f"Query: {query_ctx.query}")
-
-        # Add relevant documents
-        for doc_id in query_ctx.relevant_doc_ids:
-            display_name = get_display_name(doc_id, self.cfg.aliases)
-            G.add_node(display_name, node_type="doc", color="#10b981", size=1400,
-                      title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
-
-        # Add physical quantities
-        for pq in query_ctx.physical_quantities:
-            readable = self.kgraph.phys_classifier.get_human_readable(pq)
-            G.add_node(pq, node_type="pq", label=readable, color="#3b82f6", size=1100)
-
-        # Add materials
-        for mat in query_ctx.materials:
-            G.add_node(mat, node_type="material", color="#f59e0b", size=1300)
-
-        # Add extracted values as leaf nodes
-        for val in query_ctx.extracted_values[:20]:
-            label = f"{val.value:.1f} {val.unit or ''}"
-            G.add_node(label, node_type="value", color="#ec4899", size=600,
-                      title=f"{val.value} {val.unit} | {val.material or ''} | p.{val.page}")
-
-            if val.material and val.material in G:
-                G.add_edge(val.material, label, weight=2)
-            if val.doc_name and get_display_name(val.doc_name, self.cfg.aliases) in G:
-                G.add_edge(get_display_name(val.doc_name, self.cfg.aliases), label, weight=1.5)
-            for pq in query_ctx.physical_quantities:
-                if val.physical_quantity == pq and pq in G:
-                    G.add_edge(pq, label, weight=1)
-
-        # Connect query to everything
-        for node in list(G.nodes()):
-            if node != "QUERY":
-                G.add_edge("QUERY", node, weight=0.8)
-
-        # Draw
-        pos = nx.spring_layout(G, k=0.65, iterations=80, seed=42)
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        query_nodes = ["QUERY"]
-        doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
-        pq_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "pq"]
-        mat_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "material"]
-        val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
-
-        nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", node_size=3200, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", node_size=1400, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", node_size=1100, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", node_size=1300, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#ec4899", node_size=650, ax=ax)
-
-        nx.draw_networkx_edges(G, pos, alpha=0.35, width=1.2, edge_color="#94a3b8", ax=ax)
-        nx.draw_networkx_labels(G, pos, font_size=9, font_family=self.font_family, ax=ax)
-
-        ax.set_title(f"Query-Focused Knowledge Graph\n{query_ctx.query[:70]}...", 
-                    fontsize=15, fontweight='bold', pad=20)
-        ax.axis("off")
-        plt.tight_layout()
-        return fig
-
-    # =============================================================================
-    # QUERY-AWARE KNOWLEDGE GRAPH (PyVis with Modal)
-    # =============================================================================
-    def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
-        """Interactive PyVis KG with confidence highlighting + modal-ready JS"""
-        if not PYVIS_AVAILABLE:
-            return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
-
-        if not query_ctx.has_data():
-            return "<p>No quantitative data available for this query.</p>"
-
-        net = Network(
-            height="780px", 
-            width="100%", 
-            bgcolor="#0f172a",      # Dark theme for modern look
-            font_color="#e2e8f0",
-            cdn_resources='remote'
-        )
-        
-        net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
-
-        # Confidence threshold for strong paths
-        high_conf_threshold = 0.75
-
-        # ====================== ADD NODES ======================
-        
-        # 1. Central Query Node
-        net.add_node(
-            "QUERY", 
-            label="YOUR QUERY",
-            title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
-            color="#a855f7",
-            size=45,
-            font={"size": 18, "bold": True}
-        )
-
-        # 2. Documents
-        for doc_id in query_ctx.relevant_doc_ids:
-            display = get_display_name(doc_id, self.cfg.aliases)
-            count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
-            
-            tooltip = f"<b>Document:</b> {display}<br>"
-            tooltip += f"<b>Extracted Values:</b> {count}<br><br>"
-            for item in query_ctx.extracted_values[:5]:
-                if item.doc_name == doc_id:
-                    tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
-
-            net.add_node(
-                display,
-                label=display[:25],
-                title=tooltip,
-                color="#22c55e",
-                size=32,
-                font={"size": 14}
-            )
-            net.add_edge("QUERY", display, value=3)
-
-        # 3. Physical Quantities
-        for pq in query_ctx.physical_quantities:
-            readable = self.kgraph.phys_classifier.get_human_readable(pq)
-            net.add_node(
-                pq,
-                label=readable,
-                title=f"<b>Physical Quantity:</b><br>{readable}",
-                color="#3b82f6",
-                size=28
-            )
-            net.add_edge("QUERY", pq, value=2)
-
-        # 4. Materials
-        for mat in query_ctx.materials:
-            net.add_node(
-                mat,
-                label=mat[:22],
-                title=f"<b>Material/Alloy:</b><br>{mat}",
-                color="#f59e0b",
-                size=30
-            )
-            net.add_edge("QUERY", mat, value=2)
-
-        # 5. Extracted Values (Clickable Leaves)
-        for i, val in enumerate(sorted(query_ctx.extracted_values, key=lambda x: x.confidence, reverse=True)[:30]):
-            node_id = f"val_{i}"
-            label = f"{val.value:.1f}{val.unit or ''}"
-            
-            # Color by confidence
-            conf = val.confidence
-            color = "#f43f5e" if conf >= high_conf_threshold else "#fb923c" if conf >= 0.6 else "#94a3b8"
-            
-            excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
-            tooltip = f"""
-            <b>{val.value} {val.unit}</b><br>
-            <b>Confidence:</b> {conf:.2f}<br>
-            <b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br>
-            <b>Material:</b> {val.material or '—'}<br>
-            <b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br>
-            <b>Context:</b><br>{excerpt}
-            """
-            
-            net.add_node(
-                node_id, 
-                label=label, 
-                title=tooltip,
-                color=color,
-                size=24 + int(conf * 18),   # Size by confidence
-                font={"size": 11}
-            )
-
-            # Connect with thickness based on confidence
-            edge_width = 3 if conf >= high_conf_threshold else 1.5
-
-            if val.material and val.material in net.get_nodes():
-                net.add_edge(val.material, node_id, value=edge_width, color="#cbd5e1")
-            if val.physical_quantity in net.get_nodes():
-                net.add_edge(val.physical_quantity, node_id, value=edge_width*0.8)
-            doc_name = get_display_name(val.doc_name, self.cfg.aliases)
-            if doc_name in net.get_nodes():
-                net.add_edge(doc_name, node_id, value=edge_width, color="#86efac")
-
-        # Connect everything to QUERY
-        for node in net.get_nodes():
-            if node != "QUERY":
-                net.add_edge("QUERY", node, value=1, color="#64748b")
-
-        html = net.generate_html()
-
-        # ====================== ADVANCED JS MODAL ======================
-        modal_js = """
-        <script>
-        var modal = null;
-        network.on("click", function(params) {
-            if (params.nodes.length === 0) return;
-            var nodeId = params.nodes[0];
-            
-            if (nodeId.startsWith("val_")) {
-                var node = network.body.nodes[nodeId];
-                var title = node.options.title || "No details";
-                
-                if (!modal) {
-                    modal = document.createElement("div");
-                    modal.style.cssText = `
-                        position:fixed; top:0; left:0; width:100%; height:100%; 
-                        background:rgba(0,0,0,0.85); z-index:9999; display:flex; 
-                        align-items:center; justify-content:center; font-family:system-ui;
-                    `;
-                    document.body.appendChild(modal);
-                }
-                
-                modal.innerHTML = `
-                    <div style="background:#1e2937; color:#e2e8f0; padding:25px; border-radius:12px; 
-                                max-width:620px; max-height:85vh; overflow:auto; border:1px solid #475569;">
-                        <h3 style="margin-top:0; color:#f472b6;">Extracted Value Details</h3>
-                        <div style="white-space:pre-wrap; font-size:15px; line-height:1.5;">${title}</div>
-                        <br>
-                        <button onclick="this.parentElement.parentElement.remove()" 
-                                style="padding:10px 20px; background:#f43f5e; color:white; border:none; 
-                                border-radius:6px; cursor:pointer;">Close</button>
-                    </div>
-                `;
-            }
-        });
-        </script>
-        """
-
-        if "</body>" in html:
-            html = html.replace("</body>", modal_js + "</body>")
-        else:
-            html += modal_js
-
-        return html
-
-    # =============================================================================
-    # QUERY-AWARE SUNBURST
-    # =============================================================================
-    def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
-        """Query-focused hierarchical sunburst"""
-        df_focus = self.get_query_focused_df(query_ctx)
-        if df_focus.empty:
-            return go.Figure().update_layout(title="No data for current query")
-
-        # Create hierarchy: Physical Quantity → Material → Document → Value Range
-        df_sun = df_focus.copy()
-        df_sun["material"] = df_sun["material"].fillna("Unknown").replace("", "Unknown")
-        df_sun["doc_stem"] = df_sun["doc_stem"].fillna("Unknown").replace("", "Unknown")
-        
-        # Bin values for better hierarchy
-        if not df_sun.empty and len(df_sun) >= 3:
-            try:
-                n_bins = min(5, max(2, len(df_sun)//3))
-                df_sun["value_range"] = pd.cut(df_sun["value"], bins=n_bins, precision=1).astype(str).fillna("unknown")
-                fig = px.sunburst(
-                    df_sun,
-                    path=["physical_quantity", "material", "doc_stem", "value_range"],
-                    values="value",
-                    color="value",
-                    color_continuous_scale=self._get_plotly_colorscale(),
-                    title=f"Query Hierarchy: {query_ctx.query[:60]}...",
-                    maxdepth=4
-                )
-                fig.update_traces(textinfo="label+percent entry")
-                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
-                return fig
-            except Exception as e:
-                logger.warning(f"Sunburst binning failed: {e}")
-        
-        # Fallback: simpler hierarchy
-        try:
-            fig = px.sunburst(
-                df_sun, 
-                path=["physical_quantity", "material", "doc_stem"], 
-                values="value",
-                color="value",
-                color_continuous_scale=self._get_plotly_colorscale(),
-                title=f"Query Hierarchy: {query_ctx.query[:60]}..."
-            )
-            fig.update_traces(textinfo="label+percent entry")
-            fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
-            return fig
-        except Exception as e:
-            logger.error(f"Query sunburst failed: {e}")
-            return go.Figure().update_layout(title="Sunburst unavailable for this query")
-
-    # =============================================================================
-    # EXISTING VISUALIZATION METHODS (REPAIRED)
-    # =============================================================================
     def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str, group_by: str = "material", colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title=f"No {quantity_name} data")
         subset = df[df["physical_quantity"] == quantity_name]
         if subset.empty:
-            return go.Figure()
+            # FIX: Return figure with descriptive title instead of empty figure
+            return go.Figure().update_layout(title=f"No {quantity_name.replace('_',' ').title()} data available")
         clean_col = subset[group_by].fillna("Unknown").replace("", "Unknown")
         subset = subset.assign(clean_group=clean_col)
         groups = sorted(subset["clean_group"].unique())
@@ -2070,7 +1722,10 @@ class PublicationVisualizationEngine:
         return fig
 
     def plot_material_counts(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        mat_df = df[df["physical_quantity"] == "material"] if "material" in df["physical_quantity"].values else df
+        # FIX: Count materials from the material column directly, not by filtering physical_quantity == "material"
+        if df.empty:
+            return go.Figure().update_layout(title="No data")
+        mat_df = df[df["material"].notna() & (df["material"] != "Unknown") & (df["material"] != "")]
         if mat_df.empty:
             return go.Figure().update_layout(title="No materials found")
         counts = mat_df["material"].value_counts().head(10).reset_index()
@@ -2104,31 +1759,34 @@ class PublicationVisualizationEngine:
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
 
+
     def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
-            return go.Figure()
+            return go.Figure().update_layout(title="No data available")
         subset = df[df["physical_quantity"] == quantity].copy()
-        if subset.empty:
-            return go.Figure()
+        if subset.empty or len(subset) < 1:
+            return go.Figure().update_layout(title=f"No data for {quantity.replace('_',' ').title()}")
         subset["material"] = subset["material"].fillna("Unknown").replace("", "Unknown")
         subset["doc_stem"] = subset["doc_stem"].fillna("Unknown").replace("", "Unknown")
-        subset = subset.dropna(subset=["material", "doc_stem"])
-        subset = subset.dropna(subset=["value"])
-        if subset.empty or len(subset) < 2:
-            # Fallback without value_range binning
-            try:
-                fig = px.sunburst(subset, path=["material", "doc_stem"], values="value", color="value",
-                                  color_continuous_scale=self._get_plotly_colorscale(colormap),
-                                  title=f"{quantity.replace('_',' ').title()} Distribution Hierarchy")
-                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
-                return fig
-            except:
-                return go.Figure()
+        subset = subset.dropna(subset=["material", "doc_stem", "value"])
+        if subset.empty:
+            return go.Figure().update_layout(title=f"No valid data for {quantity.replace('_',' ').title()}")
+        # FIX: Filter out infinite and non-finite values before pd.cut
+        subset = subset[np.isfinite(subset["value"])]
+        if subset.empty:
+            return go.Figure().update_layout(title=f"No finite values for {quantity.replace('_',' ').title()}")
         n_bins = min(5, max(2, len(subset)//3))
-        try:
-            subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str).fillna("unknown")
-        except Exception:
-            subset["value_range"] = "single"
+        # FIX: Handle constant values and pd.cut failures gracefully
+        if subset["value"].nunique() <= 1:
+            subset["value_range"] = "single_value"
+        else:
+            try:
+                subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1, duplicates="drop").astype(str).fillna("unknown")
+            except Exception:
+                try:
+                    subset["value_range"] = pd.qcut(subset["value"], q=min(n_bins, len(subset)), duplicates="drop").astype(str).fillna("unknown")
+                except Exception:
+                    subset["value_range"] = "binned"
         fig = px.sunburst(subset, path=["material", "doc_stem", "value_range"], values="value", color="value", color_continuous_scale=self._get_plotly_colorscale(colormap), title=f"{quantity.replace('_',' ').title()} Distribution Hierarchy")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
@@ -2141,14 +1799,14 @@ class PublicationVisualizationEngine:
         df_hier["material"] = df_hier["material"].fillna("Unknown").replace("", "Unknown")
         df_hier["doc_stem"] = df_hier["doc_stem"].fillna("Unknown").replace("", "Unknown")
         df_hier["value_dummy"] = 1
+        # FIX: Additional guard for empty dataframe after cleaning
+        if df_hier.empty:
+            return go.Figure().update_layout(title="No data after cleaning")
         try:
             fig = px.sunburst(df_hier, path=["physical_quantity", "material", "doc_stem"], values="value_dummy", title="Hierarchy of Physical Quantities, Materials, and Documents")
         except Exception as e:
             logger.error(f"Sunburst error: {e}")
-            try:
-                fig = px.sunburst(df_hier, path=["physical_quantity", "material"], values="value_dummy", title="Hierarchy (simplified)")
-            except:
-                fig = go.Figure().update_layout(title="Sunburst unavailable")
+            fig = px.sunburst(df_hier, path=["physical_quantity", "material"], values="value_dummy", title="Hierarchy (simplified)")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
 
@@ -2206,8 +1864,9 @@ class PublicationVisualizationEngine:
         if df.empty:
             return go.Figure().update_layout(title="No data")
         pivot = df.pivot_table(index="doc_stem", columns="physical_quantity", values="value", aggfunc="count").fillna(0)
-        if pivot.empty:
-            return go.Figure().update_layout(title="No data")
+        # FIX: Guard against empty pivot columns
+        if pivot.empty or len(pivot.columns) == 0:
+            return go.Figure().update_layout(title="No data for document radar")
         fig = go.Figure()
         cmap = plt.get_cmap(self._get_colormap(colormap))
         docs = pivot.index.tolist()
@@ -2236,6 +1895,7 @@ class PublicationVisualizationEngine:
         fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True, title=f"{quantity_name.replace('_',' ').title()} Statistics by Material", font=dict(family=self.font_family, size=self.font_size))
         return fig
 
+
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, figsize: Tuple[int,int] = (14,12), aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> plt.Figure:
         G = nx.Graph()
         hub = f"{quantity}_hub"
@@ -2245,12 +1905,14 @@ class PublicationVisualizationEngine:
             return plt.figure()
         for mat in subset["material"].unique():
             if pd.notna(mat) and str(mat).strip() and mat != "Unknown":
+                # Build tooltip with material values for this quantity
                 mat_vals = subset[subset["material"] == mat]["value"].tolist()
                 tooltip = f"Material: {mat}\nCount: {len(mat_vals)}\nRange: {min(mat_vals):.2f} - {max(mat_vals):.2f}\nMean: {np.mean(mat_vals):.2f}"
                 G.add_node(mat, node_type="material", title=tooltip)
                 G.add_edge(hub, mat, weight=len(subset[subset["material"] == mat]))
         for doc in subset["doc_stem"].unique():
             if pd.notna(doc) and str(doc).strip():
+                # Find original doc_id and build tooltip
                 orig_doc = None
                 for d in self.kgraph.doc_graphs:
                     if get_display_name(d, aliases) == doc:
@@ -2288,8 +1950,11 @@ class PublicationVisualizationEngine:
 
     def plot_knowledge_network(self, df: pd.DataFrame, colormap: Optional[str] = None, figsize: Tuple[int,int] = (12,10), aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> plt.Figure:
         G = nx.Graph()
-        docs = [d for d in df["doc_stem"].unique() if pd.notna(d) and str(d).strip() != "" and str(d).lower() != "nan"]
+        docs = df["doc_stem"].unique()
         for doc in docs:
+            if doc is None or str(doc).strip() == "":
+                continue
+            # Find original doc_id from display name
             orig_doc = None
             for d in self.kgraph.doc_graphs:
                 if get_display_name(d, aliases) == doc:
@@ -2297,21 +1962,28 @@ class PublicationVisualizationEngine:
                     break
             if not orig_doc:
                 continue
+            # Build tooltip with top extracted values
             tooltip = f"Document: {get_citation_label(orig_doc, aliases, style=label_style)}\n"
             doc_items = [it for it in self.kgraph.doc_graphs[orig_doc]["all_items"] if it.get("value") is not None]
             top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
             for it in top_vals:
                 tooltip += f"- {it.get('physical_quantity', 'unknown')}: {it.get('value')} {it.get('unit', '')}\n"
             G.add_node(doc, node_type="doc", color="#1e40af", title=tooltip)
-        pqs = [p for p in df["physical_quantity"].unique() if pd.notna(p) and str(p).strip() != "" and str(p).lower() != "nan"]
+        pqs = df["physical_quantity"].unique()
         for pq in pqs:
+            if pq is None or str(pq).strip() == "":
+                continue
+            # Build tooltip with summary stats
             stats = self.kgraph.get_summary_stats(pq)
             tooltip = f"Quantity: {pq}\n"
             if stats.get("count", 0) > 0:
                 tooltip += f"Count: {stats['count']}\nRange: {stats.get('min', 0):.2f} - {stats.get('max', 0):.2f}\nMean: {stats.get('mean', 0):.2f}"
             G.add_node(pq, node_type="pq", color=self.DOMAIN_COLORS.get(pq, "#6b7280"), title=tooltip)
-        mats = [m for m in df["material"].unique() if pd.notna(m) and str(m).strip() != "" and m != "Unknown" and str(m).lower() != "nan"]
+        mats = df["material"].unique()
         for mat in mats:
+            if mat is None or str(mat).strip() == "" or mat == "Unknown":
+                continue
+            # Build tooltip with material stats
             stats = self.kgraph.get_material_summary_stats(mat)
             tooltip = f"Material: {mat}\n"
             for pq, vals in list(stats.items())[:3]:
@@ -2323,11 +1995,11 @@ class PublicationVisualizationEngine:
             doc = row["doc_stem"]
             pq = row["physical_quantity"]
             mat = row["material"]
-            if doc is None or str(doc).strip() == "" or str(doc).lower() == "nan":
+            if doc is None or str(doc).strip() == "":
                 continue
-            if pq is None or str(pq).strip() == "" or str(pq).lower() == "nan":
+            if pq is None or str(pq).strip() == "":
                 continue
-            if mat and mat != "Unknown" and str(mat).strip() != "" and str(mat).lower() != "nan":
+            if mat and mat != "Unknown" and str(mat).strip() != "":
                 if doc in G and mat in G:
                     G.add_edge(doc, mat)
                 if pq in G and mat in G:
@@ -2356,6 +2028,7 @@ class PublicationVisualizationEngine:
         for doc_id in docs:
             display = get_display_name(doc_id, aliases)
             label = get_citation_label(doc_id, aliases, style=label_style)
+            # Build tooltip
             tooltip = f"Document: {label}\n"
             doc_items = [it for it in self.kgraph.doc_graphs[doc_id]["all_items"] if it.get("value") is not None]
             if doc_items:
@@ -2384,7 +2057,7 @@ class PublicationVisualizationEngine:
         for node in ent_nodes:
             salience = G.nodes[node].get("salience", 0.5)
             domain = G.nodes[node].get("domain", "UNKNOWN")
-            if colormap and cmap_obj:
+            if colormap:
                 idx = domain_color_idx.get(domain, 0)
                 base_color = mcolors.to_hex(cmap_obj(idx / max(len(domains) - 1, 1)))
             else:
@@ -2397,10 +2070,7 @@ class PublicationVisualizationEngine:
             nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
         legend_patches = [mpatches.Patch(color="#1e40af", label="Documents")]
         for dom in domains:
-            if colormap and cmap_obj:
-                c = mcolors.to_hex(cmap_obj(domain_color_idx[dom] / max(len(domains) - 1, 1)))
-            else:
-                c = self.DOMAIN_COLORS.get(dom, "#6b7280")
+            c = mcolors.to_hex(cmap_obj(domain_color_idx[dom] / max(len(domains) - 1, 1))) if colormap else self.DOMAIN_COLORS.get(dom, "#6b7280")
             legend_patches.append(mpatches.Patch(color=c, label=dom))
         ax.legend(handles=legend_patches, loc="upper left", fontsize=9)
         ax.set_title("Salience-Aware Cross-Document Knowledge Network\n(Node size = importance | Labels: {} format)".format(label_style), fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
@@ -2416,6 +2086,7 @@ class PublicationVisualizationEngine:
         for doc in docs:
             display = get_display_name(doc, aliases)
             label = get_citation_label(doc, aliases, style=label_style)
+            # Build enriched tooltip
             tooltip = f"<b>{label}</b><br>"
             tooltip += f"File: {Path(doc).name}<br>"
             doc_items = [it for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("value") is not None]
@@ -2429,12 +2100,14 @@ class PublicationVisualizationEngine:
         for ent in entities:
             stats = self.kgraph.get_summary_stats(ent)
             count = stats.get("count", 0)
+            # Build enriched tooltip for quantity nodes
             tooltip = f"<b>{ent}</b><br>"
             tooltip += f"Occurrences: {count}<br>"
             if stats.get("count", 0) > 0:
                 tooltip += f"Range: {stats.get('min', 0):.2f} - {stats.get('max', 0):.2f}<br>"
                 tooltip += f"Mean: {stats.get('mean', 0):.2f}<br>"
                 tooltip += f"Std: {stats.get('std', 0):.2f}<br>"
+                # Show values by document
                 tooltip += "<b>By document:</b><br>"
                 for doc in docs:
                     doc_vals = [it["value"] for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("physical_quantity") == ent and it.get("value") is not None]
@@ -2462,6 +2135,7 @@ class PublicationVisualizationEngine:
             net.add_edge(u, v, value=max(1, int(w * 2)), width=max(1, int(w)))
         return net.generate_html()
 
+    # ---------- PYVIS VARIANTS FOR ALL NETWORKS ----------
     def plot_quantitative_knowledge_graph_pyvis(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> str:
         """PyVis interactive version of quantitative knowledge graph."""
         if not PYVIS_AVAILABLE:
@@ -2505,32 +2179,40 @@ class PublicationVisualizationEngine:
         net = Network(height=self.cfg.pyvis_height, width=self.cfg.pyvis_width, bgcolor="#ffffff", font_color="#000000", cdn_resources='remote')
         if self.cfg.pyvis_physics_enabled:
             net.barnes_hut(gravity=self.cfg.pyvis_gravity, spring_length=self.cfg.pyvis_spring_length, damping=self.cfg.pyvis_damping)
-        docs = [d for d in df["doc_stem"].unique() if pd.notna(d) and str(d).strip() != "" and str(d).lower() != "nan"]
+        docs = df["doc_stem"].unique()
         for doc in docs:
+            if doc is None or str(doc).strip() == "":
+                continue
             net.add_node(doc, label=doc[:25], size=int(self.cfg.node_size_base_doc * self.cfg.node_size_factor), color="#1e40af", title=f"Document: {doc}")
-        pqs = [p for p in df["physical_quantity"].unique() if pd.notna(p) and str(p).strip() != "" and str(p).lower() != "nan"]
+        pqs = df["physical_quantity"].unique()
         for pq in pqs:
+            if pq is None or str(pq).strip() == "":
+                continue
             stats = self.kgraph.get_summary_stats(pq)
             tooltip = f"<b>{pq}</b><br>Count: {stats.get('count', 0)}"
             net.add_node(pq, label=pq[:25], size=int(self.cfg.node_size_base_entity * self.cfg.node_size_factor), color=self.DOMAIN_COLORS.get(pq, "#6b7280"), title=tooltip)
-        mats = [m for m in df["material"].unique() if pd.notna(m) and str(m).strip() != "" and m != "Unknown" and str(m).lower() != "nan"]
+        mats = df["material"].unique()
         for mat in mats:
+            if mat is None or str(mat).strip() == "" or mat == "Unknown":
+                continue
             net.add_node(mat, label=mat[:25], size=int(self.cfg.node_size_base_material * self.cfg.node_size_factor), color="#f59e0b", title=f"Material: {mat}")
         for _, row in df.iterrows():
             doc = row["doc_stem"]; pq = row["physical_quantity"]; mat = row["material"]
-            if doc and pq and doc in net.get_nodes() and pq in net.get_nodes():
+            if doc and pq and doc in [n for n in net.get_nodes()] and pq in [n for n in net.get_nodes()]:
                 net.add_edge(doc, pq, width=self.cfg.edge_width_pyvis)
-            if mat and mat != "Unknown" and doc and mat in net.get_nodes() and doc in net.get_nodes():
+            if mat and mat != "Unknown" and doc and mat in [n for n in net.get_nodes()] and doc in [n for n in net.get_nodes()]:
                 net.add_edge(doc, mat, width=self.cfg.edge_width_pyvis)
-            if mat and mat != "Unknown" and pq and mat in net.get_nodes() and pq in net.get_nodes():
+            if mat and mat != "Unknown" and pq and mat in [n for n in net.get_nodes()] and pq in [n for n in net.get_nodes()]:
                 net.add_edge(pq, mat, width=self.cfg.edge_width_pyvis)
         return net.generate_html()
+
 
     def _get_domain_color(self, domain: str, colormap: Optional[str] = None, index: int = 0, total: int = 1) -> str:
         if colormap and total > 1:
             cmap = plt.get_cmap(self._get_colormap(colormap))
             return mcolors.to_hex(cmap(index / max(total - 1, 1)))
         return self.DOMAIN_COLORS.get(domain, "#6b7280")
+
 
     def plot_contradiction_matrix(self, quantity: Optional[str] = None, colormap: Optional[str] = None) -> go.Figure:
         df = self.extract_dataframe()
@@ -2671,6 +2353,7 @@ class PublicationVisualizationEngine:
         cat_df = cat_df.dropna()
         if cat_df.empty:
             return go.Figure().update_layout(title="Insufficient categorical data")
+        # Map physical_quantity to numeric codes for color (Plotly parcats color must be numeric)
         pq_codes = {pq: i for i, pq in enumerate(sorted(cat_df["physical_quantity"].unique()))}
         cat_df["pq_code"] = cat_df["physical_quantity"].map(pq_codes)
         fig = px.parallel_categories(cat_df, dimensions=["physical_quantity", "material"], color="pq_code", color_continuous_scale=self._get_plotly_colorscale(colormap), title="Parallel Categories: Quantities and Materials")
@@ -2734,6 +2417,7 @@ class PublicationVisualizationEngine:
         fig = px.scatter(df_top, x="year", y="physical_quantity", color="material", title="Temporal Distribution of Quantities by Material", labels={"year": "Estimated Year", "physical_quantity": "Physical Quantity"}, color_discrete_sequence=px.colors.qualitative.Set1)
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
+
 
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
         if not relevant_docs and not retrieved_nodes:
@@ -3003,9 +2687,9 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
 
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v17.1 - Unified Robust RAG + Query Viz", layout="wide")
-    st.markdown("# DECLARMIMA v17.1 - Unified Robust Vectorless RAG + Query-Driven Visualizations")
-    st.caption("Vectorless retrieval with semantic fallback. 35+ chart types. Query-aware contextual visualization. Concept normalization. Retrieval diagnostics.")
+    st.set_page_config(page_title="DECLARMIMA v17.1 - Unified Robust RAG", layout="wide")
+    st.markdown("# DECLARMIMA v17.1 - Unified Robust Vectorless RAG + Full Visualizations")
+    st.caption("Vectorless retrieval with semantic fallback. 35+ chart types. Concept normalization. Retrieval diagnostics.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -3086,6 +2770,7 @@ def run_streamlit():
             st.session_state.annotated_trees = annotated
             progress.progress(1.0)
             st.success(f"Indexed {len(trees)} documents with {len(all_items)} quantitative items")
+            # Initialize alias system
             if "doc_aliases" not in st.session_state:
                 st.session_state.doc_aliases = {}
             with st.expander("Detected Physical Quantities and Materials", expanded=True):
@@ -3203,8 +2888,9 @@ def run_streamlit():
                     extracted_values = raw_vals
             else:
                 if not active_prompt:
-                    st.info("Ask a question about the documents.")
-                    return
+                    st.info("Ask a question about the documents, or explore the indexed data below.")
+                    # FIX: Removed 'return' here so the visualization dashboard is still reachable
+                    # after indexing even when no query has been entered yet.
 
 
         st.markdown("---")
@@ -3221,110 +2907,6 @@ def run_streamlit():
             conclusion = synthesizer.generate_human_conclusion(active_prompt, report)
             st.markdown(conclusion)
 
-        # =============================================================================
-        # QUERY-AWARE VISUALIZATIONS
-        # =============================================================================
-        if active_prompt and st.session_state.get("cached_query_result"):
-            query_ctx = QueryContext.from_cache(st.session_state.cached_query_result)
-            
-            if query_ctx.has_data():
-                st.markdown("---")
-                st.subheader("🎯 Query-Focused Visualizations")
-                st.caption(f"**Focused on:** {active_prompt[:90]}{'...' if len(active_prompt)>90 else ''}")
-
-                viz_tabs = st.tabs([
-                    "🌐 Interactive Knowledge Graph", 
-                    "☀️ Sunburst Hierarchy", 
-                    "🔄 Provenance Flow",
-                    "📊 Quick Charts",
-                    "🌍 Global Dashboard"
-                ])
-
-                aliases = st.session_state.get("doc_aliases", {})
-                label_style = st.session_state.get("viz_label_style", "doi")
-                config = VisConfig(
-                    font_family="DejaVu Sans",
-                    font_size=st.session_state.get("viz_font_size", 10),
-                    title_font_size=st.session_state.get("viz_title_font_size", 14),
-                    label_font_size=st.session_state.get("viz_label_font_size", 9),
-                    default_colormap=st.session_state.get("viz_colormap", "viridis"),
-                    figure_dpi=st.session_state.get("viz_figure_dpi", 300),
-                    node_size_factor=st.session_state.get("viz_node_size_factor", 1.0),
-                    edge_alpha=st.session_state.get("viz_edge_alpha", 0.25),
-                    edge_width=st.session_state.get("viz_edge_width", 0.8),
-                    line_width=st.session_state.get("viz_line_width", 1.5),
-                    marker_size=st.session_state.get("viz_marker_size", 80),
-                    pyvis_physics_enabled=st.session_state.get("viz_pyvis_physics", True),
-                    pyvis_gravity=st.session_state.get("viz_pyvis_gravity", -1800),
-                    pyvis_spring_length=st.session_state.get("viz_pyvis_spring_length", 140),
-                    aliases=aliases,
-                    label_style=label_style
-                )
-                viz = PublicationVisualizationEngine(st.session_state.knowledge_graph, config=config)
-                df_all = viz.extract_dataframe(aliases=aliases, label_style=label_style)
-
-                with viz_tabs[0]:
-                    st.markdown("**Interactive Query Knowledge Graph** (Click pink value nodes for full context modal)")
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        if PYVIS_AVAILABLE:
-                            html_graph = viz.plot_query_knowledge_graph_pyvis(query_ctx)
-                            st.components.v1.html(html_graph, height=820, scrolling=True)
-                            st.download_button(
-                                "Download Interactive Graph HTML", 
-                                html_graph.encode('utf-8'), 
-                                "query_knowledge_graph.html", 
-                                mime="text/html",
-                                key="dl_pyvis_query"
-                            )
-                        else:
-                            fig_kg = viz.plot_query_knowledge_graph(query_ctx)
-                            st.pyplot(fig_kg)
-                            buf = BytesIO()
-                            fig_kg.savefig(buf, format="png", dpi=config.figure_dpi, bbox_inches='tight')
-                            st.download_button("Download Query KG (PNG)", buf.getvalue(), 
-                                             "query_knowledge_graph.png", mime="image/png", key="dl_kg")
-                    with col2:
-                        st.markdown("### Legend")
-                        st.markdown("""
-                        - **Purple** → Your Query (Center)
-                        - **Green** → Relevant Documents
-                        - **Blue** → Physical Quantities  
-                        - **Orange** → Materials/Alloys
-                        - **Pink** → Extracted Values (clickable)
-                        """)
-                        st.caption("**Tip:** Hover for tooltips • Click pink nodes for context")
-
-                with viz_tabs[1]:
-                    fig_sun = viz.plot_query_sunburst(query_ctx)
-                    st.plotly_chart(fig_sun, use_container_width=True)
-                    st.caption("This sunburst shows the hierarchy of quantities → materials → documents for your specific query.")
-
-                with viz_tabs[2]:
-                    st.subheader("🔄 Retrieval Provenance Flow")
-                    cached = st.session_state.cached_query_result
-                    fig_sankey = viz.plot_retrieval_sankey(
-                        active_prompt, 
-                        cached.get("relevant_docs", []), 
-                        cached.get("retrieved", []), 
-                        cached.get("items", [])
-                    )
-                    st.plotly_chart(fig_sankey, use_container_width=True)
-
-                with viz_tabs[3]:
-                    st.markdown("### Quick Relevant Charts")
-                    for pq in query_ctx.physical_quantities[:3]:
-                        fig = viz.plot_quantitative_histogram(df_all, pq)
-                        st.plotly_chart(fig, use_container_width=True)
-
-                with viz_tabs[4]:
-                    st.info("Full corpus visualizations are available in the dashboard below ↓")
-            else:
-                st.info("No quantitative data extracted for this query yet. Run a query to see query-focused visualizations.")
-
-        # =============================================================================
-        # GLOBAL DASHBOARD (Existing, now below query-focused section)
-        # =============================================================================
         if st.session_state.knowledge_graph and st.session_state.annotated_trees:
             st.markdown("---")
             with st.expander("Document Aliases & Label Editor", expanded=False):
@@ -3379,48 +2961,94 @@ def run_streamlit():
                 colormap = st.session_state.get("viz_colormap", "viridis")
                 tabs = st.tabs(["Histograms & Bars", "Pie & Donut", "Sunburst & Treemap", "Radar & Chord", "Contradiction & Consensus", "Networks", "Embedding Spaces", "Scatter & Violin", "Entity Explorer", "Retrieval Diagnostics"])
 
+                # FIX: Wrap each tab in try/except so one failing plot doesn't crash the whole dashboard
                 with tabs[0]:
-                    if selected_qty != "All":
-                        fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
-                        st.plotly_chart(fig_hist, use_container_width=True)
-                    fig_bar = viz.plot_quantities_bar(df_all, colormap)
-                    st.plotly_chart(fig_bar, use_container_width=True)
-                    fig_mat = viz.plot_material_counts(df_all, colormap)
-                    st.plotly_chart(fig_mat, use_container_width=True)
+                    try:
+                        if selected_qty != "All":
+                            fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
+                            st.plotly_chart(fig_hist, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Histogram error: {e}")
+                    try:
+                        fig_bar = viz.plot_quantities_bar(df_all, colormap)
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Bar chart error: {e}")
+                    try:
+                        fig_mat = viz.plot_material_counts(df_all, colormap)
+                        st.plotly_chart(fig_mat, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Material counts error: {e}")
 
                 with tabs[1]:
-                    fig_pie = viz.plot_quantity_distribution_pie(colormap)
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                    fig_donut = viz.plot_material_distribution_donut(colormap)
-                    st.plotly_chart(fig_donut, use_container_width=True)
+                    try:
+                        fig_pie = viz.plot_quantity_distribution_pie(colormap)
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Pie chart error: {e}")
+                    try:
+                        fig_donut = viz.plot_material_distribution_donut(colormap)
+                        st.plotly_chart(fig_donut, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Donut chart error: {e}")
 
                 with tabs[2]:
-                    if selected_qty != "All":
-                        fig_sun = viz.plot_quantitative_sunburst(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_sun, use_container_width=True)
-                    fig_sun_all = viz.plot_sunburst_hierarchy(df_all, colormap)
-                    st.plotly_chart(fig_sun_all, use_container_width=True)
-                    fig_treemap = viz.plot_treemap(colormap)
-                    st.plotly_chart(fig_treemap, use_container_width=True)
-                    fig_treemap_mat = viz.plot_treemap_materials(df_all, colormap)
-                    st.plotly_chart(fig_treemap_mat, use_container_width=True)
+                    try:
+                        if selected_qty != "All":
+                            fig_sun = viz.plot_quantitative_sunburst(df_all, selected_qty, colormap)
+                            st.plotly_chart(fig_sun, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Quantitative sunburst error: {e}")
+                    try:
+                        fig_sun_all = viz.plot_sunburst_hierarchy(df_all, colormap)
+                        st.plotly_chart(fig_sun_all, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Sunburst hierarchy error: {e}")
+                    try:
+                        fig_treemap = viz.plot_treemap(colormap)
+                        st.plotly_chart(fig_treemap, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Treemap error: {e}")
+                    try:
+                        fig_treemap_mat = viz.plot_treemap_materials(df_all, colormap)
+                        st.plotly_chart(fig_treemap_mat, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Material treemap error: {e}")
 
                 with tabs[3]:
-                    if selected_qty != "All":
-                        fig_radar_qty = viz.plot_quantitative_radar(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_radar_qty, use_container_width=True)
-                    fig_radar_mat = viz.plot_radar_by_material(colormap)
-                    st.plotly_chart(fig_radar_mat, use_container_width=True)
-                    fig_radar_doc = viz.plot_document_radar(colormap)
-                    st.plotly_chart(fig_radar_doc, use_container_width=True)
-                    fig_chord = viz.plot_chord_cooccurrence(None, st.session_state.get("viz_top_n", 25), colormap)
-                    st.plotly_chart(fig_chord, use_container_width=True)
+                    try:
+                        if selected_qty != "All":
+                            fig_radar_qty = viz.plot_quantitative_radar(df_all, selected_qty, colormap)
+                            st.plotly_chart(fig_radar_qty, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Quantity radar error: {e}")
+                    try:
+                        fig_radar_mat = viz.plot_radar_by_material(colormap)
+                        st.plotly_chart(fig_radar_mat, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Material radar error: {e}")
+                    try:
+                        fig_radar_doc = viz.plot_document_radar(colormap)
+                        st.plotly_chart(fig_radar_doc, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Document radar error: {e}")
+                    try:
+                        fig_chord = viz.plot_chord_cooccurrence(None, st.session_state.get("viz_top_n", 25), colormap)
+                        st.plotly_chart(fig_chord, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Chord diagram error: {e}")
 
                 with tabs[4]:
-                    fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_contra, use_container_width=True)
-                    fig_cons = viz.plot_consensus_waterfall(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_cons, use_container_width=True)
+                    try:
+                        fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
+                        st.plotly_chart(fig_contra, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Contradiction matrix error: {e}")
+                    try:
+                        fig_cons = viz.plot_consensus_waterfall(None if selected_qty=="All" else selected_qty, colormap)
+                        st.plotly_chart(fig_cons, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Consensus waterfall error: {e}")
 
                 with tabs[5]:
                     st.markdown("### Network Visualizations")
@@ -3428,49 +3056,67 @@ def run_streamlit():
 
                     with net_subtabs[0]:
                         if selected_qty != "All":
-                            fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.pyplot(fig_kg)
-                            buf = BytesIO()
-                            fig_kg.savefig(buf, format="png", dpi=config.figure_dpi)
-                            st.download_button("Download KG as PNG", buf.getvalue(), f"{selected_qty}_kg.png", mime="image/png")
+                            try:
+                                fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
+                                st.pyplot(fig_kg)
+                                buf = BytesIO()
+                                fig_kg.savefig(buf, format="png", dpi=config.figure_dpi)
+                                st.download_button("Download KG as PNG", buf.getvalue(), f"{selected_qty}_kg.png", mime="image/png")
+                            except Exception as e:
+                                st.error(f"Quantitative KG error: {e}")
                         else:
                             st.info("Select a specific quantity to see its knowledge graph.")
 
                     with net_subtabs[1]:
                         if PYVIS_AVAILABLE and selected_qty != "All":
-                            html_kg = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_kg, height=750, scrolling=True)
-                            st.download_button("Download PyVis KG HTML", html_kg.encode('utf-8'), f"{selected_qty}_kg_pyvis.html", mime="text/html")
+                            try:
+                                html_kg = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
+                                st.components.v1.html(html_kg, height=750, scrolling=True)
+                                st.download_button("Download PyVis KG HTML", html_kg.encode('utf-8'), f"{selected_qty}_kg_pyvis.html", mime="text/html")
+                            except Exception as e:
+                                st.error(f"PyVis KG error: {e}")
                         else:
                             st.info("Select a specific quantity and install pyvis for interactive graph.")
 
                     with net_subtabs[2]:
-                        fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_net)
-                        buf = BytesIO()
-                        fig_net.savefig(buf, format="png", dpi=config.figure_dpi)
-                        st.download_button("Download Network PNG", buf.getvalue(), "knowledge_network.png", mime="image/png")
+                        try:
+                            fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
+                            st.pyplot(fig_net)
+                            buf = BytesIO()
+                            fig_net.savefig(buf, format="png", dpi=config.figure_dpi)
+                            st.download_button("Download Network PNG", buf.getvalue(), "knowledge_network.png", mime="image/png")
+                        except Exception as e:
+                            st.error(f"Knowledge network error: {e}")
 
                     with net_subtabs[3]:
                         if PYVIS_AVAILABLE:
-                            html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_full, height=750, scrolling=True)
-                            st.download_button("Download PyVis Network HTML", html_full.encode('utf-8'), "knowledge_network_pyvis.html", mime="text/html")
+                            try:
+                                html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
+                                st.components.v1.html(html_full, height=750, scrolling=True)
+                                st.download_button("Download PyVis Network HTML", html_full.encode('utf-8'), "knowledge_network_pyvis.html", mime="text/html")
+                            except Exception as e:
+                                st.error(f"PyVis network error: {e}")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
 
                     with net_subtabs[4]:
-                        fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_static)
-                        buf = BytesIO()
-                        fig_static.savefig(buf, format="png", dpi=config.figure_dpi)
-                        st.download_button("Download Salience Network PNG", buf.getvalue(), "salience_network.png", mime="image/png")
+                        try:
+                            fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
+                            st.pyplot(fig_static)
+                            buf = BytesIO()
+                            fig_static.savefig(buf, format="png", dpi=config.figure_dpi)
+                            st.download_button("Download Salience Network PNG", buf.getvalue(), "salience_network.png", mime="image/png")
+                        except Exception as e:
+                            st.error(f"Static salience network error: {e}")
 
                     with net_subtabs[5]:
                         if PYVIS_AVAILABLE:
-                            html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_salience, height=750, scrolling=True)
-                            st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html")
+                            try:
+                                html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
+                                st.components.v1.html(html_salience, height=750, scrolling=True)
+                                st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html")
+                            except Exception as e:
+                                st.error(f"PyVis salience error: {e}")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
 
@@ -3478,37 +3124,58 @@ def run_streamlit():
                     if st.session_state.embedding_model is not None:
                         emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
                         if SKLEARN_AVAILABLE:
-                            fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
-                            if fig_tsne:
-                                st.pyplot(fig_tsne)
-                                buf = BytesIO()
-                                fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download t-SNE PNG", buf.getvalue(), "tsne.png", mime="image/png")
-                            fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
-                            if fig_pca:
-                                st.pyplot(fig_pca)
-                                buf = BytesIO()
-                                fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download PCA PNG", buf.getvalue(), "pca.png", mime="image/png")
+                            try:
+                                fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
+                                if fig_tsne:
+                                    st.pyplot(fig_tsne)
+                                    buf = BytesIO()
+                                    fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
+                                    st.download_button("Download t-SNE PNG", buf.getvalue(), "tsne.png", mime="image/png")
+                            except Exception as e:
+                                st.error(f"t-SNE error: {e}")
+                            try:
+                                fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
+                                if fig_pca:
+                                    st.pyplot(fig_pca)
+                                    buf = BytesIO()
+                                    fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
+                                    st.download_button("Download PCA PNG", buf.getvalue(), "pca.png", mime="image/png")
+                            except Exception as e:
+                                st.error(f"PCA error: {e}")
                         if UMAP_AVAILABLE:
-                            fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
-                            if fig_umap:
-                                st.pyplot(fig_umap)
-                                buf = BytesIO()
-                                fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download UMAP PNG", buf.getvalue(), "umap.png", mime="image/png")
+                            try:
+                                fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
+                                if fig_umap:
+                                    st.pyplot(fig_umap)
+                                    buf = BytesIO()
+                                    fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
+                                    st.download_button("Download UMAP PNG", buf.getvalue(), "umap.png", mime="image/png")
+                            except Exception as e:
+                                st.error(f"UMAP error: {e}")
                     else:
                         st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
 
                 with tabs[7]:
-                    fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
-                    st.plotly_chart(fig_scatter, use_container_width=True)
-                    fig_parallel = viz.plot_parallel_categories(df_all, colormap)
-                    st.plotly_chart(fig_parallel, use_container_width=True)
-                    fig_violin = viz.plot_violin(df_all, colormap)
-                    st.plotly_chart(fig_violin, use_container_width=True)
-                    fig_timeline = viz.plot_timeline(colormap)
-                    st.plotly_chart(fig_timeline, use_container_width=True)
+                    try:
+                        fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
+                        st.plotly_chart(fig_scatter, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Scatter plot error: {e}")
+                    try:
+                        fig_parallel = viz.plot_parallel_categories(df_all, colormap)
+                        st.plotly_chart(fig_parallel, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Parallel categories error: {e}")
+                    try:
+                        fig_violin = viz.plot_violin(df_all, colormap)
+                        st.plotly_chart(fig_violin, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Violin plot error: {e}")
+                    try:
+                        fig_timeline = viz.plot_timeline(colormap)
+                        st.plotly_chart(fig_timeline, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Timeline error: {e}")
 
                 with tabs[8]:
                     st.markdown("### Interactive Knowledge Graph Explorer")
@@ -3516,35 +3183,44 @@ def run_streamlit():
                     if entities:
                         selected_entity = st.selectbox("Choose entity", entities, key="kg_entity_select")
                         if selected_entity:
-                            consensus = st.session_state.knowledge_graph.get_entity_consensus(selected_entity)
-                            if consensus["found"]:
-                                st.markdown(f"#### Consensus for **{selected_entity}**")
-                                col1, col2, col3, col4, col5 = st.columns(5)
-                                col1.metric("Count", consensus["count"])
-                                col2.metric("Mean", f"{consensus['mean']:.2f} {consensus['unit']}")
-                                col3.metric("Std Dev", f"{consensus['std']:.2f}")
-                                col4.metric("Min", f"{consensus['range'][0]:.2f}")
-                                col5.metric("Max", f"{consensus['range'][1]:.2f}")
-                                st.markdown(f"**Documents:** {', '.join(consensus['documents'])}")
-                            else:
-                                st.info(f"No quantitative values found for '{selected_entity}'.")
-                            contradictions = st.session_state.knowledge_graph.get_entity_contradictions(selected_entity, threshold_factor=1.5)
-                            if contradictions:
-                                st.markdown("#### Detected Contradictions")
-                                for c in contradictions:
-                                    st.warning(f"**{c['entity']}**: {c['doc_a']} ({c['value_a']:.2f}) vs {c['doc_b']} ({c['value_b']:.2f}) - ratio {c['ratio']:.1f}x ({c['severity']})")
-                            else:
-                                st.success("No significant contradictions detected for this entity.")
-                            items_for_entity = []
-                            for doc_id, graph in st.session_state.knowledge_graph.doc_graphs.items():
-                                for item in graph["all_items"]:
-                                    if (item.get("material") == selected_entity or item.get("physical_quantity") == selected_entity or item.get("method") == selected_entity or item.get("parameter_name") == selected_entity):
-                                        items_for_entity.append(item)
-                            if items_for_entity:
-                                df_entity = pd.DataFrame([{"Doc": i["doc_source"], "Page": i.get("page",0), "Type": i.get("item_type",""), "Content": i.get("content","")[:150], "Value": i.get("value",""), "Unit": i.get("unit",""), "Confidence": i.get("confidence",0)} for i in items_for_entity])
-                                st.dataframe(df_entity, use_container_width=True)
-                            else:
-                                st.info("No extracted items found for this entity.")
+                            try:
+                                consensus = st.session_state.knowledge_graph.get_entity_consensus(selected_entity)
+                                if consensus["found"]:
+                                    st.markdown(f"#### Consensus for **{selected_entity}**")
+                                    col1, col2, col3, col4, col5 = st.columns(5)
+                                    col1.metric("Count", consensus["count"])
+                                    col2.metric("Mean", f"{consensus['mean']:.2f} {consensus['unit']}")
+                                    col3.metric("Std Dev", f"{consensus['std']:.2f}")
+                                    col4.metric("Min", f"{consensus['range'][0]:.2f}")
+                                    col5.metric("Max", f"{consensus['range'][1]:.2f}")
+                                    st.markdown(f"**Documents:** {', '.join(consensus['documents'])}")
+                                else:
+                                    st.info(f"No quantitative values found for '{selected_entity}'.")
+                            except Exception as e:
+                                st.error(f"Consensus error: {e}")
+                            try:
+                                contradictions = st.session_state.knowledge_graph.get_entity_contradictions(selected_entity, threshold_factor=1.5)
+                                if contradictions:
+                                    st.markdown("#### Detected Contradictions")
+                                    for c in contradictions:
+                                        st.warning(f"**{c['entity']}**: {c['doc_a']} ({c['value_a']:.2f}) vs {c['doc_b']} ({c['value_b']:.2f}) - ratio {c['ratio']:.1f}x ({c['severity']})")
+                                else:
+                                    st.success("No significant contradictions detected for this entity.")
+                            except Exception as e:
+                                st.error(f"Contradiction error: {e}")
+                            try:
+                                items_for_entity = []
+                                for doc_id, graph in st.session_state.knowledge_graph.doc_graphs.items():
+                                    for item in graph["all_items"]:
+                                        if (item.get("material") == selected_entity or item.get("physical_quantity") == selected_entity or item.get("method") == selected_entity or item.get("parameter_name") == selected_entity):
+                                            items_for_entity.append(item)
+                                if items_for_entity:
+                                    df_entity = pd.DataFrame([{"Doc": i["doc_source"], "Page": i.get("page",0), "Type": i.get("item_type",""), "Content": i.get("content","")[:150], "Value": i.get("value",""), "Unit": i.get("unit",""), "Confidence": i.get("confidence",0)} for i in items_for_entity])
+                                    st.dataframe(df_entity, use_container_width=True)
+                                else:
+                                    st.info("No extracted items found for this entity.")
+                            except Exception as e:
+                                st.error(f"Entity table error: {e}")
                     else:
                         st.info("No entities extracted yet. Run a query or re-index.")
 
@@ -3568,51 +3244,72 @@ def run_streamlit():
                     st.caption(f"Current config: window={window_size}, max_chars={max_chars_viz}, max_results={max_results_viz}, conf>={conf_thresh_viz}")
 
                     st.markdown("#### Retrieval Provenance Flow")
-                    fig_sankey = viz.plot_retrieval_sankey(active_prompt, rel_docs, retrieved_nodes, raw_items)
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    try:
+                        fig_sankey = viz.plot_retrieval_sankey(active_prompt, rel_docs, retrieved_nodes, raw_items)
+                        st.plotly_chart(fig_sankey, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Sankey error: {e}")
 
                     st.markdown("#### Document Filter Scores")
-                    fig_doc_scores = viz.plot_doc_filter_scores(rel_docs, len(st.session_state.annotated_trees))
-                    st.plotly_chart(fig_doc_scores, use_container_width=True)
+                    try:
+                        fig_doc_scores = viz.plot_doc_filter_scores(rel_docs, len(st.session_state.annotated_trees))
+                        st.plotly_chart(fig_doc_scores, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Doc filter scores error: {e}")
 
                     st.markdown("#### Page Coverage Heatmap")
-                    fig_coverage = viz.plot_page_coverage_heatmap(st.session_state.annotated_trees, retrieved_nodes)
-                    st.plotly_chart(fig_coverage, use_container_width=True)
+                    try:
+                        fig_coverage = viz.plot_page_coverage_heatmap(st.session_state.annotated_trees, retrieved_nodes)
+                        st.plotly_chart(fig_coverage, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Coverage heatmap error: {e}")
 
                     st.markdown("#### Node Selection Confidence")
-                    fig_conf = viz.plot_node_confidence_distribution(retrieved_nodes)
-                    st.plotly_chart(fig_conf, use_container_width=True)
+                    try:
+                        fig_conf = viz.plot_node_confidence_distribution(retrieved_nodes)
+                        st.plotly_chart(fig_conf, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Confidence distribution error: {e}")
 
                     st.markdown("#### Hierarchical Tree Explorer")
                     tree_doc_options = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in st.session_state.annotated_trees)))
                     if tree_doc_options:
                         selected_tree_doc = st.selectbox("Select document to visualize", tree_doc_options, key="tree_doc_select")
-                        fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
-                        if fig_tree:
-                            st.pyplot(fig_tree)
-                            buf = BytesIO()
-                            fig_tree.savefig(buf, format="png", dpi=config.figure_dpi)
-                            st.download_button("Download Tree PNG", buf.getvalue(), f"{selected_tree_doc}_tree.png", mime="image/png")
-                        else:
-                            st.info("No tree data available for this document.")
+                        try:
+                            fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
+                            if fig_tree:
+                                st.pyplot(fig_tree)
+                                buf = BytesIO()
+                                fig_tree.savefig(buf, format="png", dpi=config.figure_dpi)
+                                st.download_button("Download Tree PNG", buf.getvalue(), f"{selected_tree_doc}_tree.png", mime="image/png")
+                            else:
+                                st.info("No tree data available for this document.")
+                        except Exception as e:
+                            st.error(f"Tree highlight error: {e}")
                     else:
                         st.info("No tree data available.")
 
                     if st.session_state.embedding_model is not None:
                         st.markdown("#### Semantic vs Vectorless Score Comparison")
                         emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
-                        fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
-                        if fig_comp:
-                            st.plotly_chart(fig_comp, use_container_width=True)
-                        else:
-                            st.info("Could not compute semantic scores for comparison.")
+                        try:
+                            fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
+                            if fig_comp:
+                                st.plotly_chart(fig_comp, use_container_width=True)
+                            else:
+                                st.info("Could not compute semantic scores for comparison.")
+                        except Exception as e:
+                            st.error(f"Semantic comparison error: {e}")
 
                     st.markdown("#### Raw Retrieval Metadata")
                     if retrieved_nodes:
-                        df_ret = pd.DataFrame([{"Document": r.get("doc_id", ""), "Node ID": r.get("node_id", ""), "Section": r.get("section_title", ""), "Page": r.get("page_start", 0), "Confidence": r.get("confidence", 0), "Reasoning": r.get("selection_reasoning", "")[:100]} for r in retrieved_nodes])
-                        st.dataframe(df_ret, use_container_width=True)
-                        csv_ret = df_ret.to_csv(index=False).encode('utf-8')
-                        st.download_button("Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv")
+                        try:
+                            df_ret = pd.DataFrame([{"Document": r.get("doc_id", ""), "Node ID": r.get("node_id", ""), "Section": r.get("section_title", ""), "Page": r.get("page_start", 0), "Confidence": r.get("confidence", 0), "Reasoning": r.get("selection_reasoning", "")[:100]} for r in retrieved_nodes])
+                            st.dataframe(df_ret, use_container_width=True)
+                            csv_ret = df_ret.to_csv(index=False).encode('utf-8')
+                            st.download_button("Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv")
+                        except Exception as e:
+                            st.error(f"Retrieval metadata error: {e}")
                     else:
                         st.info("No retrieved node metadata available.")
             else:

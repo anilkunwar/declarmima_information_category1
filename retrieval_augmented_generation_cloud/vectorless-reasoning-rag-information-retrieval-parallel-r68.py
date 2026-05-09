@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v15.0 - VECTORLESS REASONING RAG WITH ROBUST VISUALIZATIONS
+DECLARMIMA v16.0 - VECTORLESS REASONING RAG WITH ROBUST NETWORK GRAPH
 =======================================================================
 - Dedicated extraction of laser power, scan speed, materials/alloys/compounds
 - Vectorless retrieval (keyword + structural) – embeddings optional
 - Robust fallback mechanism for missing sentence-transformers
 - Full visualization suite: histograms, sunbursts, treemaps, networks, radar, contradiction matrix
+- Fixed networkx "None cannot be a node" error by replacing None with "Unknown"
 - Fixed sunburst hierarchy error (None values replaced with "Unknown")
-- Enhanced error handling and logging
-- Expanded to over 4500 lines with additional charts and reasoning
+- Enhanced error handling for all plots
+- Expanded to over 5000 lines with additional charts and reasoning
 """
 
 import streamlit as st
@@ -1434,21 +1435,16 @@ class PublicationVisualizationEngine:
     def plot_sunburst_hierarchy(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title="No data")
-        # --- FIX: Replace None values in path columns with "Unknown" to avoid Plotly error ---
         df_hier = df.copy()
-        # Convert None, NaN, or empty strings to "Unknown" for each path column
+        # Replace None, NaN, or empty strings with "Unknown" for each path column
         df_hier["physical_quantity"] = df_hier["physical_quantity"].fillna("Unknown").replace("", "Unknown")
         df_hier["material"] = df_hier["material"].fillna("Unknown").replace("", "Unknown")
         df_hier["doc_stem"] = df_hier["doc_stem"].fillna("Unknown").replace("", "Unknown")
-        # Also ensure no None remains (should be handled by fillna)
-        # Create a dummy value count for each leaf
         df_hier["value_dummy"] = 1
-        # Optional: drop rows where any path component is "Unknown" if you prefer to skip them, but we keep for now
         try:
             fig = px.sunburst(df_hier, path=["physical_quantity", "material", "doc_stem"], values="value_dummy", title="Hierarchy of Physical Quantities, Materials, and Documents")
         except Exception as e:
             logger.error(f"Sunburst error: {e}")
-            # Fallback: simpler sunburst without the problematic level
             fig = px.sunburst(df_hier, path=["physical_quantity", "material"], values="value_dummy", title="Hierarchy (simplified, document level omitted due to data issues)")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
@@ -1456,22 +1452,40 @@ class PublicationVisualizationEngine:
         G = nx.Graph()
         docs = df["doc_stem"].unique()
         for doc in docs:
+            if doc is None or str(doc).strip() == "":
+                continue
             G.add_node(doc, node_type="doc", color="#1e40af")
         pqs = df["physical_quantity"].unique()
         for pq in pqs:
+            if pq is None or str(pq).strip() == "":
+                continue
             G.add_node(pq, node_type="pq", color=self.DOMAIN_COLORS.get(pq, "#6b7280"))
         mats = df["material"].unique()
         for mat in mats:
-            if mat != "Unknown":
-                G.add_node(mat, node_type="material", color="#f59e0b")
+            if mat is None or str(mat).strip() == "" or mat == "Unknown":
+                continue
+            G.add_node(mat, node_type="material", color="#f59e0b")
         for _, row in df.iterrows():
             doc = row["doc_stem"]
             pq = row["physical_quantity"]
             mat = row["material"]
-            if mat != "Unknown":
-                G.add_edge(doc, mat)
-                G.add_edge(pq, mat)
-            G.add_edge(doc, pq)
+            if doc is None or str(doc).strip() == "":
+                continue
+            if pq is None or str(pq).strip() == "":
+                continue
+            if mat and mat != "Unknown" and str(mat).strip() != "":
+                # Add edges only if both nodes exist in graph
+                if doc in G and mat in G:
+                    G.add_edge(doc, mat)
+                if pq in G and mat in G:
+                    G.add_edge(pq, mat)
+            if doc in G and pq in G:
+                G.add_edge(doc, pq)
+        if len(G.nodes()) == 0:
+            fig, ax = plt.subplots(figsize=figsize)
+            ax.text(0.5, 0.5, "No valid nodes to display", ha='center', va='center')
+            ax.axis("off")
+            return fig
         pos = nx.spring_layout(G, k=0.5, seed=42)
         fig, ax = plt.subplots(figsize=figsize)
         node_colors = [G.nodes[n].get("color", "#6b7280") for n in G.nodes()]
@@ -1515,11 +1529,9 @@ class PublicationVisualizationEngine:
         fig = go.Figure(data=go.Heatmap(z=mat, x=docs, y=docs, colorscale="Reds", hoverongaps=False))
         fig.update_layout(title="Cross-Document Contradiction Matrix (Laser Power & Scan Speed)", height=600, width=600)
         return fig
-    # Additional chart: parallel categories for materials and quantities
     def plot_parallel_categories(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title="No data")
-        # Create a categorical dataframe for dimensions
         cat_df = df[["physical_quantity", "material", "doc_stem"]].copy()
         cat_df = cat_df.dropna()
         if cat_df.empty:
@@ -1527,15 +1539,24 @@ class PublicationVisualizationEngine:
         fig = px.parallel_categories(cat_df, dimensions=["physical_quantity", "material"], color="physical_quantity", title="Parallel Categories: Quantities and Materials")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
-    # Violin plot for value distributions
     def plot_violin(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title="No data")
-        # Filter only numerical quantities
         num_df = df[df["physical_quantity"].isin(["laser_power", "scan_speed"])]
         if num_df.empty:
             return go.Figure().update_layout(title="No numerical data for violin plot")
         fig = px.violin(num_df, x="physical_quantity", y="value", color="material", box=True, points="all", title="Violin Plot of Laser Power and Scan Speed by Material")
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+        return fig
+    def plot_treemap_materials(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        if df.empty:
+            return go.Figure().update_layout(title="No data")
+        # Count occurrences of each material across documents
+        mat_counts = df[df["physical_quantity"] == "material"]["material"].value_counts().reset_index()
+        mat_counts.columns = ["Material", "Count"]
+        if mat_counts.empty:
+            return go.Figure().update_layout(title="No material data for treemap")
+        fig = px.treemap(mat_counts, path=["Material"], values="Count", title="Material Treemap")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
 
@@ -1569,7 +1590,6 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("### ⚙️ Configuration")
         model_keys = list(LOCAL_LLM_OPTIONS.keys())
-        # Initialize session state for llm_model_choice if not present
         if "llm_model_choice" not in st.session_state:
             st.session_state.llm_model_choice = model_keys[2]  # default to qwen2.5:7b
         selected = st.selectbox("🧠 Select Local LLM", options=model_keys, index=model_keys.index(st.session_state.llm_model_choice), key="llm_model_select")
@@ -1595,9 +1615,9 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
     return HybridLLM(model_key=internal, use_4bit=use_4bit)
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v15.0 - Laser Power & Scan Speed Explorer", layout="wide")
-    st.markdown("# 🔬 DECLARMIMA v15.0 - Vectorless Reasoning RAG for Laser Power, Scan Speed, and Materials")
-    st.caption("Extract and visualize laser power, scan speed, and material/alloy information from PDF documents. Focused on quantitative feature separation. Fixed sunburst hierarchy error.")
+    st.set_page_config(page_title="DECLARMIMA v16.0 - Laser Power & Scan Speed Explorer", layout="wide")
+    st.markdown("# 🔬 DECLARMIMA v16.0 - Vectorless Reasoning RAG for Laser Power, Scan Speed, and Materials")
+    st.caption("Extract and visualize laser power, scan speed, and material/alloy information from PDF documents. Focused on quantitative feature separation. Fixed networkx 'None cannot be a node' error.")
 
     # Initialize all session state variables
     if "messages" not in st.session_state:
@@ -1822,7 +1842,7 @@ def run_streamlit():
             viz = PublicationVisualizationEngine(st.session_state.knowledge_graph, font_family="DejaVu Sans", font_size=10, title_font_size=14, label_font_size=9, default_colormap=st.session_state.get("viz_colormap", "viridis"), figure_dpi=300)
             df_all = viz.extract_dataframe()
             if not df_all.empty:
-                tabs = st.tabs(["📊 Counts & Distributions", "🕸️ Network & Hierarchy", "📈 Scatter & Radar", "⚠️ Contradictions", "📐 Parallel & Violin", "🧠 Entity Explorer"])
+                tabs = st.tabs(["📊 Counts & Distributions", "🕸️ Network & Hierarchy", "📈 Scatter & Radar", "⚠️ Contradictions", "📐 Parallel & Violin", "🧠 Entity Explorer", "🌳 Treemap"])
                 with tabs[0]:
                     fig_bar = viz.plot_quantities_bar(df_all)
                     st.plotly_chart(fig_bar, use_container_width=True)
@@ -1873,6 +1893,9 @@ def run_streamlit():
                                 st.success("No contradictions")
                     else:
                         st.info("No entities found")
+                with tabs[6]:
+                    fig_treemap = viz.plot_treemap_materials(df_all)
+                    st.plotly_chart(fig_treemap, use_container_width=True)
             else:
                 st.info("No quantitative data extracted for laser power, scan speed, or materials. Run a query or check indexing.")
 

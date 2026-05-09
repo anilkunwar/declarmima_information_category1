@@ -20,3 +20,4 @@ seaborn
 pyvis
 litellm
 umap-learn 
+bokeh

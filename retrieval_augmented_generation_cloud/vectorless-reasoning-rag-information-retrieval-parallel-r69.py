@@ -1517,30 +1517,20 @@ class PublicationVisualizationEngine:
         unit = subset["unit"].iloc[0] if not subset.empty else ""
         fig.update_layout(barmode='group', title=f"{quantity_name.replace('_',' ').title()} Values by {group_by.title()}", xaxis_title=group_by.title(), yaxis_title=f"{quantity_name.replace('_',' ').title()} ({unit})", font=dict(family=self.font_family, size=self.font_size), height=500)
         return fig
-    #
     def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity: str,
-                               colormap: Optional[str] = None) -> go.Figure:
+                                   colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure()
         subset = df[df["physical_quantity"] == quantity].copy()
         if subset.empty:
             return go.Figure()
-        
-        # Convert None/NaN to "Unknown" for material and doc_stem
         subset["material"] = subset["material"].fillna("Unknown").replace("", "Unknown")
         subset["doc_stem"] = subset["doc_stem"].fillna("Unknown").replace("", "Unknown")
-        
-        # Drop rows where material or doc_stem is still None (shouldn't happen after fillna, but safe)
         subset = subset.dropna(subset=["material", "doc_stem"])
-        
-        # Remove rows with missing value
         subset = subset.dropna(subset=["value"])
-        
-        # Create value bins
         n_bins = min(5, max(2, len(subset)//3))
         subset["value_range"] = pd.cut(subset["value"], bins=n_bins, precision=1).astype(str)
         subset["value_range"] = subset["value_range"].fillna("unknown")
-        
         fig = px.sunburst(
             subset,
             path=["material", "doc_stem", "value_range"],
@@ -1551,8 +1541,6 @@ class PublicationVisualizationEngine:
         )
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
-    
-    
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, figsize: Tuple[int,int] = (14,12)) -> plt.Figure:
         G = nx.Graph()
         hub = f"{quantity}_hub"
@@ -1692,17 +1680,14 @@ class PublicationVisualizationEngine:
         fig = px.treemap(agg, path=["physical_quantity", "material"], values="count", title="Entity Treemap: Quantities and Materials", color="count", color_continuous_scale=self._get_plotly_colorscale(colormap))
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
-    #
     def _get_context_embeddings(self, embedding_fn: Callable, df: pd.DataFrame,
-                            quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
-        """Return embeddings and filtered DataFrame where embeddings succeeded."""
+                                quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
         if quantity:
             df = df[df["physical_quantity"] == quantity].copy()
         else:
             df = df.copy()
         if len(df) < 5:
-            return np.array([]), df.iloc[0:0]  # empty
-        
+            return np.array([]), df.iloc[0:0]
         contexts = df["context"].fillna("").tolist()
         embs = []
         valid_indices = []
@@ -1718,7 +1703,6 @@ class PublicationVisualizationEngine:
             return np.array([]), df.iloc[0:0]
         df_valid = df.iloc[valid_indices].copy()
         return np.array(embs), df_valid
-    
     def plot_tsne(self, embedding_fn: Callable, quantity: Optional[str] = None,
                   colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
         if not SKLEARN_AVAILABLE:
@@ -1736,7 +1720,6 @@ class PublicationVisualizationEngine:
             mask = df_use["material"] == mat
             color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
             ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-        # Annotate using zip to ensure alignment
         for (_, row), coord in zip(df_use.iterrows(), coords):
             ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]),
                         fontsize=self.label_font_size-1, alpha=0.8)
@@ -1746,7 +1729,6 @@ class PublicationVisualizationEngine:
         ax.axis("off")
         plt.tight_layout()
         return fig
-    
     def plot_pca(self, embedding_fn: Callable, quantity: Optional[str] = None,
                  colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
         if not SKLEARN_AVAILABLE:
@@ -1776,7 +1758,6 @@ class PublicationVisualizationEngine:
         ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})")
         plt.tight_layout()
         return fig
-    
     def plot_umap(self, embedding_fn: Callable, quantity: Optional[str] = None,
                   colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
         if not UMAP_AVAILABLE:
@@ -1803,29 +1784,21 @@ class PublicationVisualizationEngine:
         ax.axis("off")
         plt.tight_layout()
         return fig
-    
-
-
     # ============================================================================
     # RETRIEVAL DIAGNOSTICS VISUALIZATIONS
     # ============================================================================
-
     def plot_retrieval_sankey(self, query: str, relevant_docs: List[Tuple[str, float]],
-                             retrieved_nodes: List[Dict], extracted_items: List[Dict]) -> go.Figure:
-        """Plot a Sankey diagram showing the flow from query to documents to nodes to extractions."""
+                              retrieved_nodes: List[Dict], extracted_items: List[Dict]) -> go.Figure:
         if not relevant_docs and not retrieved_nodes:
             return go.Figure().update_layout(title="No retrieval data available")
-
         labels = ["Query"]
         label_index = {"Query": 0}
-
         doc_nodes = []
         for doc_name, score in relevant_docs:
             doc_label = f"{Path(doc_name).stem}\n({score:.2f})"
             label_index[doc_name] = len(labels)
             labels.append(doc_label)
             doc_nodes.append(doc_name)
-
         node_labels = []
         for r in retrieved_nodes:
             doc_id = r.get("doc_id", "unknown")
@@ -1835,12 +1808,10 @@ class PublicationVisualizationEngine:
                 label_index[key] = len(labels)
                 labels.append(f"{Path(doc_id).stem}:{node_id[:15]}")
                 node_labels.append(key)
-
         pq_groups = defaultdict(list)
         for item in extracted_items:
             pq = item.get("physical_quantity", "unknown")
             pq_groups[pq].append(item)
-
         pq_nodes = []
         for pq, items in pq_groups.items():
             key = f"pq:{pq}"
@@ -1848,19 +1819,15 @@ class PublicationVisualizationEngine:
                 label_index[key] = len(labels)
                 labels.append(f"{pq} ({len(items)})")
                 pq_nodes.append(key)
-
         label_index["Answer"] = len(labels)
         labels.append("Answer")
-
         sources = []
         targets = []
         values = []
-
         for doc_name, score in relevant_docs:
             sources.append(0)
             targets.append(label_index[doc_name])
             values.append(max(1, int(score * 10)))
-
         for r in retrieved_nodes:
             doc_id = r.get("doc_id")
             node_id = r.get("node_id", "unknown")
@@ -1870,7 +1837,6 @@ class PublicationVisualizationEngine:
                 sources.append(label_index[doc_id])
                 targets.append(label_index[key])
                 values.append(max(1, int(conf * 10)))
-
         node_to_pq = defaultdict(set)
         for item in extracted_items:
             pq = item.get("physical_quantity", "unknown")
@@ -1880,19 +1846,16 @@ class PublicationVisualizationEngine:
                     node_id = r.get("node_id", "unknown")
                     key = f"{doc_id}:{node_id}"
                     node_to_pq[key].add(f"pq:{pq}")
-
         for node_key, pq_set in node_to_pq.items():
             for pq_key in pq_set:
                 if node_key in label_index and pq_key in label_index:
                     sources.append(label_index[node_key])
                     targets.append(label_index[pq_key])
                     values.append(1)
-
         for pq_key in pq_nodes:
             sources.append(label_index[pq_key])
             targets.append(label_index["Answer"])
             values.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
-
         fig = go.Figure(data=[go.Sankey(
             node=dict(
                 pad=15, thickness=20,
@@ -1907,12 +1870,9 @@ class PublicationVisualizationEngine:
             font=dict(family=self.font_family, size=self.font_size)
         )
         return fig
-
     def plot_page_coverage_heatmap(self, doc_trees: List[Dict], retrieved_nodes: List[Dict]) -> go.Figure:
-        """Heatmap showing which pages were retrieved per document."""
         if not doc_trees or not retrieved_nodes:
             return go.Figure().update_layout(title="No coverage data")
-
         doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))
         max_pages = 0
         doc_page_counts = {}
@@ -1928,7 +1888,6 @@ class PublicationVisualizationEngine:
             collect_pages(tree)
             doc_page_counts[doc_id] = max(pages) if pages else 1
             max_pages = max(max_pages, doc_page_counts[doc_id])
-
         coverage = np.zeros((len(doc_names), max_pages))
         for r in retrieved_nodes:
             doc_id = r.get("doc_id")
@@ -1937,7 +1896,6 @@ class PublicationVisualizationEngine:
                 start = r.get("page_start", 1) - 1
                 for p in range(max(0, start - 1), min(max_pages, start + 3)):
                     coverage[doc_idx, p] = 1
-
         doc_labels = [Path(d).stem for d in doc_names]
         fig = go.Figure(data=go.Heatmap(
             z=coverage, x=list(range(1, max_pages + 1)), y=doc_labels,
@@ -1951,12 +1909,9 @@ class PublicationVisualizationEngine:
             height=max(400, len(doc_names) * 40)
         )
         return fig
-
     def plot_node_confidence_distribution(self, retrieved_nodes: List[Dict]) -> go.Figure:
-        """Histogram of node selection confidence scores."""
         if not retrieved_nodes:
             return go.Figure().update_layout(title="No node confidence data")
-
         confidences = [r.get("confidence", 0) for r in retrieved_nodes]
         fig = go.Figure()
         fig.add_trace(go.Histogram(
@@ -1969,17 +1924,13 @@ class PublicationVisualizationEngine:
             font=dict(family=self.font_family, size=self.font_size), showlegend=False
         )
         return fig
-
     def plot_doc_filter_scores(self, relevant_docs: List[Tuple[str, float]],
-                              all_doc_count: int) -> go.Figure:
-        """Bar chart of two-stage retrieval scores per document."""
+                               all_doc_count: int) -> go.Figure:
         if not relevant_docs:
             return go.Figure().update_layout(title="No document filter scores")
-
         docs = [Path(d).stem for d, _ in relevant_docs]
         scores = [s for _, s in relevant_docs]
         colors = ["#10b981" if s > 0.5 else "#f59e0b" if s > 0.2 else "#ef4444" for s in scores]
-
         fig = go.Figure(go.Bar(
             x=docs, y=scores, marker_color=colors,
             text=[f"{s:.3f}" for s in scores], textposition="outside"
@@ -1992,14 +1943,11 @@ class PublicationVisualizationEngine:
             font=dict(family=self.font_family, size=self.font_size), height=450
         )
         return fig
-
     def plot_retrieval_tree_highlight(self, annotated_trees: List[Dict],
                                       retrieved_nodes: List[Dict],
                                       doc_id: Optional[str] = None) -> Optional[plt.Figure]:
-        """Draw hierarchical tree with retrieved nodes highlighted."""
         if not annotated_trees:
             return None
-
         target_tree = None
         for tree in annotated_trees:
             tid = tree.get("doc_id", tree.get("doc_name", "unknown"))
@@ -2011,13 +1959,11 @@ class PublicationVisualizationEngine:
             doc_id = target_tree.get("doc_id", target_tree.get("doc_name", "unknown"))
         if not target_tree:
             return None
-
         G = nx.DiGraph()
         retrieved_node_ids = set()
         for r in retrieved_nodes:
             if r.get("doc_id") == doc_id:
                 retrieved_node_ids.add(r.get("node_id"))
-
         def add_nodes(node, parent=None):
             nid = node.get("node_id", "root")
             title = node.get("title", "Unknown")
@@ -2028,26 +1974,20 @@ class PublicationVisualizationEngine:
                 G.add_edge(parent, nid)
             for child in node.get("nodes", []):
                 add_nodes(child, nid)
-
         add_nodes(target_tree)
         if len(G.nodes()) < 2:
             return None
-
         pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
         fig, ax = plt.subplots(figsize=(14, 10))
-
         normal_nodes = [n for n, d in G.nodes(data=True) if not d.get("retrieved") and not d.get("has_quant")]
         quant_nodes = [n for n, d in G.nodes(data=True) if d.get("has_quant") and not d.get("retrieved")]
         retrieved_nodes_list = [n for n, d in G.nodes(data=True) if d.get("retrieved")]
-
         nx.draw_networkx_nodes(G, pos, nodelist=normal_nodes, node_color="#e5e7eb", node_size=400, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=quant_nodes, node_color="#93c5fd", node_size=600, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=retrieved_nodes_list, node_color="#ef4444", node_size=900, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.3, arrows=True, arrowsize=10, ax=ax)
-
         labels = {n: d["label"] for n, d in G.nodes(data=True)}
         nx.draw_networkx_labels(G, pos, labels, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-
         from matplotlib.patches import Patch
         legend_elements = [
             Patch(facecolor="#ef4444", label="Retrieved Node"),
@@ -2060,28 +2000,22 @@ class PublicationVisualizationEngine:
         ax.axis("off")
         plt.tight_layout()
         return fig
-
     def plot_semantic_vs_vectorless(self, query: str,
                                     relevant_docs: List[Tuple[str, float]],
                                     annotated_trees: List[Dict],
                                     embedding_fn: Optional[Callable] = None) -> Optional[go.Figure]:
-        """Compare semantic embedding scores vs keyword/heuristic scores when both available."""
         if not relevant_docs or not embedding_fn:
             return None
-
         doc_names = [d for d, _ in relevant_docs]
         keyword_scores = [s for _, s in relevant_docs]
-
         doc_texts = []
         for tree in annotated_trees:
             tid = tree.get("doc_id", tree.get("doc_name", "unknown"))
             if tid in doc_names:
                 text = tree.get("summary", "") + " " + str(tree.get("metadata", {}))
                 doc_texts.append(text)
-
         if not doc_texts or not any(doc_texts):
             return None
-
         try:
             query_emb = embedding_fn(query)
             doc_embs = [embedding_fn(t) for t in doc_texts]
@@ -2090,7 +2024,6 @@ class PublicationVisualizationEngine:
             semantic_scores = [cosine(query_emb, de) for de in doc_embs]
         except Exception:
             return None
-
         fig = go.Figure()
         doc_labels = [Path(d).stem for d in doc_names]
         fig.add_trace(go.Scatter(
@@ -2111,7 +2044,6 @@ class PublicationVisualizationEngine:
             font=dict(family=self.font_family, size=self.font_size), height=500
         )
         return fig
-
 
 # ============================================================================
 # STREAMLIT UI WITH ENHANCED KNOWLEDGE GRAPH INTERACTION
@@ -2390,7 +2322,17 @@ def run_streamlit():
                 selected_qty = st.selectbox("Filter by physical quantity", options=["All"] + sorted(df_all["physical_quantity"].unique()), key="viz_qty_filter")
                 group_by = st.selectbox("Group by", ["material", "doc_stem"], key="viz_group_by")
                 colormap = st.session_state.get("viz_colormap", "viridis")
-                tabs = st.tabs(["📊 Histogram & Consensus", "🕸️ Knowledge Graph", "☀️ Sunburst & Treemap", "📡 Radar & Timeline", "⚡ Contradiction Matrix", "🔬 Embedding Spaces", "🔢 Quantitative Explorer", "🧠 Entity Explorer (KG Interaction)", "🔍 Retrieval Diagnostics"])
+                tabs = st.tabs([
+                    "📊 Histogram & Consensus",
+                    "🕸️ Knowledge Graph",
+                    "☀️ Sunburst & Treemap",
+                    "📡 Radar & Timeline",
+                    "⚡ Contradiction Matrix",
+                    "🔬 Embedding Spaces",
+                    "🔢 Quantitative Explorer",
+                    "🧠 Entity Explorer (KG Interaction)",
+                    "🔍 Retrieval Diagnostics"
+                ])
                 with tabs[0]:
                     if selected_qty != "All":
                         fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
@@ -2420,7 +2362,10 @@ def run_streamlit():
                     fig_timeline = viz.plot_timeline(colormap)
                     st.plotly_chart(fig_timeline, use_container_width=True)
                 with tabs[4]:
-                    fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
+                    if selected_qty != "All":
+                        fig_contra = viz.plot_contradiction_matrix(selected_qty, colormap)
+                    else:
+                        fig_contra = viz.plot_contradiction_matrix(None, colormap)
                     st.plotly_chart(fig_contra, use_container_width=True)
                 with tabs[5]:
                     if st.session_state.embedding_model is not None:
@@ -2457,7 +2402,6 @@ def run_streamlit():
                     if entities:
                         selected_entity = st.selectbox("Choose entity", entities, key="kg_entity_select")
                         if selected_entity:
-                            # Consensus stats
                             consensus = st.session_state.knowledge_graph.get_entity_consensus(selected_entity)
                             if consensus["found"]:
                                 st.markdown(f"#### 📊 Consensus for **{selected_entity}**")
@@ -2470,7 +2414,6 @@ def run_streamlit():
                                 st.markdown(f"**Documents:** {', '.join(consensus['documents'])}")
                             else:
                                 st.info(f"No quantitative values found for '{selected_entity}'. Showing only occurrences in extracted items.")
-                            # Contradictions
                             contradictions = st.session_state.knowledge_graph.get_entity_contradictions(selected_entity, threshold_factor=1.5)
                             if contradictions:
                                 st.markdown("#### ⚠️ Detected Contradictions")
@@ -2478,7 +2421,6 @@ def run_streamlit():
                                     st.warning(f"**{c['entity']}**: {c['doc_a']} ({c['value_a']:.2f}) vs {c['doc_b']} ({c['value_b']:.2f}) – ratio {c['ratio']:.1f}x ({c['severity']})")
                             else:
                                 st.success("No significant contradictions detected for this entity.")
-                            # Display raw extracted items for this entity
                             st.markdown("#### 📄 All extracted items containing this entity")
                             items_for_entity = []
                             for doc_id, graph in st.session_state.knowledge_graph.doc_graphs.items():
@@ -2499,7 +2441,6 @@ def run_streamlit():
                                 st.info("No extracted items found for this entity.")
                     else:
                         st.info("No entities extracted yet. Run a query or re‑index with better extraction.")
-                    # Optional PyVis interactive network
                     if PYVIS_AVAILABLE and st.checkbox("Show interactive PyVis network (experimental)", key="show_pyvis"):
                         st.markdown("#### 🌐 Interactive Knowledge Graph (PyVis)")
                         G = nx.Graph()
@@ -2526,20 +2467,7 @@ def run_streamlit():
                             st.download_button("📥 Download PyVis HTML", html_content.encode('utf-8'), "kg_interactive.html", "text/html")
                         else:
                             st.info("Graph too small to visualize.")
-            else:
-                st.info("No quantitative data extracted yet. Run a query to populate the knowledge graph.")
-        
-        if st.session_state.get("show_tree_nav") and retrieved:
-            with st.expander("🌳 Tree Navigation Trace", expanded=False):
-                for r in retrieved[:5]:
-                    st.markdown(f"**{r['doc_id']}** → `{r['section_title']}` (p.{r['page_start']}) | confidence: {r.get('confidence', 0):.2f}")
-                    st.caption(r.get('selection_reasoning', ''))
-        if items:
-            with st.expander("🔍 Extracted Items (Raw)", expanded=False):
-                st.json([i.to_dict() for i in items[:10]])
-        
-        
-                with tabs[8]:  # 🔍 Retrieval Diagnostics
+                with tabs[8]:  # 🔍 Retrieval Diagnostics (moved inside the if block)
                     st.markdown("### 🔍 Retrieval Diagnostics & Provenance")
                     cached = st.session_state.get("cached_query_result", {})
                     rel_docs = cached.get("relevant_docs", [])
@@ -2613,6 +2541,22 @@ def run_streamlit():
                         st.download_button("📥 Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv")
                     else:
                         st.info("No retrieved node metadata available.")
+            else:
+                st.info("No quantitative data extracted yet. Run a query to populate the knowledge graph.")
+        else:
+            if st.session_state.annotated_trees:
+                st.info("No quantitative data extracted yet. Run a query to populate the knowledge graph.")
+            else:
+                st.warning("Please upload PDF files and build the index first.")
+
+        if st.session_state.get("show_tree_nav") and retrieved:
+            with st.expander("🌳 Tree Navigation Trace", expanded=False):
+                for r in retrieved[:5]:
+                    st.markdown(f"**{r['doc_id']}** → `{r['section_title']}` (p.{r['page_start']}) | confidence: {r.get('confidence', 0):.2f}")
+                    st.caption(r.get('selection_reasoning', ''))
+        if items:
+            with st.expander("🔍 Extracted Items (Raw)", expanded=False):
+                st.json([i.to_dict() for i in items[:10]])
 
         report = CrossDocumentQueryReport(query=active_prompt, total_documents=len(st.session_state.annotated_trees), documents_with_results=len(set(i.doc_source for i in items)), all_items=[i.model_dump() for i in items])
         col_dl1, col_dl2 = st.columns(2)
@@ -2621,7 +2565,7 @@ def run_streamlit():
         with col_dl2:
             tree_export = {"query": active_prompt, "annotated_trees": st.session_state.annotated_trees, "retrieved_nodes": retrieved, "extracted_items": [i.to_dict() for i in items], "answer": answer}
             st.download_button("📥 Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json")
-        
+
         if "index" in st.session_state.query_processor:
             st.session_state.query_processor["index"].cleanup()
     else:

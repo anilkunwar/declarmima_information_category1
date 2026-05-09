@@ -19,3 +19,4 @@ matplotlib
 seaborn
 pyvis
 litellm
+umap-learn 

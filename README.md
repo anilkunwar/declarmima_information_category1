@@ -195,13 +195,24 @@ V64-V67 : Vectorless Reasoning Based RAG and Parallelization (No Series) - With 
 
 V68-V71  : Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept materials-centric queries too, Specific Features based Benchmark Queries
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v68.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel68.streamlit.app/) (V67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization )
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v68.0-turquoise)](https://vectorless-reasoning-rag-information-retrieval-parallel68.streamlit.app/) (V67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization )
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v69.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel69.streamlit.app/) (V67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v69.0-turquoise)](https://vectorless-reasoning-rag-information-retrieval-parallel69.streamlit.app/) (V67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v70.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel70.streamlit.app/) (Successful Visualization, 20000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v70.0-turquoise)](https://vectorless-reasoning-rag-information-retrieval-parallel70.streamlit.app/) (Successful Visualization, 20000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v71.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel71.streamlit.app/) (Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v71.0-turquoise)](https://vectorless-reasoning-rag-information-retrieval-parallel71.streamlit.app/) (Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v72.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel72.streamlit.app/) (Useful for Learning, DOI represented in the correct format, Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
+
+V73- : Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept materials-centric queries too, Specific Features based Benchmark Queries
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v73.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel73.streamlit.app/) (Visualization not rendered, DOI represented in the correct format, Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v74.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel74.streamlit.app/) (V73 with visualization rendered, Static Visualization with Dropdown Options as in V72)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v75.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel75.streamlit.app/) (V73 with visualization rendered, Dynamic and interactive visualization)
+
 
 
 

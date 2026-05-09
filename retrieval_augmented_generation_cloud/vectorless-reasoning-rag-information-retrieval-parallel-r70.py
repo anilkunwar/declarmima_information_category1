@@ -2068,7 +2068,7 @@ class PublicationVisualizationEngine:
         ax.axis("off")
         plt.tight_layout()
         return fig
-
+    #
     def plot_parallel_categories(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title="No data")
@@ -2076,9 +2076,13 @@ class PublicationVisualizationEngine:
         cat_df = cat_df.dropna()
         if cat_df.empty:
             return go.Figure().update_layout(title="Insufficient categorical data")
-        fig = px.parallel_categories(cat_df, dimensions=["physical_quantity", "material"], color="physical_quantity", title="Parallel Categories: Quantities and Materials")
+        # Map physical_quantity to numeric codes for color (Plotly parcats color must be numeric)
+        pq_codes = {pq: i for i, pq in enumerate(sorted(cat_df["physical_quantity"].unique()))}
+        cat_df["pq_code"] = cat_df["physical_quantity"].map(pq_codes)
+        fig = px.parallel_categories(cat_df, dimensions=["physical_quantity", "material"], color="pq_code", color_continuous_scale=self._get_plotly_colorscale(colormap), title="Parallel Categories: Quantities and Materials")
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
+    
 
     def plot_violin(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty:

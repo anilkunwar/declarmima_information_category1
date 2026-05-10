@@ -3711,7 +3711,7 @@ def run_streamlit():
         display_mode = st.radio("Display format", ["Table", "JSON", "Human Summary"], horizontal=True, key="display_mode")
         if display_mode == "Table" and extracted_values:
             df_disp = pd.DataFrame([{"Document": v.doc_name, "Page": v.page, "Value": f"{v.value:.2f}", "Unit": v.unit, "Physical Quantity": PhysicalQuantityClassifier().get_human_readable(v.physical_quantity), "Material": v.material or "", "Parameter": v.parameter_name or "", "Confidence": f"{v.confidence:.2f}"} for v in extracted_values])
-            st.dataframe(df_disp, use_container_width=True)
+            st.dataframe(df_disp, use_container_width=True, key="df_df_disp")
         elif display_mode == "JSON" and extracted_values:
             st.json([v.model_dump() for v in extracted_values])
         elif display_mode == "Human Summary" and extracted_values:
@@ -3765,7 +3765,7 @@ def run_streamlit():
                     with col1:
                         if PYVIS_AVAILABLE:
                             html_graph = viz.plot_query_knowledge_graph_pyvis(query_ctx)
-                            st.components.v1.html(html_graph, height=820, scrolling=True)
+                            st.components.v1.html(html_graph, height=820, scrolling=True, key="html_html_graph")
                             st.download_button(
                                 "Download Interactive Graph HTML", 
                                 html_graph.encode('utf-8'), 
@@ -3775,10 +3775,11 @@ def run_streamlit():
                             )
                         else:
                             fig_kg = viz.plot_query_knowledge_graph(query_ctx)
-                            st.pyplot(fig_kg)
+                            st.pyplot(fig_kg, key="py_fig_kg")
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi, bbox_inches='tight')
-                            st.download_button("Download Query KG (PNG)", buf.getvalue(), 
+                            st.download_button("Download Query KG (PNG)", buf.getvalue(),
+                key="dl_Download_Query_KG_PNG")
                                              "query_knowledge_graph.png", mime="image/png", key="dl_kg")
                     with col2:
                         st.markdown("### Legend")
@@ -3793,7 +3794,7 @@ def run_streamlit():
 
                 with viz_tabs[1]:
                     fig_sun = viz.plot_query_sunburst(query_ctx)
-                    st.plotly_chart(fig_sun, use_container_width=True)
+                    st.plotly_chart(fig_sun, use_container_width=True, key="plc_fig_sun")
                     st.caption("This sunburst shows the hierarchy of quantities -> materials -> documents for your specific query.")
 
                 with viz_tabs[2]:
@@ -3805,13 +3806,13 @@ def run_streamlit():
                         cached.get("retrieved", []), 
                         cached.get("items", [])
                     )
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    st.plotly_chart(fig_sankey, use_container_width=True, key="plc_fig_sankey")
 
                 with viz_tabs[3]:
                     st.markdown("### Quick Relevant Charts")
                     for pq in query_ctx.physical_quantities[:3]:
                         fig = viz.plot_quantitative_histogram(df_all, pq)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key="plc_fig")
 
                 with viz_tabs[4]:
                     st.info("Full corpus visualizations are available in the dashboard below.")
@@ -3875,45 +3876,45 @@ def run_streamlit():
                 with tabs[0]:
                     if selected_qty != "All":
                         fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                        st.plotly_chart(fig_hist, use_container_width=True, key="plc_fig_hist")
                     fig_bar = viz.plot_quantities_bar(df_all, colormap)
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    st.plotly_chart(fig_bar, use_container_width=True, key="plc_fig_bar")
                     fig_mat = viz.plot_material_counts(df_all, colormap)
-                    st.plotly_chart(fig_mat, use_container_width=True)
+                    st.plotly_chart(fig_mat, use_container_width=True, key="plc_fig_mat")
 
                 with tabs[1]:
                     fig_pie = viz.plot_quantity_distribution_pie(colormap)
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                    st.plotly_chart(fig_pie, use_container_width=True, key="plc_fig_pie")
                     fig_donut = viz.plot_material_distribution_donut(colormap)
-                    st.plotly_chart(fig_donut, use_container_width=True)
+                    st.plotly_chart(fig_donut, use_container_width=True, key="plc_fig_donut")
 
                 with tabs[2]:
                     if selected_qty != "All":
                         fig_sun = viz.plot_quantitative_sunburst(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_sun, use_container_width=True)
+                        st.plotly_chart(fig_sun, use_container_width=True, key="plc_fig_sun_2")
                     fig_sun_all = viz.plot_sunburst_hierarchy(df_all, colormap)
-                    st.plotly_chart(fig_sun_all, use_container_width=True)
+                    st.plotly_chart(fig_sun_all, use_container_width=True, key="plc_fig_sun_all")
                     fig_treemap = viz.plot_treemap(colormap)
-                    st.plotly_chart(fig_treemap, use_container_width=True)
+                    st.plotly_chart(fig_treemap, use_container_width=True, key="plc_fig_treemap")
                     fig_treemap_mat = viz.plot_treemap_materials(df_all, colormap)
-                    st.plotly_chart(fig_treemap_mat, use_container_width=True)
+                    st.plotly_chart(fig_treemap_mat, use_container_width=True, key="plc_fig_treemap_mat")
 
                 with tabs[3]:
                     if selected_qty != "All":
                         fig_radar_qty = viz.plot_quantitative_radar(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_radar_qty, use_container_width=True)
+                        st.plotly_chart(fig_radar_qty, use_container_width=True, key="plc_fig_radar_qty")
                     fig_radar_mat = viz.plot_radar_by_material(colormap)
-                    st.plotly_chart(fig_radar_mat, use_container_width=True)
+                    st.plotly_chart(fig_radar_mat, use_container_width=True, key="plc_fig_radar_mat")
                     fig_radar_doc = viz.plot_document_radar(colormap)
-                    st.plotly_chart(fig_radar_doc, use_container_width=True)
+                    st.plotly_chart(fig_radar_doc, use_container_width=True, key="plc_fig_radar_doc")
                     fig_chord = viz.plot_chord_cooccurrence(None, st.session_state.get("viz_top_n", 25), colormap)
-                    st.plotly_chart(fig_chord, use_container_width=True)
+                    st.plotly_chart(fig_chord, use_container_width=True, key="plc_fig_chord")
 
                 with tabs[4]:
                     fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_contra, use_container_width=True)
+                    st.plotly_chart(fig_contra, use_container_width=True, key="plc_fig_contra")
                     fig_cons = viz.plot_consensus_waterfall(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_cons, use_container_width=True)
+                    st.plotly_chart(fig_cons, use_container_width=True, key="plc_fig_cons")
 
 
                 with tabs[5]:
@@ -3923,48 +3924,48 @@ def run_streamlit():
                     with net_subtabs[0]:
                         if selected_qty != "All":
                             fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.pyplot(fig_kg)
+                            st.pyplot(fig_kg, key="py_fig_kg_2")
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi)
-                            st.download_button("Download KG as PNG", buf.getvalue(), f"{selected_qty}_kg.png", mime="image/png")
+                            st.download_button("Download KG as PNG", buf.getvalue(), f"{selected_qty}_kg.png", mime="image/png", key="dl_Download_KG_as_PNG")
                         else:
                             st.info("Select a specific quantity to see its knowledge graph.")
 
                     with net_subtabs[1]:
                         if PYVIS_AVAILABLE and selected_qty != "All":
                             html_kg = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_kg, height=750, scrolling=True)
-                            st.download_button("Download PyVis KG HTML", html_kg.encode('utf-8'), f"{selected_qty}_kg_pyvis.html", mime="text/html")
+                            st.components.v1.html(html_kg, height=750, scrolling=True, key="html_html_kg")
+                            st.download_button("Download PyVis KG HTML", html_kg.encode('utf-8'), f"{selected_qty}_kg_pyvis.html", mime="text/html", key="dl_Download_PyVis_KG_HTML")
                         else:
                             st.info("Select a specific quantity and install pyvis for interactive graph.")
 
                     with net_subtabs[2]:
                         fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_net)
+                        st.pyplot(fig_net, key="py_fig_net")
                         buf = BytesIO()
                         fig_net.savefig(buf, format="png", dpi=config.figure_dpi)
-                        st.download_button("Download Network PNG", buf.getvalue(), "knowledge_network.png", mime="image/png")
+                        st.download_button("Download Network PNG", buf.getvalue(), "knowledge_network.png", mime="image/png", key="dl_Download_Network_PNG")
 
                     with net_subtabs[3]:
                         if PYVIS_AVAILABLE:
                             html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_full, height=750, scrolling=True)
-                            st.download_button("Download PyVis Network HTML", html_full.encode('utf-8'), "knowledge_network_pyvis.html", mime="text/html")
+                            st.components.v1.html(html_full, height=750, scrolling=True, key="html_html_full")
+                            st.download_button("Download PyVis Network HTML", html_full.encode('utf-8'), "knowledge_network_pyvis.html", mime="text/html", key="dl_Download_PyVis_Network_HTML")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
 
                     with net_subtabs[4]:
                         fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_static)
+                        st.pyplot(fig_static, key="py_fig_static")
                         buf = BytesIO()
                         fig_static.savefig(buf, format="png", dpi=config.figure_dpi)
-                        st.download_button("Download Salience Network PNG", buf.getvalue(), "salience_network.png", mime="image/png")
+                        st.download_button("Download Salience Network PNG", buf.getvalue(), "salience_network.png", mime="image/png", key="dl_Download_Salience_Network_PNG")
 
                     with net_subtabs[5]:
                         if PYVIS_AVAILABLE:
                             html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_salience, height=750, scrolling=True)
-                            st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html")
+                            st.components.v1.html(html_salience, height=750, scrolling=True, key="html_html_salience")
+                            st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html", key="dl_Download_PyVis_Salience_HTML")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
 
@@ -3974,35 +3975,35 @@ def run_streamlit():
                         if SKLEARN_AVAILABLE:
                             fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_tsne:
-                                st.pyplot(fig_tsne)
+                                st.pyplot(fig_tsne, key="py_fig_tsne")
                                 buf = BytesIO()
                                 fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download t-SNE PNG", buf.getvalue(), "tsne.png", mime="image/png")
+                                st.download_button("Download t-SNE PNG", buf.getvalue(), "tsne.png", mime="image/png", key="dl_Download_t-SNE_PNG")
                             fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_pca:
-                                st.pyplot(fig_pca)
+                                st.pyplot(fig_pca, key="py_fig_pca")
                                 buf = BytesIO()
                                 fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download PCA PNG", buf.getvalue(), "pca.png", mime="image/png")
+                                st.download_button("Download PCA PNG", buf.getvalue(), "pca.png", mime="image/png", key="dl_Download_PCA_PNG")
                         if UMAP_AVAILABLE:
                             fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_umap:
-                                st.pyplot(fig_umap)
+                                st.pyplot(fig_umap, key="py_fig_umap")
                                 buf = BytesIO()
                                 fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download UMAP PNG", buf.getvalue(), "umap.png", mime="image/png")
+                                st.download_button("Download UMAP PNG", buf.getvalue(), "umap.png", mime="image/png", key="dl_Download_UMAP_PNG")
                     else:
                         st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
 
                 with tabs[7]:
                     fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
-                    st.plotly_chart(fig_scatter, use_container_width=True)
+                    st.plotly_chart(fig_scatter, use_container_width=True, key="plc_fig_scatter")
                     fig_parallel = viz.plot_parallel_categories(df_all, colormap)
-                    st.plotly_chart(fig_parallel, use_container_width=True)
+                    st.plotly_chart(fig_parallel, use_container_width=True, key="plc_fig_parallel")
                     fig_violin = viz.plot_violin(df_all, colormap)
-                    st.plotly_chart(fig_violin, use_container_width=True)
+                    st.plotly_chart(fig_violin, use_container_width=True, key="plc_fig_violin")
                     fig_timeline = viz.plot_timeline(colormap)
-                    st.plotly_chart(fig_timeline, use_container_width=True)
+                    st.plotly_chart(fig_timeline, use_container_width=True, key="plc_fig_timeline")
 
                 with tabs[8]:
                     st.markdown("### Interactive Knowledge Graph Explorer")
@@ -4036,7 +4037,7 @@ def run_streamlit():
                                         items_for_entity.append(item)
                             if items_for_entity:
                                 df_entity = pd.DataFrame([{"Doc": i["doc_source"], "Page": i.get("page",0), "Type": i.get("item_type",""), "Content": i.get("content","")[:150], "Value": i.get("value",""), "Unit": i.get("unit",""), "Confidence": i.get("confidence",0)} for i in items_for_entity])
-                                st.dataframe(df_entity, use_container_width=True)
+                                st.dataframe(df_entity, use_container_width=True, key="df_df_entity")
                             else:
                                 st.info("No extracted items found for this entity.")
                     else:
@@ -4063,19 +4064,19 @@ def run_streamlit():
 
                     st.markdown("#### Retrieval Provenance Flow")
                     fig_sankey = viz.plot_retrieval_sankey(active_prompt, rel_docs, retrieved_nodes, raw_items)
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    st.plotly_chart(fig_sankey, use_container_width=True, key="plc_fig_sankey_2")
 
                     st.markdown("#### Document Filter Scores")
                     fig_doc_scores = viz.plot_doc_filter_scores(rel_docs, len(st.session_state.annotated_trees))
-                    st.plotly_chart(fig_doc_scores, use_container_width=True)
+                    st.plotly_chart(fig_doc_scores, use_container_width=True, key="plc_fig_doc_scores")
 
                     st.markdown("#### Page Coverage Heatmap")
                     fig_coverage = viz.plot_page_coverage_heatmap(st.session_state.annotated_trees, retrieved_nodes)
-                    st.plotly_chart(fig_coverage, use_container_width=True)
+                    st.plotly_chart(fig_coverage, use_container_width=True, key="plc_fig_coverage")
 
                     st.markdown("#### Node Selection Confidence")
                     fig_conf = viz.plot_node_confidence_distribution(retrieved_nodes)
-                    st.plotly_chart(fig_conf, use_container_width=True)
+                    st.plotly_chart(fig_conf, use_container_width=True, key="plc_fig_conf")
 
                     st.markdown("#### Hierarchical Tree Explorer")
                     tree_doc_options = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in st.session_state.annotated_trees)))
@@ -4083,10 +4084,10 @@ def run_streamlit():
                         selected_tree_doc = st.selectbox("Select document to visualize", tree_doc_options, key="tree_doc_select")
                         fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
                         if fig_tree:
-                            st.pyplot(fig_tree)
+                            st.pyplot(fig_tree, key="py_fig_tree")
                             buf = BytesIO()
                             fig_tree.savefig(buf, format="png", dpi=config.figure_dpi)
-                            st.download_button("Download Tree PNG", buf.getvalue(), f"{selected_tree_doc}_tree.png", mime="image/png")
+                            st.download_button("Download Tree PNG", buf.getvalue(), f"{selected_tree_doc}_tree.png", mime="image/png", key="dl_Download_Tree_PNG")
                         else:
                             st.info("No tree data available for this document.")
                     else:
@@ -4097,16 +4098,16 @@ def run_streamlit():
                         emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
                         fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
                         if fig_comp:
-                            st.plotly_chart(fig_comp, use_container_width=True)
+                            st.plotly_chart(fig_comp, use_container_width=True, key="plc_fig_comp")
                         else:
                             st.info("Could not compute semantic scores for comparison.")
 
                     st.markdown("#### Raw Retrieval Metadata")
                     if retrieved_nodes:
                         df_ret = pd.DataFrame([{"Document": r.get("doc_id", ""), "Node ID": r.get("node_id", ""), "Section": r.get("section_title", ""), "Page": r.get("page_start", 0), "Confidence": r.get("confidence", 0), "Reasoning": r.get("selection_reasoning", "")[:100]} for r in retrieved_nodes])
-                        st.dataframe(df_ret, use_container_width=True)
+                        st.dataframe(df_ret, use_container_width=True, key="df_df_ret")
                         csv_ret = df_ret.to_csv(index=False).encode('utf-8')
-                        st.download_button("Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv")
+                        st.download_button("Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv", key="dl_Download_Retrieval_Metadata_CS")
                     else:
                         st.info("No retrieved node metadata available.")
             else:
@@ -4124,10 +4125,10 @@ def run_streamlit():
         report = CrossDocumentQueryReport(query=active_prompt, total_documents=len(st.session_state.annotated_trees), documents_with_results=len(set(i.doc_source for i in items)), all_items=[i.model_dump() for i in items])
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
-            st.download_button("Download JSON Report", report.to_json(), "results.json", "application/json")
+            st.download_button("Download JSON Report", report.to_json(), "results.json", "application/json", key="dl_Download_JSON_Report")
         with col_dl2:
             tree_export = {"query": active_prompt, "annotated_trees": st.session_state.annotated_trees, "retrieved_nodes": retrieved, "extracted_items": [i.to_dict() for i in items], "answer": answer}
-            st.download_button("Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json")
+            st.download_button("Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json", key="dl_Download_Tree_Export")
 
         if "index" in st.session_state.query_processor:
             st.session_state.query_processor["index"].cleanup()

@@ -752,7 +752,7 @@ class StructuredMetadataExtractor:
             "porosity": (re.compile(self.POROSITY_PATTERN, re.IGNORECASE), float),
             "relative_density": (re.compile(self.RELATIVE_DENSITY_PATTERN, re.IGNORECASE), float),
         }
-
+        self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
 
     def extract_metadata(self, doc_name: str, full_text: str) -> DocumentMetadata:
         meta = DocumentMetadata(doc_name=doc_name)

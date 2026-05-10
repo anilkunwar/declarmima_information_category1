@@ -217,45 +217,456 @@ class DocumentMetadata(BaseModel):
     hardness_values: List[float] = []
     temperature_values: List[float] = []
     energy_density_values: List[float] = []
-    areal_energy_density_values: List[float] = []
-    linear_energy_density_values: List[float] = []
     process_types: List[str] = []
-    corrosion_potential_values: List[float] = []
-    pitting_potential_values: List[float] = []
-    repassivation_potential_values: List[float] = []
-    breakdown_potential_values: List[float] = []
-    open_circuit_potential_values: List[float] = []
-    corrosion_current_density_values: List[float] = []
-    polarization_resistance_values: List[float] = []
-    current_density_values: List[float] = []
-    pren_values: List[float] = []
-    phase_fraction_values: List[float] = []
-    austenite_fraction_values: List[float] = []
-    ferrite_fraction_values: List[float] = []
-    grain_size_values: List[float] = []
-    cell_size_values: List[float] = []
-    porosity_values: List[float] = []
-    relative_density_values: List[float] = []
-    surface_roughness_values: List[float] = []
-    stacking_fault_energy_values: List[float] = []
-    unstable_stacking_fault_energy_values: List[float] = []
-    ideal_shear_strength_values: List[float] = []
-    sauter_mean_diameter_values: List[float] = []
-    spray_penetration_values: List[float] = []
-    plume_height_values: List[float] = []
-    film_thickness_values: List[float] = []
-    absorption_coefficient_values: List[float] = []
-    enthalpy_values: List[float] = []
-    viscosity_values: List[float] = []
-    thermal_conductivity_values: List[float] = []
-    density_values: List[float] = []
-    elongation_values: List[float] = []
-    modulus_values: List[float] = []
-    youngs_modulus_values: List[float] = []
-    poisson_ratio_values: List[float] = []
-    cte_values: List[float] = []
     other_parameters: Dict[str, List[float]] = {}
 
+
+# =============================================================================
+# QUERY CONTEXT FOR DRIVEN VISUALIZATIONS
+# =============================================================================
+@dataclass
+class QueryContext:
+    """Represents the context of the current user query for focused visualizations."""
+    query: str
+    relevant_doc_ids: Set[str]
+    physical_quantities: List[str]
+    materials: List[str]
+    extracted_values: List[ExtractedValue]
+    retrieved_nodes: List[Dict]
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @classmethod
+    def from_cache(cls, cache: Dict) -> 'QueryContext':
+        raw_vals = cache.get("extracted_values", [])
+        extracted_vals = [ExtractedValue(**v) for v in raw_vals] if raw_vals and isinstance(raw_vals[0], dict) else []
+        return cls(
+            query=cache.get("prompt", ""),
+            relevant_doc_ids={v.doc_name for v in extracted_vals},
+            physical_quantities=list({v.physical_quantity for v in extracted_vals if v.physical_quantity}),
+            materials=list({v.material for v in extracted_vals if v.material}),
+            extracted_values=extracted_vals,
+            retrieved_nodes=cache.get("retrieved", []),
+        )
+
+    def has_data(self) -> bool:
+        return len(self.extracted_values) > 0
+
+
+class PhysicalQuantityClassifier:
+    CANONICAL = {
+        "laser_power": ["laser power", "laser beam power", "laser output power", "laser power density (power)", "power", "p"],
+        "electrical_power": ["electrical power", "power supply", "input power", "electrical load"],
+        "scan_speed": ["scan speed", "scanning speed", "laser scan speed", "beam scan speed", "scan velocity", "v_scan", "vs"],
+        "flow_speed": ["flow speed", "flow velocity", "fluid velocity", "air velocity", "gas flow speed"],
+        "feed_rate": ["feed rate", "travel speed", "table speed", "stage speed"],
+        "irradiance": ["irradiance", "laser irradiance", "intensity", "power density (irradiance)", "w/cm2", "kw/cm2"],
+        "temperature": ["temperature", "melting temperature", "annealing temperature", "reflow temperature"],
+        "melting_temperature": ["melting point", "melting temperature", "solidus temperature", "liquidus temperature"],
+        "energy_density": ["energy density", "volumetric energy density", "ved", "laser fluence"],
+        "areal_energy_density": ["areal energy density", "aed", "area energy density"],
+        "linear_energy_density": ["linear energy density", "led", "line energy density"],
+        "layer_thickness": ["layer thickness", "powder layer thickness", "slice thickness"],
+        "spot_size": ["spot size", "beam diameter", "laser spot diameter"],
+        "exposure_time": ["exposure time", "dwell time", "laser on time"],
+        "yield_strength": ["yield strength", "ys", "0.2% offset strength", "proof stress", "yield stress"],
+        "tensile_strength": ["tensile strength", "uts", "ultimate tensile strength", "ultimate strength"],
+        "ultimate_tensile_strength": ["ultimate tensile strength", "uts", "tensile strength"],
+        "hardness": ["hardness", "vickers hardness", "microhardness", "hv", "nano hardness"],
+        "elongation": ["elongation", "strain", "ductility", "strain to failure"],
+        "modulus": ["young's modulus", "elastic modulus", "stiffness", "e-modulus"],
+        "youngs_modulus": ["young's modulus", "elastic modulus", "stiffness", "e-modulus"],
+        "poisson_ratio": ["poisson's ratio", "poisson ratio"],
+        "coefficient_thermal_expansion": ["coefficient of thermal expansion", "cte", "thermal expansivity", "thermal expansion coefficient"],
+        "corrosion_potential": ["corrosion potential", "e_corr", "ecorr", "corrosion potential ecorr", "open circuit potential", "e_ocp", "eocp"],
+        "pitting_potential": ["pitting potential", "e_pit", "epit", "breakdown potential", "e_br", "ebr"],
+        "repassivation_potential": ["repassivation potential", "e_rp", "erp", "repassivation potential erp"],
+        "breakdown_potential": ["breakdown potential", "e_br", "ebr", "depassivation point"],
+        "open_circuit_potential": ["open circuit potential", "e_ocp", "eocp", "ocp"],
+        "corrosion_current_density": ["corrosion current density", "j_corr", "jcorr", "corrosion current", "i_corr"],
+        "current_density": ["current density", "j", "current density j", "i"],
+        "polarization_resistance": ["polarization resistance", "r_p", "rp", "apparent polarization resistance", "rp_app"],
+        "PREN": ["pitting resistance equivalent number", "pren", "pitting resistance equivalent"],
+        "phase_fraction": ["phase fraction", "volume fraction"],
+        "austenite_fraction": ["austenite fraction", "gamma fraction", "γ fraction", "austenite content", "austenite vol"],
+        "ferrite_fraction": ["ferrite fraction", "alpha fraction", "α fraction", "ferrite content", "ferrite vol"],
+        "grain_size": ["grain size", "average grain size", "cell size", "subgrain size"],
+        "cell_size": ["cell size", "cell diameter", "subgrain size"],
+        "porosity": ["porosity", "pore fraction", "void fraction"],
+        "relative_density": ["relative density", "density ratio", "packing density"],
+        "surface_roughness": ["surface roughness", "ra", "roughness"],
+        "stacking_fault_energy": ["stacking fault energy", "sfe", "gsfe", "generalized stacking fault energy"],
+        "unstable_stacking_fault_energy": ["unstable stacking fault energy", "usfe"],
+        "ideal_shear_strength": ["ideal shear strength", "t_ideal", "shear strength"],
+        "sauter_mean_diameter": ["sauter mean diameter", "smd", "mean droplet diameter", "droplet diameter"],
+        "spray_penetration": ["spray penetration", "penetration length", "fuel penetration"],
+        "plume_height": ["plume height", "hw", "spray height"],
+        "film_thickness": ["film thickness", "wall film thickness", "delta"],
+        "absorption_coefficient": ["absorption coefficient", "absorptance", "laser absorption"],
+        "enthalpy": ["enthalpy", "heat content", "specific enthalpy"],
+        "viscosity": ["viscosity", "dynamic viscosity", "apparent viscosity"],
+        "thermal_conductivity": ["thermal conductivity", "k", "kth", "heat conductivity"],
+        "density": ["density", "mass density", "specific density", "volumetric density"],
+    }
+    UNIT_HINTS = {
+        "scan_speed": ["mm/s", "cm/s", "m/s", "mm/min", "in/min"],
+        "flow_speed": ["mm/s", "cm/s", "m/s", "l/min", "m3/s"],
+        "laser_power": ["w", "kw", "mw"],
+        "irradiance": ["w/cm2", "kw/cm2", "w/m2"],
+        "temperature": ["c", "k", "f"],
+        "melting_temperature": ["k", "c"],
+        "energy_density": ["j/mm3", "j/m3", "j/cm3", "j/m2"],
+        "areal_energy_density": ["j/mm2", "j/m2", "mj/mm2"],
+        "linear_energy_density": ["j/mm", "j/m", "kj/m"],
+        "yield_strength": ["mpa", "gpa", "psi"],
+        "tensile_strength": ["mpa", "gpa", "psi"],
+        "ultimate_tensile_strength": ["mpa", "gpa", "psi"],
+        "hardness": ["hv", "mpa", "gpa"],
+        "elongation": ["%", "pct"],
+        "modulus": ["gpa", "mpa"],
+        "youngs_modulus": ["gpa", "mpa"],
+        "poisson_ratio": ["unitless", ""],
+        "coefficient_thermal_expansion": ["1/k", "k-1", "10-6/k"],
+        "corrosion_potential": ["mv", "v", "vs sce", "vs ag/agcl"],
+        "pitting_potential": ["mv", "v"],
+        "repassivation_potential": ["mv", "v"],
+        "breakdown_potential": ["mv", "v"],
+        "open_circuit_potential": ["mv", "v"],
+        "corrosion_current_density": ["ua/cm2", "uA/cm2", "ma/cm2", "a/cm2", "ua", "ma", "µA/cm²"],
+        "current_density": ["a/cm2", "ma/cm2", "ua/cm2", "µA/cm²"],
+        "polarization_resistance": ["kohm·cm2", "ohm·cm2", "kω·cm2", "ω·cm2", "kΩ·cm²"],
+        "PREN": ["unitless", ""],
+        "phase_fraction": ["%", "vol%", "fraction"],
+        "austenite_fraction": ["%", "vol%"],
+        "ferrite_fraction": ["%", "vol%"],
+        "grain_size": ["um", "nm", "mm", "µm"],
+        "cell_size": ["um", "nm", "mm", "µm"],
+        "porosity": ["%", "fraction", "ppm"],
+        "relative_density": ["%", "fraction"],
+        "surface_roughness": ["um", "nm", "mm", "µm"],
+        "stacking_fault_energy": ["mj/m2", "j/m2", "mJ/m²"],
+        "unstable_stacking_fault_energy": ["mj/m2", "j/m2", "mJ/m²"],
+        "ideal_shear_strength": ["gpa", "mpa"],
+        "sauter_mean_diameter": ["um", "nm", "mm", "µm"],
+        "spray_penetration": ["mm", "cm", "m"],
+        "plume_height": ["mm", "cm", "m"],
+        "film_thickness": ["um", "nm", "mm", "µm"],
+        "absorption_coefficient": ["m-1", "1/m"],
+        "enthalpy": ["j/mol", "kj/mol", "j/kg"],
+        "viscosity": ["pa·s", "mpa·s", "cp"],
+        "thermal_conductivity": ["w/m·k", "w/mk", "W/m·K"],
+        "density": ["g/cm3", "kg/m3", "g/ml", "g/cm³", "kg/m³"],
+    }
+
+    def __init__(self):
+        self._build_keyword_index()
+
+    def _build_keyword_index(self):
+        self.keyword_to_canonical = {}
+        for canonical, keywords in self.CANONICAL.items():
+            for kw in keywords:
+                self.keyword_to_canonical[kw.lower()] = canonical
+        self.keyword_to_canonical["ys"] = "yield_strength"
+        self.keyword_to_canonical["uts"] = "tensile_strength"
+        self.keyword_to_canonical["smys"] = "yield_strength"
+        self.keyword_to_canonical["0.2% proof"] = "yield_strength"
+        self.keyword_to_canonical["ecorr"] = "corrosion_potential"
+        self.keyword_to_canonical["eocp"] = "open_circuit_potential"
+        self.keyword_to_canonical["erp"] = "repassivation_potential"
+        self.keyword_to_canonical["epit"] = "pitting_potential"
+        self.keyword_to_canonical["ebr"] = "breakdown_potential"
+        self.keyword_to_canonical["jcorr"] = "corrosion_current_density"
+        self.keyword_to_canonical["rp"] = "polarization_resistance"
+        self.keyword_to_canonical["pren"] = "PREN"
+        self.keyword_to_canonical["sfe"] = "stacking_fault_energy"
+        self.keyword_to_canonical["usfe"] = "unstable_stacking_fault_energy"
+        self.keyword_to_canonical["smd"] = "sauter_mean_diameter"
+        self.keyword_to_canonical["ved"] = "energy_density"
+        self.keyword_to_canonical["aed"] = "areal_energy_density"
+        self.keyword_to_canonical["led"] = "linear_energy_density"
+
+    def classify(self, parameter_name: Optional[str], unit: Optional[str], context: str) -> str:
+        if parameter_name:
+            pname_lower = parameter_name.lower().strip()
+            for canonical, keywords in self.CANONICAL.items():
+                for kw in keywords:
+                    if kw in pname_lower:
+                        return canonical
+            if pname_lower in self.keyword_to_canonical:
+                return self.keyword_to_canonical[pname_lower]
+        context_lower = context.lower()
+        for canonical, keywords in self.CANONICAL.items():
+            for kw in keywords:
+                if kw in context_lower:
+                    return canonical
+        if unit:
+            unit_lower = unit.lower()
+            if "yield" in context_lower and "mpa" in unit_lower:
+                return "yield_strength"
+            if "tensile" in context_lower and "mpa" in unit_lower:
+                return "tensile_strength"
+            if "corrosion" in context_lower and ("mv" in unit_lower or "v" in unit_lower):
+                return "corrosion_potential"
+            if "current" in context_lower and ("a/cm2" in unit_lower or "ua" in unit_lower or "ma" in unit_lower):
+                return "current_density"
+            if "polarization" in context_lower and ("ohm" in unit_lower or "ω" in unit_lower):
+                return "polarization_resistance"
+            for canonical, units in self.UNIT_HINTS.items():
+                for u in units:
+                    if u in unit_lower:
+                        return canonical
+        if unit:
+            if "w/cm" in unit_lower or "kw/cm" in unit_lower:
+                return "irradiance"
+            if unit_lower in ["w", "kw", "mw"]:
+                return "laser_power"
+            if "mm/s" in unit_lower:
+                return "scan_speed"
+            if "c" in unit_lower or "k" in unit_lower:
+                return "temperature"
+            if "mpa" in unit_lower or "gpa" in unit_lower:
+                return "hardness"
+            if "j/mm3" in unit_lower or "j/mm²" in unit_lower or "j/mm2" in unit_lower:
+                return "energy_density"
+            if "j/mm" in unit_lower:
+                return "linear_energy_density"
+            if "mj/m2" in unit_lower or "mj/m²" in unit_lower:
+                return "stacking_fault_energy"
+            if "ua/cm2" in unit_lower or "µa/cm²" in unit_lower or "ma/cm2" in unit_lower:
+                return "corrosion_current_density"
+            if "kω·cm2" in unit_lower or "kohm·cm2" in unit_lower:
+                return "polarization_resistance"
+        return "unknown"
+
+    def get_human_readable(self, canonical: str) -> str:
+        mapping = {
+            "laser_power": "Laser Power", "electrical_power": "Electrical Power",
+            "scan_speed": "Scan Speed", "flow_speed": "Flow Speed", "feed_rate": "Feed Rate",
+            "irradiance": "Irradiance / Intensity", "temperature": "Temperature",
+            "melting_temperature": "Melting Temperature",
+            "energy_density": "Energy Density (VED)", "areal_energy_density": "Areal Energy Density (AED)",
+            "linear_energy_density": "Linear Energy Density (LED)",
+            "layer_thickness": "Layer Thickness", "spot_size": "Spot Size", "exposure_time": "Exposure Time",
+            "yield_strength": "Yield Strength", "tensile_strength": "Tensile Strength",
+            "ultimate_tensile_strength": "Ultimate Tensile Strength",
+            "hardness": "Hardness", "elongation": "Elongation", "modulus": "Young's Modulus",
+            "youngs_modulus": "Young's Modulus", "poisson_ratio": "Poisson's Ratio",
+            "coefficient_thermal_expansion": "Coefficient of Thermal Expansion",
+            "corrosion_potential": "Corrosion Potential", "pitting_potential": "Pitting Potential",
+            "repassivation_potential": "Repassivation Potential", "breakdown_potential": "Breakdown Potential",
+            "open_circuit_potential": "Open Circuit Potential",
+            "corrosion_current_density": "Corrosion Current Density", "current_density": "Current Density",
+            "polarization_resistance": "Polarization Resistance", "PREN": "PREN",
+            "phase_fraction": "Phase Fraction", "austenite_fraction": "Austenite Fraction",
+            "ferrite_fraction": "Ferrite Fraction", "grain_size": "Grain Size", "cell_size": "Cell Size",
+            "porosity": "Porosity", "relative_density": "Relative Density",
+            "surface_roughness": "Surface Roughness",
+            "stacking_fault_energy": "Stacking Fault Energy",
+            "unstable_stacking_fault_energy": "Unstable Stacking Fault Energy",
+            "ideal_shear_strength": "Ideal Shear Strength",
+            "sauter_mean_diameter": "Sauter Mean Diameter", "spray_penetration": "Spray Penetration",
+            "plume_height": "Plume Height", "film_thickness": "Film Thickness",
+            "absorption_coefficient": "Absorption Coefficient",
+            "enthalpy": "Enthalpy", "viscosity": "Viscosity",
+            "thermal_conductivity": "Thermal Conductivity", "density": "Density",
+            "unknown": "Other Quantities"
+        }
+        return mapping.get(canonical, canonical.replace("_", " ").title())
+
+
+class ConceptNormalizer:
+    ALIAS_DICTIONARIES = {
+        "multicomponent": [
+            "multicomponent", "multi-component", "multielement", "multi-element",
+            "many elements", "complex alloy", "multi-principal", "high entropy",
+            "hea", "multiple elements", "ternary", "quaternary", "quinary"
+        ],
+        "yield_strength": [
+            "yield strength", "ys", "0.2% proof", "proof stress", "yield stress",
+            "0.2% offset strength"
+        ],
+        "tensile_strength": [
+            "tensile strength", "uts", "ultimate tensile strength", "ultimate strength",
+            "tensile stress"
+        ],
+        "laser_power": [
+            "laser power", "laser beam power", "laser output power", "beam power"
+        ],
+        "scan_speed": [
+            "scan speed", "scanning speed", "laser scan speed", "beam scan speed",
+            "scan velocity"
+        ],
+        "hardness": [
+            "hardness", "vickers hardness", "microhardness", "hv", "nano hardness"
+        ],
+        "sdss_2507": [
+            "sdss 2507", "super duplex stainless steel 2507", "uns s32750", "en 1.4410",
+            "saf 2507", "2507", "s32750", "super duplex 2507"
+        ],
+        "ti3au": [
+            "ti3au", "ti_3au", "beta-ti3au", "b-ti3au", "ti-au intermetallic", "titanium gold intermetallic",
+            "ti3au intermetallic", "beta ti3au"
+        ],
+        "cp_ti": [
+            "cp ti", "commercially pure titanium", "grade ii titanium", "grade 2 titanium", "titanium grade ii",
+            "commercial purity titanium"
+        ],
+        "alsimgzr": [
+            "alsimgzr", "al-si-mg-zr", "al-si-mg-0.37zr", "alsi7.43mg1.57zr", "al-si-mg-zr alloy",
+            "al-si-mg-zr composite"
+        ],
+        "tib2_alsimgzr": [
+            "tib2/al-si-mg-zr", "tib2-alsimgzr", "tib2 modified al-si-mg-zr", "tib2/al-si-mg-zr composite",
+            "tib2-al-si-mg-zr"
+        ],
+        "metallic_glass": [
+            "fe-based metallic glass", "metallic glass", "amorphous alloy", "fe-b-si-nb-zr-cu",
+            "fe based metallic glass"
+        ],
+        "lpbf": [
+            "lpbf", "l-pbf", "laser powder bed fusion", "selective laser melting", "slm",
+            "laser powder-bed fusion", "laser powder-bed-fusion", "laser powder bed fusion (lpbf)"
+        ],
+        "ded": [
+            "ded", "directed energy deposition", "direct energy deposition", "laser metal deposition",
+            "directed energy deposition (ded)"
+        ],
+        "pfi": [
+            "pfi", "port fuel injection", "port-fuel injection", "port fuel injector",
+            "port fuel injection (pfi)"
+        ],
+        "gdi": [
+            "gdi", "gasoline direct injection", "direct injection spark ignition", "disi",
+            "gasoline direct injection (gdi)"
+        ],
+        "pren": [
+            "pren", "pitting resistance equivalent number", "pitting resistance equivalent",
+            "pitting resistance equivalent number (pren)"
+        ],
+        "eis": [
+            "eis", "electrochemical impedance spectroscopy", "impedance spectroscopy",
+            "electrochemical impedance"
+        ],
+        "cpp": [
+            "cpp", "cyclic potentiodynamic polarization", "potentiodynamic polarization", "cyclic polarization",
+            "cyclic potentiodynamic polarization (cpp)"
+        ],
+        "nanoindentation": [
+            "nanoindentation", "nano-indentation", "indentation test", "indentation force",
+            "nano indentation"
+        ],
+        "sfe": [
+            "stacking fault energy", "sfe", "generalized stacking fault energy", "gsfe",
+            "stacking fault energy (sfe)"
+        ],
+        "smd": [
+            "sauter mean diameter", "smd", "sauter diameter", "mean droplet diameter",
+            "sauter mean diameter (smd)"
+        ],
+        "ved": [
+            "ved", "volumetric energy density", "volume energy density", "energy density",
+            "volumetric energy density (ved)"
+        ],
+        "aed": [
+            "aed", "areal energy density", "area energy density", "areal energy density (aed)"
+        ],
+        "led": [
+            "led", "linear energy density", "line energy density", "linear energy density (led)"
+        ],
+        "fem": [
+            "fem", "finite element method", "finite element analysis", "fea", "finite element"
+        ],
+        "md": [
+            "md", "molecular dynamics", "molecular dynamics simulation", "molecular dynamics (md)"
+        ],
+    }
+
+
+    def __init__(self, embedding_fn: Optional[Callable] = None):
+        self.embedding_fn = embedding_fn
+        self._build_reverse_index()
+
+    def _build_reverse_index(self):
+        self.alias_to_canonical: Dict[str, str] = {}
+        for canonical, aliases in self.ALIAS_DICTIONARIES.items():
+            for alias in aliases:
+                self.alias_to_canonical[alias.lower()] = canonical
+
+    def normalize(self, term: str, use_fuzzy: bool = True, fuzzy_threshold: int = 85) -> str:
+        if not term or not str(term).strip():
+            return "unknown"
+        term_lower = str(term).lower().strip()
+        if term_lower in self.alias_to_canonical:
+            return self.alias_to_canonical[term_lower]
+        for alias, canonical in sorted(self.alias_to_canonical.items(), key=lambda x: -len(x[0])):
+            if alias in term_lower:
+                return canonical
+        if use_fuzzy and RAPIDFUZZ_AVAILABLE:
+            all_aliases = list(self.alias_to_canonical.keys())
+            result = process.extractOne(term_lower, all_aliases, scorer=fuzz.ratio)
+            if result and result[1] >= fuzzy_threshold:
+                return self.alias_to_canonical[result[0]]
+        if self.embedding_fn is not None:
+            try:
+                term_emb = self.embedding_fn(term_lower)
+                best_sim = -1.0
+                best_canonical = None
+                for canonical in self.ALIAS_DICTIONARIES:
+                    can_emb = self.embedding_fn(canonical)
+                    sim = float(np.dot(term_emb, can_emb) / (np.linalg.norm(term_emb) * np.linalg.norm(can_emb) + 1e-8))
+                    if sim > best_sim and sim > 0.75:
+                        best_sim = sim
+                        best_canonical = canonical
+                if best_canonical:
+                    return best_canonical
+            except Exception:
+                pass
+        return term_lower
+
+    def normalize_list(self, terms: List[str]) -> List[str]:
+        return [self.normalize(t) for t in terms]
+
+
+
+# ============================================================================
+# DISPLAY NAME HELPERS (DOI postprocessing + user aliases)
+# ============================================================================
+def normalize_doi_display(name: str) -> str:
+    """Convert filesystem-safe DOI filenames back to real DOI format.
+    E.g. '10.1016_j.scriptamat.2024.116027.pdf' -> '10.1016/j.scriptamat.2024.116027'
+    """
+    if not name:
+        return name
+    # Remove .pdf extension
+    base = name[:-4] if name.lower().endswith('.pdf') else name
+    # If it looks like a DOI (starts with 10. and contains _)
+    if re.match(r'10\.\d+_', base):
+        # Replace first _ after 10.xxx with /
+        base = re.sub(r'^(10\.\d+)_(.*)', r'\1/\2', base)
+    return base
+
+
+def get_display_name(doc_id: str, aliases: Optional[Dict[str, str]] = None) -> str:
+    """Return human-readable display name for a document.
+    Priority: 1) user alias, 2) DOI-normalized stem, 3) original stem.
+    """
+    if aliases and doc_id in aliases:
+        return aliases[doc_id]
+    stem = Path(doc_id).stem
+    normalized = normalize_doi_display(stem)
+    return normalized
+
+
+def get_citation_label(doc_id: str, aliases: Optional[Dict[str, str]] = None, index: int = 0, style: str = "doi") -> str:
+    """Generate citation-style label for a document.
+    style: 'doi' -> normalized DOI, 'number' -> [1], 'alias' -> user alias, 'short' -> first 20 chars.
+    """
+    if style == "alias" and aliases and doc_id in aliases:
+        return aliases[doc_id]
+    if style == "number":
+        return f"[{index}]"
+    if style == "short":
+        return Path(doc_id).stem[:20]
+    return normalize_doi_display(Path(doc_id).stem)
 
 class PaginationAwareReader:
     def __init__(self, max_chars_per_request=20000):
@@ -282,24 +693,6 @@ class PaginationAwareReader:
 
 
 class StructuredMetadataExtractor:
-    ECORR_PATTERN = r'(?:Ecorr|corrosion potential|OCP|open circuit potential)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
-    ERP_PATTERN = r'(?:Erp|repassivation potential)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
-    EPIT_PATTERN = r'(?:Epit|pitting potential|breakdown potential|Ebr)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
-    JCORR_PATTERN = r'(?:Jcorr|corrosion current density|i_corr)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µA/cm²|uA/cm2|mA/cm2|A/cm2)'
-    RP_PATTERN = r'(?:Rp|polarization resistance)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(kΩ·cm²|ohm·cm2|Ω·cm2)'
-    PREN_PATTERN = r'(?:PREN|pitting resistance equivalent)\s*[=:]\s*(\d+(?:\.\d+)?)'
-    SFE_PATTERN = r'(?:SFE|stacking fault energy|GSFE)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(mJ/m²|mj/m2|J/m2)'
-    SMD_PATTERN = r'(?:SMD|Sauter mean diameter)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µm|um|nm|mm)'
-    DENSITY_PATTERN = r'(?:density|ρ)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(g/cm³|g/cm3|kg/m³|kg/m3)'
-    THERMAL_CONDUCTIVITY_PATTERN = r'(?:thermal conductivity|k)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(W/m·K|W/mK|W/m·k)'
-    VISCOSITY_PATTERN = r'(?:viscosity|μ)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(Pa·s|mPa·s|cP)'
-    ENTHALPY_PATTERN = r'(?:enthalpy|H)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(J/mol|kJ/mol|J/kg)'
-    ELONGATION_PATTERN = r'(?:elongation|strain to failure)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|pct)'
-    PHASE_FRACTION_PATTERN = r'(?:austenite|ferrite|martensite)\s*(?:fraction|content|volume)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|vol%)'
-    GRAIN_SIZE_PATTERN = r'(?:grain size|cell size)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µm|um|nm|mm)'
-    POROSITY_PATTERN = r'(?:porosity|pore fraction)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|fraction)'
-    RELATIVE_DENSITY_PATTERN = r'(?:relative density)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|fraction)'
-
     ALLOY_PATTERNS = [
         r'\b(?:AlSi[\dMg]+|Ti\d*Al\d*V\d*|Inconel\s?\d{3}|SS\s?\d{4}|UNS\s?S\d{5}|Ti\s?6Al\s?4V|Cu\s?[A-Za-z0-9]+|Fe-based|Mg\s?alloy)\b',
         r'\b(?:Al-[\d]+Si-[\d]+Mg|AlSiMg[\d\.]+Zr|TiB[2]?|CoCr[\w]+|NiTi|Au\-Ti|Zr\-enhanced)\b',
@@ -341,7 +734,7 @@ class StructuredMetadataExtractor:
             "porosity": (re.compile(self.POROSITY_PATTERN, re.IGNORECASE), float),
             "relative_density": (re.compile(self.RELATIVE_DENSITY_PATTERN, re.IGNORECASE), float),
         }
-        self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
+
 
     def extract_metadata(self, doc_name: str, full_text: str) -> DocumentMetadata:
         meta = DocumentMetadata(doc_name=doc_name)
@@ -465,7 +858,7 @@ class TwoStageRetriever:
                 if proc.lower() in query_lower:
                     score += 0.2
             scores.append((name, min(score, 1.0)))
-        if self.embedding_model is not None and len(self.doc_summaries) > 0:
+
             try:
                 doc_texts = [f"{meta.alloys} {meta.process_types} {self.doc_summaries.get(name, '')}"
                              for name, meta in self.doc_metadata.items()]
@@ -1097,7 +1490,7 @@ class QuantitativeKnowledgeGraph:
                 ))
         return all_values
 
-    def get_entity_consensus(self, entity_name: str) -> Dict[str, Any]:
+
         values = []
         units = set()
         docs = set()
@@ -1178,7 +1571,7 @@ CRITICAL RULES:
 7. Return ONLY valid JSON, no extra text.
 8. Set confidence based on clarity.
 
-Return [] if no relevant information found."""Return [] if no relevant information found."""
+Return [] if no relevant information found."""
 
     def __init__(self, llm: HybridLLM):
         self.llm = llm
@@ -1874,7 +2267,7 @@ class PublicationVisualizationEngine:
 
         return html
 
-    def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
+
         """Query-focused hierarchical sunburst"""
         df_focus = self.get_query_focused_df(query_ctx)
         if df_focus.empty:
@@ -2701,7 +3094,7 @@ class PublicationVisualizationEngine:
         )
         return fig
 
-    def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
+
         if not doc_trees or not retrieved_nodes:
             return go.Figure().update_layout(title="No coverage data")
         doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))

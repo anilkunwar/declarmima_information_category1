@@ -217,249 +217,45 @@ class DocumentMetadata(BaseModel):
     hardness_values: List[float] = []
     temperature_values: List[float] = []
     energy_density_values: List[float] = []
+    areal_energy_density_values: List[float] = []
+    linear_energy_density_values: List[float] = []
     process_types: List[str] = []
+    corrosion_potential_values: List[float] = []
+    pitting_potential_values: List[float] = []
+    repassivation_potential_values: List[float] = []
+    breakdown_potential_values: List[float] = []
+    open_circuit_potential_values: List[float] = []
+    corrosion_current_density_values: List[float] = []
+    polarization_resistance_values: List[float] = []
+    current_density_values: List[float] = []
+    pren_values: List[float] = []
+    phase_fraction_values: List[float] = []
+    austenite_fraction_values: List[float] = []
+    ferrite_fraction_values: List[float] = []
+    grain_size_values: List[float] = []
+    cell_size_values: List[float] = []
+    porosity_values: List[float] = []
+    relative_density_values: List[float] = []
+    surface_roughness_values: List[float] = []
+    stacking_fault_energy_values: List[float] = []
+    unstable_stacking_fault_energy_values: List[float] = []
+    ideal_shear_strength_values: List[float] = []
+    sauter_mean_diameter_values: List[float] = []
+    spray_penetration_values: List[float] = []
+    plume_height_values: List[float] = []
+    film_thickness_values: List[float] = []
+    absorption_coefficient_values: List[float] = []
+    enthalpy_values: List[float] = []
+    viscosity_values: List[float] = []
+    thermal_conductivity_values: List[float] = []
+    density_values: List[float] = []
+    elongation_values: List[float] = []
+    modulus_values: List[float] = []
+    youngs_modulus_values: List[float] = []
+    poisson_ratio_values: List[float] = []
+    cte_values: List[float] = []
     other_parameters: Dict[str, List[float]] = {}
 
-
-# =============================================================================
-# QUERY CONTEXT FOR DRIVEN VISUALIZATIONS
-# =============================================================================
-@dataclass
-class QueryContext:
-    """Represents the context of the current user query for focused visualizations."""
-    query: str
-    relevant_doc_ids: Set[str]
-    physical_quantities: List[str]
-    materials: List[str]
-    extracted_values: List[ExtractedValue]
-    retrieved_nodes: List[Dict]
-    timestamp: datetime = field(default_factory=datetime.now)
-
-    @classmethod
-    def from_cache(cls, cache: Dict) -> 'QueryContext':
-        raw_vals = cache.get("extracted_values", [])
-        extracted_vals = [ExtractedValue(**v) for v in raw_vals] if raw_vals and isinstance(raw_vals[0], dict) else []
-        return cls(
-            query=cache.get("prompt", ""),
-            relevant_doc_ids={v.doc_name for v in extracted_vals},
-            physical_quantities=list({v.physical_quantity for v in extracted_vals if v.physical_quantity}),
-            materials=list({v.material for v in extracted_vals if v.material}),
-            extracted_values=extracted_vals,
-            retrieved_nodes=cache.get("retrieved", []),
-        )
-
-    def has_data(self) -> bool:
-        return len(self.extracted_values) > 0
-
-
-class PhysicalQuantityClassifier:
-    CANONICAL = {
-        "laser_power": ["laser power", "laser beam power", "laser output power", "laser power density (power)", "power", "p"],
-        "electrical_power": ["electrical power", "power supply", "input power", "electrical load"],
-        "scan_speed": ["scan speed", "scanning speed", "laser scan speed", "beam scan speed", "scan velocity", "v_scan", "vs"],
-        "flow_speed": ["flow speed", "flow velocity", "fluid velocity", "air velocity", "gas flow speed"],
-        "feed_rate": ["feed rate", "travel speed", "table speed", "stage speed"],
-        "irradiance": ["irradiance", "laser irradiance", "intensity", "power density (irradiance)", "w/cm2", "kw/cm2"],
-        "temperature": ["temperature", "melting temperature", "annealing temperature", "reflow temperature"],
-        "energy_density": ["energy density", "volumetric energy density", "ved", "laser fluence"],
-        "layer_thickness": ["layer thickness", "powder layer thickness", "slice thickness"],
-        "spot_size": ["spot size", "beam diameter", "laser spot diameter"],
-        "exposure_time": ["exposure time", "dwell time", "laser on time"],
-        "yield_strength": ["yield strength", "ys", "0.2% offset strength", "proof stress", "yield stress"],
-        "tensile_strength": ["tensile strength", "uts", "ultimate tensile strength", "ultimate strength"],
-        "hardness": ["hardness", "vickers hardness", "microhardness", "hv"],
-        "elongation": ["elongation", "strain", "ductility", "strain to failure"],
-        "modulus": ["young's modulus", "elastic modulus", "stiffness", "e-modulus"],
-    }
-    UNIT_HINTS = {
-        "scan_speed": ["mm/s", "cm/s", "m/s", "mm/min", "in/min"],
-        "flow_speed": ["mm/s", "cm/s", "m/s", "l/min", "m3/s"],
-        "laser_power": ["w", "kw", "mw"],
-        "irradiance": ["w/cm2", "kw/cm2", "w/m2"],
-        "temperature": ["c", "k", "f"],
-        "energy_density": ["j/mm3", "j/m3", "j/cm3", "j/m2"],
-        "yield_strength": ["mpa", "gpa", "psi"],
-        "tensile_strength": ["mpa", "gpa", "psi"],
-        "hardness": ["hv", "mpa", "gpa"],
-    }
-
-    def __init__(self):
-        self._build_keyword_index()
-
-    def _build_keyword_index(self):
-        self.keyword_to_canonical = {}
-        for canonical, keywords in self.CANONICAL.items():
-            for kw in keywords:
-                self.keyword_to_canonical[kw.lower()] = canonical
-        self.keyword_to_canonical["ys"] = "yield_strength"
-        self.keyword_to_canonical["uts"] = "tensile_strength"
-        self.keyword_to_canonical["smys"] = "yield_strength"
-        self.keyword_to_canonical["0.2% proof"] = "yield_strength"
-
-    def classify(self, parameter_name: Optional[str], unit: Optional[str], context: str) -> str:
-        if parameter_name:
-            pname_lower = parameter_name.lower().strip()
-            for canonical, keywords in self.CANONICAL.items():
-                for kw in keywords:
-                    if kw in pname_lower:
-                        return canonical
-            if pname_lower in self.keyword_to_canonical:
-                return self.keyword_to_canonical[pname_lower]
-        context_lower = context.lower()
-        for canonical, keywords in self.CANONICAL.items():
-            for kw in keywords:
-                if kw in context_lower:
-                    return canonical
-        if unit:
-            unit_lower = unit.lower()
-            if "yield" in context_lower and "mpa" in unit_lower:
-                return "yield_strength"
-            if "tensile" in context_lower and "mpa" in unit_lower:
-                return "tensile_strength"
-            for canonical, units in self.UNIT_HINTS.items():
-                for u in units:
-                    if u in unit_lower:
-                        return canonical
-        if unit:
-            if "w/cm" in unit_lower or "kw/cm" in unit_lower:
-                return "irradiance"
-            if unit_lower in ["w", "kw", "mw"]:
-                return "laser_power"
-            if "mm/s" in unit_lower:
-                return "scan_speed"
-            if "c" in unit_lower or "k" in unit_lower:
-                return "temperature"
-            if "mpa" in unit_lower or "gpa" in unit_lower:
-                return "hardness"
-        return "unknown"
-
-    def get_human_readable(self, canonical: str) -> str:
-        mapping = {
-            "laser_power": "Laser Power", "electrical_power": "Electrical Power",
-            "scan_speed": "Scan Speed", "flow_speed": "Flow Speed", "feed_rate": "Feed Rate",
-            "irradiance": "Irradiance / Intensity", "temperature": "Temperature",
-            "energy_density": "Energy Density", "layer_thickness": "Layer Thickness",
-            "spot_size": "Spot Size", "exposure_time": "Exposure Time",
-            "yield_strength": "Yield Strength", "tensile_strength": "Tensile Strength",
-            "hardness": "Hardness", "elongation": "Elongation", "modulus": "Young's Modulus",
-            "unknown": "Other Quantities"
-        }
-        return mapping.get(canonical, canonical.replace("_", " ").title())
-
-
-class ConceptNormalizer:
-    ALIAS_DICTIONARIES = {
-        "multicomponent": [
-            "multicomponent", "multi-component", "multielement", "multi-element",
-            "many elements", "complex alloy", "multi-principal", "high entropy",
-            "hea", "multiple elements", "ternary", "quaternary", "quinary"
-        ],
-        "yield_strength": [
-            "yield strength", "ys", "0.2% proof", "proof stress", "yield stress",
-            "0.2% offset strength"
-        ],
-        "tensile_strength": [
-            "tensile strength", "uts", "ultimate tensile strength", "ultimate strength",
-            "tensile stress"
-        ],
-        "laser_power": [
-            "laser power", "laser beam power", "laser output power", "beam power"
-        ],
-        "scan_speed": [
-            "scan speed", "scanning speed", "laser scan speed", "beam scan speed",
-            "scan velocity"
-        ],
-        "hardness": [
-            "hardness", "vickers hardness", "microhardness", "hv", "nano hardness"
-        ],
-    }
-
-    def __init__(self, embedding_fn: Optional[Callable] = None):
-        self.embedding_fn = embedding_fn
-        self._build_reverse_index()
-
-    def _build_reverse_index(self):
-        self.alias_to_canonical: Dict[str, str] = {}
-        for canonical, aliases in self.ALIAS_DICTIONARIES.items():
-            for alias in aliases:
-                self.alias_to_canonical[alias.lower()] = canonical
-
-    def normalize(self, term: str, use_fuzzy: bool = True, fuzzy_threshold: int = 85) -> str:
-        if not term or not str(term).strip():
-            return "unknown"
-        term_lower = str(term).lower().strip()
-        if term_lower in self.alias_to_canonical:
-            return self.alias_to_canonical[term_lower]
-        for alias, canonical in sorted(self.alias_to_canonical.items(), key=lambda x: -len(x[0])):
-            if alias in term_lower:
-                return canonical
-        if use_fuzzy and RAPIDFUZZ_AVAILABLE:
-            all_aliases = list(self.alias_to_canonical.keys())
-            result = process.extractOne(term_lower, all_aliases, scorer=fuzz.ratio)
-            if result and result[1] >= fuzzy_threshold:
-                return self.alias_to_canonical[result[0]]
-        if self.embedding_fn is not None:
-            try:
-                term_emb = self.embedding_fn(term_lower)
-                best_sim = -1.0
-                best_canonical = None
-                for canonical in self.ALIAS_DICTIONARIES:
-                    can_emb = self.embedding_fn(canonical)
-                    sim = float(np.dot(term_emb, can_emb) / (np.linalg.norm(term_emb) * np.linalg.norm(can_emb) + 1e-8))
-                    if sim > best_sim and sim > 0.75:
-                        best_sim = sim
-                        best_canonical = canonical
-                if best_canonical:
-                    return best_canonical
-            except Exception:
-                pass
-        return term_lower
-
-    def normalize_list(self, terms: List[str]) -> List[str]:
-        return [self.normalize(t) for t in terms]
-
-
-
-# ============================================================================
-# DISPLAY NAME HELPERS (DOI postprocessing + user aliases)
-# ============================================================================
-def normalize_doi_display(name: str) -> str:
-    """Convert filesystem-safe DOI filenames back to real DOI format.
-    E.g. '10.1016_j.scriptamat.2024.116027.pdf' -> '10.1016/j.scriptamat.2024.116027'
-    """
-    if not name:
-        return name
-    # Remove .pdf extension
-    base = name[:-4] if name.lower().endswith('.pdf') else name
-    # If it looks like a DOI (starts with 10. and contains _)
-    if re.match(r'10\.\d+_', base):
-        # Replace first _ after 10.xxx with /
-        base = re.sub(r'^(10\.\d+)_(.*)', r'\1/\2', base)
-    return base
-
-
-def get_display_name(doc_id: str, aliases: Optional[Dict[str, str]] = None) -> str:
-    """Return human-readable display name for a document.
-    Priority: 1) user alias, 2) DOI-normalized stem, 3) original stem.
-    """
-    if aliases and doc_id in aliases:
-        return aliases[doc_id]
-    stem = Path(doc_id).stem
-    normalized = normalize_doi_display(stem)
-    return normalized
-
-
-def get_citation_label(doc_id: str, aliases: Optional[Dict[str, str]] = None, index: int = 0, style: str = "doi") -> str:
-    """Generate citation-style label for a document.
-    style: 'doi' -> normalized DOI, 'number' -> [1], 'alias' -> user alias, 'short' -> first 20 chars.
-    """
-    if style == "alias" and aliases and doc_id in aliases:
-        return aliases[doc_id]
-    if style == "number":
-        return f"[{index}]"
-    if style == "short":
-        return Path(doc_id).stem[:20]
-    return normalize_doi_display(Path(doc_id).stem)
 
 class PaginationAwareReader:
     def __init__(self, max_chars_per_request=20000):
@@ -486,6 +282,24 @@ class PaginationAwareReader:
 
 
 class StructuredMetadataExtractor:
+    ECORR_PATTERN = r'(?:Ecorr|corrosion potential|OCP|open circuit potential)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
+    ERP_PATTERN = r'(?:Erp|repassivation potential)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
+    EPIT_PATTERN = r'(?:Epit|pitting potential|breakdown potential|Ebr)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
+    JCORR_PATTERN = r'(?:Jcorr|corrosion current density|i_corr)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µA/cm²|uA/cm2|mA/cm2|A/cm2)'
+    RP_PATTERN = r'(?:Rp|polarization resistance)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(kΩ·cm²|ohm·cm2|Ω·cm2)'
+    PREN_PATTERN = r'(?:PREN|pitting resistance equivalent)\s*[=:]\s*(\d+(?:\.\d+)?)'
+    SFE_PATTERN = r'(?:SFE|stacking fault energy|GSFE)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(mJ/m²|mj/m2|J/m2)'
+    SMD_PATTERN = r'(?:SMD|Sauter mean diameter)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µm|um|nm|mm)'
+    DENSITY_PATTERN = r'(?:density|ρ)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(g/cm³|g/cm3|kg/m³|kg/m3)'
+    THERMAL_CONDUCTIVITY_PATTERN = r'(?:thermal conductivity|k)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(W/m·K|W/mK|W/m·k)'
+    VISCOSITY_PATTERN = r'(?:viscosity|μ)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(Pa·s|mPa·s|cP)'
+    ENTHALPY_PATTERN = r'(?:enthalpy|H)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(J/mol|kJ/mol|J/kg)'
+    ELONGATION_PATTERN = r'(?:elongation|strain to failure)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|pct)'
+    PHASE_FRACTION_PATTERN = r'(?:austenite|ferrite|martensite)\s*(?:fraction|content|volume)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|vol%)'
+    GRAIN_SIZE_PATTERN = r'(?:grain size|cell size)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µm|um|nm|mm)'
+    POROSITY_PATTERN = r'(?:porosity|pore fraction)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|fraction)'
+    RELATIVE_DENSITY_PATTERN = r'(?:relative density)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|fraction)'
+
     ALLOY_PATTERNS = [
         r'\b(?:AlSi[\dMg]+|Ti\d*Al\d*V\d*|Inconel\s?\d{3}|SS\s?\d{4}|UNS\s?S\d{5}|Ti\s?6Al\s?4V|Cu\s?[A-Za-z0-9]+|Fe-based|Mg\s?alloy)\b',
         r'\b(?:Al-[\d]+Si-[\d]+Mg|AlSiMg[\d\.]+Zr|TiB[2]?|CoCr[\w]+|NiTi|Au\-Ti|Zr\-enhanced)\b',
@@ -508,6 +322,24 @@ class StructuredMetadataExtractor:
             "hardness": (re.compile(self.HARDNESS_PATTERN, re.IGNORECASE), float),
             "temperature": (re.compile(self.TEMP_PATTERN, re.IGNORECASE), float),
             "energy_density": (re.compile(self.VED_PATTERN, re.IGNORECASE), float),
+            "corrosion_potential": (re.compile(self.ECORR_PATTERN, re.IGNORECASE), float),
+            "pitting_potential": (re.compile(self.EPIT_PATTERN, re.IGNORECASE), float),
+            "repassivation_potential": (re.compile(self.ERP_PATTERN, re.IGNORECASE), float),
+            "breakdown_potential": (re.compile(self.EPIT_PATTERN, re.IGNORECASE), float),
+            "corrosion_current_density": (re.compile(self.JCORR_PATTERN, re.IGNORECASE), float),
+            "polarization_resistance": (re.compile(self.RP_PATTERN, re.IGNORECASE), float),
+            "PREN": (re.compile(self.PREN_PATTERN, re.IGNORECASE), float),
+            "stacking_fault_energy": (re.compile(self.SFE_PATTERN, re.IGNORECASE), float),
+            "sauter_mean_diameter": (re.compile(self.SMD_PATTERN, re.IGNORECASE), float),
+            "density": (re.compile(self.DENSITY_PATTERN, re.IGNORECASE), float),
+            "thermal_conductivity": (re.compile(self.THERMAL_CONDUCTIVITY_PATTERN, re.IGNORECASE), float),
+            "viscosity": (re.compile(self.VISCOSITY_PATTERN, re.IGNORECASE), float),
+            "enthalpy": (re.compile(self.ENTHALPY_PATTERN, re.IGNORECASE), float),
+            "elongation": (re.compile(self.ELONGATION_PATTERN, re.IGNORECASE), float),
+            "phase_fraction": (re.compile(self.PHASE_FRACTION_PATTERN, re.IGNORECASE), float),
+            "grain_size": (re.compile(self.GRAIN_SIZE_PATTERN, re.IGNORECASE), float),
+            "porosity": (re.compile(self.POROSITY_PATTERN, re.IGNORECASE), float),
+            "relative_density": (re.compile(self.RELATIVE_DENSITY_PATTERN, re.IGNORECASE), float),
         }
         self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
 
@@ -585,6 +417,50 @@ class TwoStageRetriever:
                 score += 0.4
             if "hardness" in query_lower and meta.hardness_values:
                 score += 0.4
+            # Electrochemical
+            if any(t in query_lower for t in ["corrosion", "pitting", "repassivation", "polarization", "eis", "cpp"]):
+                if meta.corrosion_potential_values or meta.polarization_resistance_values:
+                    score += 0.6
+            if "current density" in query_lower and meta.corrosion_current_density_values:
+                score += 0.5
+            if "pren" in query_lower and meta.pren_values:
+                score += 0.5
+            # Microstructural
+            if any(t in query_lower for t in ["austenite", "ferrite", "phase fraction"]):
+                if meta.phase_fraction_values or meta.austenite_fraction_values or meta.ferrite_fraction_values:
+                    score += 0.5
+            if "grain size" in query_lower and meta.grain_size_values:
+                score += 0.4
+            if "porosity" in query_lower and meta.porosity_values:
+                score += 0.4
+            if "relative density" in query_lower and meta.relative_density_values:
+                score += 0.4
+            # Thermal / physical
+            if "thermal conductivity" in query_lower and meta.thermal_conductivity_values:
+                score += 0.4
+            if "viscosity" in query_lower and meta.viscosity_values:
+                score += 0.4
+            if "density" in query_lower and meta.density_values:
+                score += 0.3
+            if "enthalpy" in query_lower and meta.enthalpy_values:
+                score += 0.4
+            # Spray / fluid
+            if any(t in query_lower for t in ["smd", "sauter", "droplet", "spray"]):
+                if meta.sauter_mean_diameter_values:
+                    score += 0.5
+            # SFE
+            if "stacking fault" in query_lower and meta.stacking_fault_energy_values:
+                score += 0.5
+            # Energy densities
+            if "ved" in query_lower or "volumetric energy density" in query_lower:
+                if meta.energy_density_values:
+                    score += 0.5
+            if "aed" in query_lower or "areal energy density" in query_lower:
+                if meta.areal_energy_density_values:
+                    score += 0.5
+            if "led" in query_lower or "linear energy density" in query_lower:
+                if meta.linear_energy_density_values:
+                    score += 0.5
             for proc in meta.process_types:
                 if proc.lower() in query_lower:
                     score += 0.2
@@ -1212,7 +1088,13 @@ class QuantitativeKnowledgeGraph:
                     continue
                 unit = item.get("unit", "")
                 phys_q = item.get("physical_quantity") or self.phys_classifier.classify(item.get("parameter_name"), unit, item.get("context", ""))
-                all_values.append(ExtractedValue(query=query, value=val, unit=unit, physical_quantity=phys_q, parameter_name=item.get("parameter_name"), material=item.get("material"), confidence=item.get("confidence", 0.7), context=item.get("context", "")[:300], doc_name=doc_id, page=item.get("page", 1), section_title=item.get("section_title")))
+                # Do NOT skip "unknown" — keep them so the user can see what was missed
+                all_values.append(ExtractedValue(
+                    query=query, value=val, unit=unit, physical_quantity=phys_q or "unknown",
+                    parameter_name=item.get("parameter_name"), material=item.get("material"),
+                    confidence=item.get("confidence", 0.7), context=item.get("context", "")[:300],
+                    doc_name=doc_id, page=item.get("page", 1), section_title=item.get("section_title")
+                ))
         return all_values
 
     def get_entity_consensus(self, entity_name: str) -> Dict[str, Any]:
@@ -1264,7 +1146,7 @@ class QuantitativeKnowledgeGraph:
 
 
 class UniversalLLMExtractor:
-    EXTRACTION_PROMPT = """Extract information relevant to the query from these document sections.
+    EXTRACTION_PROMPT = """Extract ALL quantitative information relevant to the query from these document sections.
 QUERY: {query}
 QUERY TYPE: {query_type}
 SECTIONS:
@@ -1280,20 +1162,23 @@ Return JSON array of extracted items with fields:
   "page": page_number,
   "parameter_name": "...",
   "value": number,
-  "unit": "e.g., W, kW, W/cm2, mm/s, C, MPa, HV",
-  "physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, irradiance, temperature, energy_density, layer_thickness, spot_size, exposure_time, yield_strength, tensile_strength, hardness, elongation, modulus, unknown",
-  "material": "alloy or material name if mentioned (e.g., AlSiMg1.4Zr, Ti6Al4V, Inconel 718)"
+  "unit": "e.g., W, kW, mm/s, MPa, GPa, HV, mV, V, µA/cm², A/cm², J/mm³, J/mm², J/m, mJ/m², nm, µm, mm, K, °C, wt%, at%, vol%, g/cm³, kg/m³, W/m·K, Pa·s, mPa·s, kΩ·cm², ppm",
+  "physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, feed_rate, irradiance, temperature, melting_temperature, energy_density, areal_energy_density, linear_energy_density, layer_thickness, spot_size, exposure_time, enthalpy, viscosity, thermal_conductivity, density, yield_strength, tensile_strength, ultimate_tensile_strength, hardness, elongation, modulus, stacking_fault_energy, unstable_stacking_fault_energy, ideal_shear_strength, corrosion_potential, pitting_potential, breakdown_potential, repassivation_potential, open_circuit_potential, corrosion_current_density, polarization_resistance, apparent_polarization_resistance, current_density, PREN, phase_fraction, austenite_fraction, ferrite_fraction, grain_size, cell_size, porosity, relative_density, surface_roughness, sauter_mean_diameter, spray_penetration, plume_height, film_thickness, absorption_coefficient, youngs_modulus, poisson_ratio, coefficient_thermal_expansion, unknown",
+  "material": "alloy or material name if mentioned (e.g., Ti3Au, CP Ti, Grade II Ti, SDSS 2507, UNS S32750, AlSiMgZr, Al-Si-Mg-Zr, TiB2/Al-Si-Mg-Zr, Fe-based metallic glass, Au-Ti, 316L, 2205, Inconel 718, Ti6Al4V)",
+  "method": "e.g., LPBF, L-PBF, DED, SLM, PFI, GDI, FEM, MD, nanoindentation, EIS, CPP, XRD, SEM, TEM, EBSD, EDS, DTA"
 }}
 
 CRITICAL RULES:
-1. Distinguish physically different quantities even if they share units.
-2. For mechanical properties: "yield strength" -> physical_quantity = "yield_strength", "tensile strength" -> "tensile_strength".
-3. NEVER truncate numbers.
-4. If an alloy or material name appears, create an item with item_type="material", content=the name, material=the name.
-5. Return ONLY valid JSON, no extra text.
-6. Set confidence based on clarity.
+1. Capture ALL numbers with units, even if they describe corrosion, electrochemistry, thermal properties, mechanical properties, microstructural features, or spray dynamics.
+2. For electrochemical data: map Ecorr/Erp/Epit/Ebr to corrosion_potential/pitting_potential/etc., NOT just generic potential.
+3. For LPBF/DED: capture VED, AED, LED, hatch distance, layer thickness, laser power, scan speed.
+4. For nanoindentation: capture indentation force, hardness, modulus, SFE, USFE.
+5. NEVER truncate numbers.
+6. If an alloy or material name appears, create an item with item_type="material", content=the name, material=the name.
+7. Return ONLY valid JSON, no extra text.
+8. Set confidence based on clarity.
 
-Return [] if no relevant information found."""
+Return [] if no relevant information found."""Return [] if no relevant information found."""
 
     def __init__(self, llm: HybridLLM):
         self.llm = llm
@@ -1830,33 +1715,33 @@ class PublicationVisualizationEngine:
         net = Network(
             height="780px", 
             width="100%", 
-            bgcolor="#0f172a",      # Dark theme for modern look
-            font_color="#e2e8f0",
+            bgcolor="#ffffff",      # White bright background
+            font_color="#1e293b",   # Dark slate text
             cdn_resources='remote'
         )
-        
+
         net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
 
         # Confidence threshold for strong paths
         high_conf_threshold = 0.75
 
         # ====================== ADD NODES ======================
-        
+
         # 1. Central Query Node
         net.add_node(
             "QUERY", 
             label="YOUR QUERY",
             title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
-            color="#a855f7",
+            color="#7c3aed",  # Darker purple for white bg
             size=45,
-            font={"size": 18, "bold": True}
+            font={"size": 18, "bold": True, "color": "#1e293b"}
         )
 
         # 2. Documents
         for doc_id in query_ctx.relevant_doc_ids:
             display = get_display_name(doc_id, self.cfg.aliases)
             count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
-            
+
             tooltip = f"<b>Document:</b> {display}<br>"
             tooltip += f"<b>Extracted Values:</b> {count}<br><br>"
             for item in query_ctx.extracted_values[:5]:
@@ -1867,9 +1752,9 @@ class PublicationVisualizationEngine:
                 display,
                 label=display[:25],
                 title=tooltip,
-                color="#22c55e",
+                color="#16a34a",  # Darker green
                 size=32,
-                font={"size": 14}
+                font={"size": 14, "color": "#1e293b"}
             )
             net.add_edge("QUERY", display, value=3)
 
@@ -1880,8 +1765,9 @@ class PublicationVisualizationEngine:
                 pq,
                 label=readable,
                 title=f"<b>Physical Quantity:</b><br>{readable}",
-                color="#3b82f6",
-                size=28
+                color="#2563eb",  # Darker blue
+                size=28,
+                font={"color": "#1e293b"}
             )
             net.add_edge("QUERY", pq, value=2)
 
@@ -1891,8 +1777,9 @@ class PublicationVisualizationEngine:
                 mat,
                 label=mat[:22],
                 title=f"<b>Material/Alloy:</b><br>{mat}",
-                color="#f59e0b",
-                size=30
+                color="#d97706",  # Darker orange
+                size=30,
+                font={"color": "#1e293b"}
             )
             net.add_edge("QUERY", mat, value=2)
 
@@ -1900,11 +1787,11 @@ class PublicationVisualizationEngine:
         for i, val in enumerate(sorted(query_ctx.extracted_values, key=lambda x: x.confidence, reverse=True)[:30]):
             node_id = f"val_{i}"
             label = f"{val.value:.1f}{val.unit or ''}"
-            
+
             # Color by confidence
             conf = val.confidence
-            color = "#f43f5e" if conf >= high_conf_threshold else "#fb923c" if conf >= 0.6 else "#94a3b8"
-            
+            color = "#e11d48" if conf >= high_conf_threshold else "#ea580c" if conf >= 0.6 else "#64748b"
+
             excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
             tooltip = f"""
             <b>{val.value} {val.unit}</b><br>
@@ -1914,14 +1801,14 @@ class PublicationVisualizationEngine:
             <b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br>
             <b>Context:</b><br>{excerpt}
             """
-            
+
             net.add_node(
                 node_id, 
                 label=label, 
                 title=tooltip,
                 color=color,
-                size=24 + int(conf * 18),   # Size by confidence
-                font={"size": 11}
+                size=24 + int(conf * 18),
+                font={"size": 11, "color": "#1e293b"}
             )
 
             # Connect with thickness based on confidence
@@ -1949,29 +1836,29 @@ class PublicationVisualizationEngine:
         network.on("click", function(params) {
             if (params.nodes.length === 0) return;
             var nodeId = params.nodes[0];
-            
+
             if (nodeId.startsWith("val_")) {
                 var node = network.body.nodes[nodeId];
                 var title = node.options.title || "No details";
-                
+
                 if (!modal) {
                     modal = document.createElement("div");
                     modal.style.cssText = `
                         position:fixed; top:0; left:0; width:100%; height:100%; 
-                        background:rgba(0,0,0,0.85); z-index:9999; display:flex; 
+                        background:rgba(0,0,0,0.6); z-index:9999; display:flex; 
                         align-items:center; justify-content:center; font-family:system-ui;
                     `;
                     document.body.appendChild(modal);
                 }
-                
+
                 modal.innerHTML = `
-                    <div style="background:#1e2937; color:#e2e8f0; padding:25px; border-radius:12px; 
-                                max-width:620px; max-height:85vh; overflow:auto; border:1px solid #475569;">
-                        <h3 style="margin-top:0; color:#f472b6;">Extracted Value Details</h3>
+                    <div style="background:#f8fafc; color:#1e293b; padding:25px; border-radius:12px; 
+                                max-width:620px; max-height:85vh; overflow:auto; border:1px solid #cbd5e1;">
+                        <h3 style="margin-top:0; color:#db2777;">Extracted Value Details</h3>
                         <div style="white-space:pre-wrap; font-size:15px; line-height:1.5;">${title}</div>
                         <br>
                         <button onclick="this.parentElement.parentElement.remove()" 
-                                style="padding:10px 20px; background:#f43f5e; color:white; border:none; 
+                                style="padding:10px 20px; background:#e11d48; color:white; border:none; 
                                 border-radius:6px; cursor:pointer;">Close</button>
                     </div>
                 `;
@@ -1987,9 +1874,6 @@ class PublicationVisualizationEngine:
 
         return html
 
-    # =============================================================================
-    # QUERY-AWARE SUNBURST
-    # =============================================================================
     def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
         """Query-focused hierarchical sunburst"""
         df_focus = self.get_query_focused_df(query_ctx)
@@ -2790,8 +2674,31 @@ class PublicationVisualizationEngine:
                     sources.append(label_index[node_key]); targets.append(label_index[pq_key]); vals.append(1)
         for pq_key in pq_nodes_list:
             sources.append(label_index[pq_key]); targets.append(label_index["Answer"]); vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
-        fig = go.Figure(data=[go.Sankey(node=dict(pad=15, thickness=20, line=dict(color="black", width=0.5), label=labels, color=["#1f77b4"] + ["#ff7f0e"] * len(doc_nodes) + ["#2ca02c"] * len(node_labels_list) + ["#d62728"] * len(pq_nodes_list) + ["#9467bd"]), link=dict(source=sources, target=targets, value=vals))])
-        fig.update_layout(title_text=f"Retrieval Provenance Flow: '{query[:40]}...'", font=dict(family=self.font_family, size=self.font_size))
+        # Publication-quality color scheme
+        node_colors = ["#1e3a5f"]  # Query: deep navy
+        node_colors += ["#2563eb"] * len(doc_nodes)  # Docs: blue
+        node_colors += ["#059669"] * len(node_labels_list)  # Nodes: emerald
+        node_colors += ["#dc2626"] * len(pq_nodes_list)  # PQ: red
+        node_colors += ["#7c3aed"]  # Answer: purple
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=20, thickness=24, line=dict(color="#334155", width=0.8),
+                label=labels, color=node_colors,
+                hovertemplate="%{label}<extra></extra>"
+            ),
+            link=dict(
+                source=sources, target=targets, value=vals,
+                color=["rgba(37, 99, 235, 0.25)" if s < len(doc_nodes)+1 else "rgba(5, 150, 105, 0.2)" for s in sources],
+                hovertemplate="From: %{source.label}<br>To: %{target.label}<br>Value: %{value}<extra></extra>"
+            )
+        )])
+        fig.update_layout(
+            title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'",
+            font=dict(family=self.font_family, size=self.font_size, color="#1e293b"),
+            paper_bgcolor="white", plot_bgcolor="white",
+            height=650, width=1100,
+            margin=dict(l=40, r=40, t=80, b=40)
+        )
         return fig
 
     def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
@@ -3061,7 +2968,7 @@ def run_streamlit():
                     for c in node.children:
                         collect_leaves(c)
                 collect_leaves(tree)
-                initial_prompt = "Extract all quantitative parameters (laser power, scan speed, yield strength, tensile strength, hardness, temperature, energy density, etc.) with full numerical values, correct units, physical_quantity classification, and any alloy/material names."
+                initial_prompt = "Extract ALL quantitative parameters: laser power, scan speed, VED, AED, LED, layer thickness, hatch distance, temperature, enthalpy, viscosity, thermal conductivity, density, yield strength, UTS, elongation, hardness, modulus, stacking fault energy, ideal shear strength, corrosion potential (Ecorr), pitting potential (Epit), repassivation potential (Erp), breakdown potential (Ebr), corrosion current density (Jcorr), polarization resistance (Rp), PREN, phase fractions (austenite, ferrite), grain size, porosity, relative density, Sauter mean diameter (SMD), spray penetration, plume height, film thickness, absorption coefficient, Young's modulus, Poisson's ratio, CTE. Include units, material names, and page numbers. Also extract alloy names, process methods (LPBF, DED, PFI, GDI, FEM, MD), and phases (Ti3Au, Al3Zr, beta-Ti3Au, etc.)."
                 items = extractor.extract_from_chunks(leaf_texts, initial_prompt)
                 all_items.extend(items)
                 kg.add_extractions(doc_name, items)

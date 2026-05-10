@@ -1697,7 +1697,6 @@ class PublicationVisualizationEngine:
             return go.Figure().update_layout(title=f"No {quantity_name} data")
         subset = df[df["physical_quantity"] == quantity_name]
         if subset.empty:
-            # FIX: Return figure with descriptive title instead of empty figure
             return go.Figure().update_layout(title=f"No {quantity_name.replace('_',' ').title()} data available")
         clean_col = subset[group_by].fillna("Unknown").replace("", "Unknown")
         subset = subset.assign(clean_group=clean_col)
@@ -1722,7 +1721,6 @@ class PublicationVisualizationEngine:
         return fig
 
     def plot_material_counts(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        # FIX: Count materials from the material column directly, not by filtering physical_quantity == "material"
         if df.empty:
             return go.Figure().update_layout(title="No data")
         mat_df = df[df["material"].notna() & (df["material"] != "Unknown") & (df["material"] != "")]
@@ -1771,12 +1769,10 @@ class PublicationVisualizationEngine:
         subset = subset.dropna(subset=["material", "doc_stem", "value"])
         if subset.empty:
             return go.Figure().update_layout(title=f"No valid data for {quantity.replace('_',' ').title()}")
-        # FIX: Filter out infinite and non-finite values before pd.cut
         subset = subset[np.isfinite(subset["value"])]
         if subset.empty:
             return go.Figure().update_layout(title=f"No finite values for {quantity.replace('_',' ').title()}")
         n_bins = min(5, max(2, len(subset)//3))
-        # FIX: Handle constant values and pd.cut failures gracefully
         if subset["value"].nunique() <= 1:
             subset["value_range"] = "single_value"
         else:
@@ -1799,7 +1795,6 @@ class PublicationVisualizationEngine:
         df_hier["material"] = df_hier["material"].fillna("Unknown").replace("", "Unknown")
         df_hier["doc_stem"] = df_hier["doc_stem"].fillna("Unknown").replace("", "Unknown")
         df_hier["value_dummy"] = 1
-        # FIX: Additional guard for empty dataframe after cleaning
         if df_hier.empty:
             return go.Figure().update_layout(title="No data after cleaning")
         try:
@@ -1864,7 +1859,6 @@ class PublicationVisualizationEngine:
         if df.empty:
             return go.Figure().update_layout(title="No data")
         pivot = df.pivot_table(index="doc_stem", columns="physical_quantity", values="value", aggfunc="count").fillna(0)
-        # FIX: Guard against empty pivot columns
         if pivot.empty or len(pivot.columns) == 0:
             return go.Figure().update_layout(title="No data for document radar")
         fig = go.Figure()
@@ -1905,14 +1899,12 @@ class PublicationVisualizationEngine:
             return plt.figure()
         for mat in subset["material"].unique():
             if pd.notna(mat) and str(mat).strip() and mat != "Unknown":
-                # Build tooltip with material values for this quantity
                 mat_vals = subset[subset["material"] == mat]["value"].tolist()
                 tooltip = f"Material: {mat}\nCount: {len(mat_vals)}\nRange: {min(mat_vals):.2f} - {max(mat_vals):.2f}\nMean: {np.mean(mat_vals):.2f}"
                 G.add_node(mat, node_type="material", title=tooltip)
                 G.add_edge(hub, mat, weight=len(subset[subset["material"] == mat]))
         for doc in subset["doc_stem"].unique():
             if pd.notna(doc) and str(doc).strip():
-                # Find original doc_id and build tooltip
                 orig_doc = None
                 for d in self.kgraph.doc_graphs:
                     if get_display_name(d, aliases) == doc:
@@ -1954,7 +1946,6 @@ class PublicationVisualizationEngine:
         for doc in docs:
             if doc is None or str(doc).strip() == "":
                 continue
-            # Find original doc_id from display name
             orig_doc = None
             for d in self.kgraph.doc_graphs:
                 if get_display_name(d, aliases) == doc:
@@ -1962,7 +1953,6 @@ class PublicationVisualizationEngine:
                     break
             if not orig_doc:
                 continue
-            # Build tooltip with top extracted values
             tooltip = f"Document: {get_citation_label(orig_doc, aliases, style=label_style)}\n"
             doc_items = [it for it in self.kgraph.doc_graphs[orig_doc]["all_items"] if it.get("value") is not None]
             top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
@@ -1973,7 +1963,6 @@ class PublicationVisualizationEngine:
         for pq in pqs:
             if pq is None or str(pq).strip() == "":
                 continue
-            # Build tooltip with summary stats
             stats = self.kgraph.get_summary_stats(pq)
             tooltip = f"Quantity: {pq}\n"
             if stats.get("count", 0) > 0:
@@ -1983,7 +1972,6 @@ class PublicationVisualizationEngine:
         for mat in mats:
             if mat is None or str(mat).strip() == "" or mat == "Unknown":
                 continue
-            # Build tooltip with material stats
             stats = self.kgraph.get_material_summary_stats(mat)
             tooltip = f"Material: {mat}\n"
             for pq, vals in list(stats.items())[:3]:
@@ -2028,7 +2016,6 @@ class PublicationVisualizationEngine:
         for doc_id in docs:
             display = get_display_name(doc_id, aliases)
             label = get_citation_label(doc_id, aliases, style=label_style)
-            # Build tooltip
             tooltip = f"Document: {label}\n"
             doc_items = [it for it in self.kgraph.doc_graphs[doc_id]["all_items"] if it.get("value") is not None]
             if doc_items:
@@ -2086,7 +2073,6 @@ class PublicationVisualizationEngine:
         for doc in docs:
             display = get_display_name(doc, aliases)
             label = get_citation_label(doc, aliases, style=label_style)
-            # Build enriched tooltip
             tooltip = f"<b>{label}</b><br>"
             tooltip += f"File: {Path(doc).name}<br>"
             doc_items = [it for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("value") is not None]
@@ -2100,14 +2086,12 @@ class PublicationVisualizationEngine:
         for ent in entities:
             stats = self.kgraph.get_summary_stats(ent)
             count = stats.get("count", 0)
-            # Build enriched tooltip for quantity nodes
             tooltip = f"<b>{ent}</b><br>"
             tooltip += f"Occurrences: {count}<br>"
             if stats.get("count", 0) > 0:
                 tooltip += f"Range: {stats.get('min', 0):.2f} - {stats.get('max', 0):.2f}<br>"
                 tooltip += f"Mean: {stats.get('mean', 0):.2f}<br>"
                 tooltip += f"Std: {stats.get('std', 0):.2f}<br>"
-                # Show values by document
                 tooltip += "<b>By document:</b><br>"
                 for doc in docs:
                     doc_vals = [it["value"] for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("physical_quantity") == ent and it.get("value") is not None]
@@ -2700,7 +2684,7 @@ def run_streamlit():
     if "annotated_trees" not in st.session_state:
         st.session_state.annotated_trees = []
     if "cached_query_result" not in st.session_state:
-        st.session_state.cached_query_result = None
+        st.session_state.cached_query_result = {}   # FIXED: was None
     if "active_prompt" not in st.session_state:
         st.session_state.active_prompt = ""
     if "two_stage_retriever" not in st.session_state:
@@ -2770,7 +2754,6 @@ def run_streamlit():
             st.session_state.annotated_trees = annotated
             progress.progress(1.0)
             st.success(f"Indexed {len(trees)} documents with {len(all_items)} quantitative items")
-            # Initialize alias system
             if "doc_aliases" not in st.session_state:
                 st.session_state.doc_aliases = {}
             with st.expander("Detected Physical Quantities and Materials", expanded=True):
@@ -2889,8 +2872,7 @@ def run_streamlit():
             else:
                 if not active_prompt:
                     st.info("Ask a question about the documents, or explore the indexed data below.")
-                    # FIX: Removed 'return' here so the visualization dashboard is still reachable
-                    # after indexing even when no query has been entered yet.
+                    # FIXED: Removed early return so visualization dashboard always renders after indexing
 
 
         st.markdown("---")
@@ -2961,7 +2943,6 @@ def run_streamlit():
                 colormap = st.session_state.get("viz_colormap", "viridis")
                 tabs = st.tabs(["Histograms & Bars", "Pie & Donut", "Sunburst & Treemap", "Radar & Chord", "Contradiction & Consensus", "Networks", "Embedding Spaces", "Scatter & Violin", "Entity Explorer", "Retrieval Diagnostics"])
 
-                # FIX: Wrap each tab in try/except so one failing plot doesn't crash the whole dashboard
                 with tabs[0]:
                     try:
                         if selected_qty != "All":
@@ -3226,7 +3207,7 @@ def run_streamlit():
 
                 with tabs[9]:
                     st.markdown("### Retrieval Diagnostics & Provenance")
-                    cached = st.session_state.get("cached_query_result", {})
+                    cached = st.session_state.get("cached_query_result") or {}   # FIXED: safe None handling
                     rel_docs = cached.get("relevant_docs", [])
                     retrieved_nodes = cached.get("retrieved", [])
                     raw_items = cached.get("items", [])

@@ -209,7 +209,7 @@ V73- : Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v73.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel73.streamlit.app/) (Visualization not rendered, DOI represented in the correct format, Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v74.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel74.streamlit.app/) (V73 with visualization rendered, Static Visualization with Dropdown Options as in V72)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v74.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel74.streamlit.app/) (V73 with visualization rendered, The machine intelligence focus primarily on laser power, scan speed , strength and alloys. Static Visualization with Dropdown Options as in V72)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v75.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel75.streamlit.app/) (V73 with visualization rendered, Dynamic and interactive visualization)
 

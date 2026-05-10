@@ -205,13 +205,17 @@ V68-V71  : Vectorless Reasoning Based RAG and Parallelization (No Series) Two St
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v72.0-indigo)](https://vectorless-reasoning-rag-information-retrieval-parallel72.streamlit.app/) (Useful for Learning, DOI represented in the correct format, Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
 
-V73- : Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept materials-centric queries too, Specific Features based Benchmark Queries
+V73-V75 : Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept materials-centric queries too, Specific Features based Benchmark Queries
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v73.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel73.streamlit.app/) (Visualization not rendered, DOI represented in the correct format, Successful Visualization, 4000-50000 Max text length in character per retrieved sectionV67 with Dynamic Visualization, Benchmark Query:Find out the laser power and/or scan speed for materials / alloys/ compounds in the documents, not so robust in visualization  )
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v74.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel74.streamlit.app/) (V73 with visualization rendered, The machine intelligence focus primarily on laser power, scan speed , strength and alloys. Static Visualization with Dropdown Options as in V72)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v75.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel75.streamlit.app/) (V73 with visualization rendered, Dynamic and interactive visualization)
+
+V76- : Universal Models that accept Universal Queries as the KnowledgeGraph is Expanded to include all the topica areas.  Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept universal queries.
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v76.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel76.streamlit.app/) (V75 with expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
 
 

@@ -2213,10 +2213,32 @@ class PublicationVisualizationEngine:
         "document": "#10b981", "hub": "#dc2626"
     }
     COLORMAP_OPTIONS = {
+        # Perceptually uniform
         "viridis": "viridis", "plasma": "plasma", "inferno": "inferno", "magma": "magma",
-        "cividis": "cividis", "Blues": "Blues", "Greens": "Greens", "Oranges": "Oranges",
-        "Reds": "Reds", "RdBu": "RdBu", "Spectral": "Spectral", "coolwarm": "coolwarm",
-        "Set1": "Set1", "Set2": "Set2", "Set3": "Set3", "tab10": "tab10", "tab20": "tab20"
+        "cividis": "cividis",
+        # Sequential single-hue
+        "Greys": "Greys", "Purples": "Purples", "Blues": "Blues", "Greens": "Greens",
+        "Oranges": "Oranges", "Reds": "Reds", "YlOrBr": "YlOrBr", "YlOrRd": "YlOrRd",
+        "OrRd": "OrRd", "PuRd": "PuRd", "RdPu": "RdPu", "BuPu": "BuPu", "GnBu": "GnBu",
+        "PuBu": "PuBu", "YlGnBu": "YlGnBu", "PuBuGn": "PuBuGn", "BuGn": "BuGn", "YlGn": "YlGn",
+        # Sequential multi-hue
+        "binary": "binary", "gist_yarg": "gist_yarg", "gist_gray": "gist_gray", "gray": "gray",
+        "bone": "bone", "pink": "pink", "spring": "spring", "summer": "summer",
+        "autumn": "autumn", "winter": "winter", "cool": "cool", "Wistia": "Wistia",
+        "hot": "hot", "afmhot": "afmhot", "gist_heat": "gist_heat", "copper": "copper",
+        # Diverging
+        "PiYG": "PiYG", "PRGn": "PRGn", "BrBG": "BrBG", "RdBu": "RdBu", "RdGy": "RdGy",
+        "PuOr": "PuOr", "Spectral": "Spectral", "coolwarm": "coolwarm", "bwr": "bwr",
+        "seismic": "seismic", "RdYlBu": "RdYlBu", "RdYlGn": "RdYlGn",
+        # Qualitative
+        "Set1": "Set1", "Set2": "Set2", "Set3": "Set3", "tab10": "tab10", "tab20": "tab20",
+        "tab20b": "tab20b", "tab20c": "tab20c", "Pastel1": "Pastel1", "Pastel2": "Pastel2",
+        "Paired": "Paired", "Accent": "Accent", "Dark2": "Dark2",
+        # Misc / High-contrast / Popular
+        "rainbow": "rainbow", "jet": "jet", "turbo": "turbo", "nipy_spectral": "nipy_spectral",
+        "gist_rainbow": "gist_rainbow", "gist_ncar": "gist_ncar", "gist_stern": "gist_stern",
+        "hsv": "hsv", "flag": "flag", "prism": "prism", "ocean": "ocean", "terrain": "terrain",
+        "twilight": "twilight", "twilight_shifted": "twilight_shifted", "cubehelix": "cubehelix"
     }
 
     def __init__(self, kgraph: QuantitativeKnowledgeGraph, config: Optional[VisConfig] = None):
@@ -2253,12 +2275,50 @@ class PublicationVisualizationEngine:
 
     def _get_plotly_colorscale(self, name: Optional[str] = None) -> str:
         name = name or self.default_colormap
-        mapping = {"coolwarm": "RdBu", "RdBu": "RdBu", "seismic": "RdBu", "bwr": "RdBu"}
-        plotly_builtins = ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'blues', 'greens', 'oranges', 'reds']
+        mapping = {
+            "coolwarm": "RdBu", "RdBu": "RdBu", "seismic": "RdBu", "bwr": "RdBu",
+            "PiYG": "PiYG", "PRGn": "PRGn", "BrBG": "BrBG", "RdGy": "RdGy",
+            "PuOr": "PuOr", "Spectral": "Spectral", "RdYlBu": "RdYlBu", "RdYlGn": "RdYlGn",
+            "rainbow": "rainbow", "jet": "jet", "turbo": "turbo", "hsv": "hsv",
+            "hot": "hot", "cool": "cool", "gray": "gray", "greys": "gray",
+            "bone": "greys", "pink": "pinkyl", "spring": "mint", "summer": "emrld",
+            "autumn": "fall", "winter": "ice", "copper": "brwnyl", "terrain": "earth",
+            "ocean": "haline", "twilight": "twilight", "cubehelix": "plotly3",
+            "nipy_spectral": "nipy_spectral", "gist_rainbow": "rainbow", "gist_ncar": "jet",
+            "gist_stern": "jet", "flag": "flag", "prism": "prism",
+            "afmhot": "hot", "gist_heat": "hot", "gist_yarg": "gray", "gist_gray": "gray",
+            "binary": "gray", "Wistia": "sunset", "YlOrBr": "ylorbr", "YlOrRd": "ylorrd",
+            "OrRd": "orrd", "PuRd": "purd", "RdPu": "rdpu", "BuPu": "bupu",
+            "GnBu": "gnbu", "PuBu": "pubu", "YlGnBu": "ylgnbu", "PuBuGn": "pubugn",
+            "BuGn": "bugn", "YlGn": "ylgn", "Purples": "purples", "Blues": "blues",
+            "Greens": "greens", "Oranges": "oranges", "Reds": "reds",
+            "Set1": "Set1", "Set2": "Set2", "Set3": "Set3", "tab10": "tab10",
+            "tab20": "tab20", "tab20b": "tab20b", "tab20c": "tab20c",
+            "Pastel1": "Pastel1", "Pastel2": "Pastel2", "Paired": "Paired",
+            "Accent": "Accent", "Dark2": "Dark2"
+        }
+        plotly_builtins = [
+            'viridis', 'plasma', 'inferno', 'magma', 'cividis',
+            'blues', 'greens', 'oranges', 'reds', 'greys',
+            'ylorbr', 'ylorrd', 'orrd', 'purd', 'rdpu', 'bupu',
+            'gnbu', 'pubu', 'ylgnbu', 'pubugn', 'bugn', 'ylgn',
+            'purples', 'haline', 'ice', 'emrld', 'fall', 'mint',
+            'sunset', 'sunsetdark', 'teal', 'tealgrn', 'tealrose',
+            'tempo', 'temps', 'thermal', 'tropic', 'turbid', 'twilight',
+            'aggrnyl', 'agsunset', 'algae', 'amp', 'armyrose', 'balance',
+            'blackbody', 'bluered', 'blugrn', 'bluyl', 'brbg', 'brwnyl',
+            'burg', 'burgyl', 'curl', 'darkmint', 'deep', 'delta', 'dense',
+            'earth', 'edge', 'electric', 'geyser', 'gray', 'hot', 'magenta',
+            'matter', 'mrybm', 'mygbm', 'oryel', 'oxy', 'peach', 'phase',
+            'picnic', 'pinkyl', 'piyg', 'plotly3', 'portland', 'prgn',
+            'pubugn', 'puor', 'purd', 'purp', 'purpor', 'rdbu', 'rdgy',
+            'rdpu', 'rdylbu', 'rdylgn', 'redor', 'solar', 'spectral',
+            'speed', 'ylgn', 'ylgnbu'
+        ]
         lowered = name.lower()
         if lowered in plotly_builtins:
             return lowered
-        return mapping.get(lowered, 'viridis')
+        return mapping.get(name, mapping.get(lowered, 'viridis'))
 
     def extract_dataframe(self, aliases: Optional[Dict[str, str]] = None, label_style: str = "doi") -> pd.DataFrame:
         rows = []
@@ -2424,37 +2484,63 @@ class PublicationVisualizationEngine:
     # EXISTING VISUALIZATION METHODS (REPAIRED)
     # =============================================================================
     def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
-        """Interactive PyVis KG with confidence highlighting + modal-ready JS"""
+        """Interactive PyVis KG with confidence highlighting + modal-ready JS.
+        Respects VisConfig font settings and uses publication-quality aesthetics."""
         if not PYVIS_AVAILABLE:
             return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
 
         if not query_ctx.has_data():
             return "<p>No quantitative data available for this query.</p>"
 
+        # Config-driven styling
+        font_family = self.cfg.font_family or "DejaVu Sans"
+        font_size = self.cfg.font_size or 10
+        title_font_size = self.cfg.title_font_size or 14
+        label_font_size = self.cfg.label_font_size or 9
+
+        # Publication-quality Tailwind-inspired palette
+        PALETTE = {
+            "query":      {"bg": "#4c1d95", "border": "#6d28d9", "font": "#ffffff"},
+            "doc":        {"bg": "#065f46", "border": "#10b981", "font": "#ffffff"},
+            "pq":         {"bg": "#1e40af", "border": "#3b82f6", "font": "#ffffff"},
+            "material":   {"bg": "#92400e", "border": "#f59e0b", "font": "#ffffff"},
+            "value_high": {"bg": "#9f1239", "border": "#e11d48", "font": "#ffffff"},
+            "value_mid":  {"bg": "#c2410c", "border": "#ea580c", "font": "#ffffff"},
+            "value_low":  {"bg": "#475569", "border": "#64748b", "font": "#f1f5f9"},
+            "edge_strong": "#94a3b8",
+            "edge_weak":   "#cbd5e1",
+        }
+
         net = Network(
-            height="780px", 
-            width="100%", 
-            bgcolor="#ffffff",      # White bright background
-            font_color="#1e293b",   # Dark slate text
+            height="820px",
+            width="100%",
+            bgcolor="#f8fafc",
+            font_color="#0f172a",
             cdn_resources='remote'
         )
 
-        net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
+        net.barnes_hut(
+            gravity=-3200,
+            spring_length=120,
+            spring_strength=0.04,
+            damping=0.92,
+            overlap=0.35
+        )
 
-        # Confidence threshold for strong paths
         high_conf_threshold = 0.75
         connected_to_query = set()
 
-        # ====================== ADD NODES ======================
-
         # 1. Central Query Node
+        query_label = query_ctx.query[:40] + "..." if len(query_ctx.query) > 40 else query_ctx.query
         net.add_node(
-            "QUERY", 
-            label="YOUR QUERY",
-            title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
-            color="#7c3aed",  # Darker purple for white bg
-            size=45,
-            font={"size": 18, "bold": True, "color": "#1e293b"}
+            "QUERY",
+            label=query_label,
+            title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click red/orange value nodes for details</i>",
+            color={"background": PALETTE["query"]["bg"], "border": PALETTE["query"]["border"]},
+            size=50,
+            font={"size": max(14, title_font_size - 2), "bold": True, "color": PALETTE["query"]["font"], "face": font_family},
+            borderWidth=3,
+            shadow={"enabled": True, "color": "rgba(0,0,0,0.25)", "size": 12, "x": 4, "y": 4}
         )
 
         # 2. Documents
@@ -2466,17 +2552,21 @@ class PublicationVisualizationEngine:
             tooltip += f"<b>Extracted Values:</b> {count}<br><br>"
             for item in query_ctx.extracted_values[:5]:
                 if item.doc_name == doc_id:
-                    tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
+                    pq_readable = self.kgraph.phys_classifier.get_human_readable(item.physical_quantity)
+                    tooltip += f"• {item.value} {item.unit} ({pq_readable})<br>"
 
             net.add_node(
                 display,
-                label=display[:25],
+                label=display[:22],
                 title=tooltip,
-                color="#16a34a",  # Darker green
-                size=32,
-                font={"size": 14, "color": "#1e293b"}
+                color={"background": PALETTE["doc"]["bg"], "border": PALETTE["doc"]["border"]},
+                size=36,
+                font={"size": max(11, label_font_size + 1), "color": PALETTE["doc"]["font"], "face": font_family},
+                borderWidth=2,
+                shadow={"enabled": True, "color": "rgba(0,0,0,0.15)", "size": 8, "x": 2, "y": 2}
             )
-            net.add_edge("QUERY", display, value=3)
+            net.add_edge("QUERY", display, value=4, color=PALETTE["edge_strong"],
+                         title=f"Relevance: {count} values")
             connected_to_query.add(display)
 
         # 3. Physical Quantities
@@ -2486,116 +2576,145 @@ class PublicationVisualizationEngine:
                 pq,
                 label=readable,
                 title=f"<b>Physical Quantity:</b><br>{readable}",
-                color="#2563eb",  # Darker blue
-                size=28,
-                font={"color": "#1e293b"}
+                color={"background": PALETTE["pq"]["bg"], "border": PALETTE["pq"]["border"]},
+                size=30,
+                font={"size": max(10, label_font_size), "color": PALETTE["pq"]["font"], "face": font_family},
+                borderWidth=2,
+                shadow={"enabled": True, "color": "rgba(0,0,0,0.15)", "size": 8, "x": 2, "y": 2}
             )
-            net.add_edge("QUERY", pq, value=2)
+            net.add_edge("QUERY", pq, value=3, color=PALETTE["edge_strong"])
             connected_to_query.add(pq)
 
         # 4. Materials
         for mat in query_ctx.materials:
             net.add_node(
                 mat,
-                label=mat[:22],
-                title=f"<b>Material/Alloy:</b><br>{mat}",
-                color="#d97706",  # Darker orange
-                size=30,
-                font={"color": "#1e293b"}
+                label=mat[:20],
+                title=f"<b>Material / Alloy:</b><br>{mat}",
+                color={"background": PALETTE["material"]["bg"], "border": PALETTE["material"]["border"]},
+                size=32,
+                font={"size": max(10, label_font_size), "color": PALETTE["material"]["font"], "face": font_family},
+                borderWidth=2,
+                shadow={"enabled": True, "color": "rgba(0,0,0,0.15)", "size": 8, "x": 2, "y": 2}
             )
-            net.add_edge("QUERY", mat, value=2)
+            net.add_edge("QUERY", mat, value=3, color=PALETTE["edge_strong"])
             connected_to_query.add(mat)
 
         # 5. Extracted Values (Clickable Leaves)
-        for i, val in enumerate(sorted(query_ctx.extracted_values, key=lambda x: x.confidence, reverse=True)[:30]):
+        sorted_vals = sorted(query_ctx.extracted_values, key=lambda x: x.confidence, reverse=True)[:35]
+        for i, val in enumerate(sorted_vals):
             node_id = f"val_{i}"
-            label = f"{val.value:.1f}{val.unit or ''}"
-
-            # Color by confidence
+            label = f"{val.value:.1f} {val.unit or ''}"
             conf = val.confidence
-            color = "#e11d48" if conf >= high_conf_threshold else "#ea580c" if conf >= 0.6 else "#64748b"
 
-            excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
-            tooltip = f"""
-            <b>{val.value} {val.unit}</b><br>
-            <b>Confidence:</b> {conf:.2f}<br>
-            <b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br>
-            <b>Material:</b> {val.material or '—'}<br>
-            <b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br>
-            <b>Context:</b><br>{excerpt}
-            """
+            if conf >= high_conf_threshold:
+                pal = PALETTE["value_high"]
+            elif conf >= 0.6:
+                pal = PALETTE["value_mid"]
+            else:
+                pal = PALETTE["value_low"]
+
+            excerpt = val.context[:400] + "..." if len(val.context) > 400 else val.context
+            pq_readable = self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)
+            doc_display = get_display_name(val.doc_name, self.cfg.aliases)
+            tooltip = f"""<b>{val.value:.3f} {val.unit}</b><br>
+<b>Confidence:</b> {conf:.2f}<br>
+<b>Quantity:</b> {pq_readable}<br>
+<b>Material:</b> {val.material or '—'}<br>
+<b>Source:</b> {doc_display} (p.{val.page})<br><br>
+<b>Context:</b><br><div style="max-width:500px;white-space:normal;">{excerpt}</div>"""
 
             net.add_node(
-                node_id, 
-                label=label, 
+                node_id,
+                label=label,
                 title=tooltip,
-                color=color,
-                size=24 + int(conf * 18),
-                font={"size": 11, "color": "#1e293b"}
+                color={"background": pal["bg"], "border": pal["border"]},
+                size=22 + int(conf * 20),
+                font={"size": max(9, label_font_size - 1), "color": pal["font"], "face": font_family},
+                borderWidth=2 if conf >= high_conf_threshold else 1,
+                shadow={"enabled": conf >= high_conf_threshold, "color": "rgba(0,0,0,0.2)", "size": 6, "x": 2, "y": 2}
             )
 
-            # Connect with thickness based on confidence
-            edge_width = 3 if conf >= high_conf_threshold else 1.5
+            edge_width = 4 if conf >= high_conf_threshold else 2 if conf >= 0.6 else 1
+            edge_color = PALETTE["edge_strong"] if conf >= high_conf_threshold else PALETTE["edge_weak"]
 
             if val.material and val.material in net.get_nodes():
-                net.add_edge(val.material, node_id, value=edge_width, color="#cbd5e1")
+                net.add_edge(val.material, node_id, value=edge_width, color=edge_color,
+                             title=f"{val.material}: {val.value} {val.unit}")
             if val.physical_quantity in net.get_nodes():
-                net.add_edge(val.physical_quantity, node_id, value=edge_width*0.8)
+                net.add_edge(val.physical_quantity, node_id, value=max(1, edge_width - 1), color=edge_color)
             doc_name = get_display_name(val.doc_name, self.cfg.aliases)
             if doc_name in net.get_nodes():
-                net.add_edge(doc_name, node_id, value=edge_width, color="#86efac")
+                net.add_edge(doc_name, node_id, value=edge_width, color=edge_color,
+                             title=f"{doc_display} p.{val.page}")
 
-        # Connect everything to QUERY
+        # Connect stray nodes to QUERY
         for node in net.get_nodes():
             if node != "QUERY" and node not in connected_to_query:
-                net.add_edge("QUERY", node, value=1, color="#64748b")
+                net.add_edge("QUERY", node, value=1, color=PALETTE["edge_weak"], dashes=True)
 
         html = net.generate_html()
 
-        # ====================== ADVANCED JS MODAL ======================
-        modal_js = """
+        # Advanced JS Modal + Custom CSS for fonts
+        custom_js_css = f"""
+        <style>
+        body {{ font-family: "{font_family}", sans-serif; }}
+        </style>
         <script>
         var modal = null;
-        network.on("click", function(params) {
+        network.on("click", function(params) {{
             if (params.nodes.length === 0) return;
             var nodeId = params.nodes[0];
-
-            if (nodeId.startsWith("val_")) {
+            if (nodeId.startsWith("val_")) {{
                 var node = network.body.nodes[nodeId];
                 var title = node.options.title || "No details";
-
-                if (!modal) {
+                if (!modal) {{
                     modal = document.createElement("div");
                     modal.style.cssText = `
-                        position:fixed; top:0; left:0; width:100%; height:100%; 
-                        background:rgba(0,0,0,0.6); z-index:9999; display:flex; 
-                        align-items:center; justify-content:center; font-family:system-ui;
+                        position:fixed; top:0; left:0; width:100%; height:100%;
+                        background:rgba(15,23,42,0.55); z-index:9999; display:flex;
+                        align-items:center; justify-content:center; font-family:"{font_family}",system-ui,sans-serif;
+                        backdrop-filter:blur(4px);
                     `;
                     document.body.appendChild(modal);
-                }
-
+                }}
                 modal.innerHTML = `
-                    <div style="background:#f8fafc; color:#1e293b; padding:25px; border-radius:12px; 
-                                max-width:620px; max-height:85vh; overflow:auto; border:1px solid #cbd5e1;">
-                        <h3 style="margin-top:0; color:#db2777;">Extracted Value Details</h3>
-                        <div style="white-space:pre-wrap; font-size:15px; line-height:1.5;">${title}</div>
+                    <div style="background:#ffffff; color:#0f172a; padding:28px; border-radius:16px;
+                                max-width:640px; max-height:88vh; overflow:auto; border:1px solid #e2e8f0;
+                                box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); font-family:"{font_family}",sans-serif;">
+                        <h3 style="margin-top:0; color:#be123c; font-size:18px; border-bottom:2px solid #fecdd3; padding-bottom:8px;">
+                            🔬 Extracted Value Details
+                        </h3>
+                        <div style="white-space:pre-wrap; font-size:14px; line-height:1.6; color:#334155;">${{title}}</div>
                         <br>
-                        <button onclick="this.parentElement.parentElement.remove()" 
-                                style="padding:10px 20px; background:#e11d48; color:white; border:none; 
-                                border-radius:6px; cursor:pointer;">Close</button>
+                        <button onclick="this.parentElement.parentElement.remove(); modal=null;"
+                                style="padding:10px 22px; background:#be123c; color:white; border:none;
+                                border-radius:8px; cursor:pointer; font-weight:600; font-size:14px;
+                                transition:background 0.2s;"
+                                onmouseover="this.style.background='#9f1239'"
+                                onmouseout="this.style.background='#be123c'">
+                            Close
+                        </button>
                     </div>
                 `;
-            }
-        });
+            }}
+        }});
+        network.on("hoverNode", function(params) {{
+            document.body.style.cursor = 'pointer';
+        }});
+        network.on("blurNode", function(params) {{
+            document.body.style.cursor = 'default';
+        }});
         </script>
         """
 
         if "</body>" in html:
-            html = html.replace("</body>", modal_js + "</body>")
+            html = html.replace("</body>", custom_js_css + "</body>")
         else:
-            html += modal_js
+            html += custom_js_css
 
         return html
+
     def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str, group_by: str = "material", colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title=f"No {quantity_name} data")
@@ -3323,16 +3442,26 @@ class PublicationVisualizationEngine:
         fig.update_layout(title="Page Coverage Heatmap (Retrieved Pages per Document)", xaxis_title="Page Number", yaxis_title="Document", font=dict(family=self.font_family, size=self.font_size), height=max(400, len(doc_names) * 40))
         return fig
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
+        """Retrieval provenance Sankey with DOI-normalized labels, publication-quality styling,
+        and config-respecting aesthetics."""
         if not relevant_docs and not retrieved_nodes:
             return go.Figure().update_layout(title="No retrieval data available")
+
         labels = ["Query"]
         label_index = {"Query": 0}
         doc_nodes = []
+
+        # ── Document nodes with DOI-normalized display names ──
         for doc_name, score in relevant_docs:
-            doc_label = f"{Path(doc_name).stem}\n({score:.2f})"
+            display = get_display_name(doc_name, self.cfg.aliases)
+            # If it still looks like a DOI filename, normalize underscores
+            display = normalize_doi_display(display)
+            doc_label = f"{display}<br>({score:.2f})"
             label_index[doc_name] = len(labels)
             labels.append(doc_label)
             doc_nodes.append(doc_name)
+
+        # ── Tree node labels ──
         node_labels_list = []
         for r in retrieved_nodes:
             doc_id = r.get("doc_id", "unknown")
@@ -3340,8 +3469,12 @@ class PublicationVisualizationEngine:
             key = f"{doc_id}:{node_id}"
             if key not in label_index:
                 label_index[key] = len(labels)
-                labels.append(f"{Path(doc_id).stem}:{node_id[:15]}")
+                display_doc = get_display_name(doc_id, self.cfg.aliases)
+                display_doc = normalize_doi_display(display_doc)
+                labels.append(f"{display_doc[:20]}<br>{node_id[:12]}")
                 node_labels_list.append(key)
+
+        # ── Physical quantity group nodes ──
         pq_groups = defaultdict(list)
         for item in extracted_items:
             pq = item.get("physical_quantity", "unknown")
@@ -3351,56 +3484,102 @@ class PublicationVisualizationEngine:
             key = f"pq:{pq}"
             if key not in label_index:
                 label_index[key] = len(labels)
-                labels.append(f"{pq} ({len(items)})")
+                readable = self.kgraph.phys_classifier.get_human_readable(pq) if hasattr(self, 'kgraph') else pq
+                labels.append(f"{readable}<br>({len(items)})")
                 pq_nodes_list.append(key)
+
         label_index["Answer"] = len(labels)
-        labels.append("Answer")
+        labels.append("Synthesized<br>Answer")
+
         sources, targets, vals = [], [], []
+
+        # Query → Documents
         for doc_name, score in relevant_docs:
-            sources.append(0); targets.append(label_index[doc_name]); vals.append(max(1, int(score * 10)))
+            sources.append(0)
+            targets.append(label_index[doc_name])
+            vals.append(max(1, int(score * 10)))
+
+        # Documents → Tree Nodes
         for r in retrieved_nodes:
-            doc_id = r.get("doc_id"); node_id = r.get("node_id", "unknown"); key = f"{doc_id}:{node_id}"
+            doc_id = r.get("doc_id")
+            node_id = r.get("node_id", "unknown")
+            key = f"{doc_id}:{node_id}"
             conf = r.get("confidence", 0.5)
             if doc_id in label_index and key in label_index:
-                sources.append(label_index[doc_id]); targets.append(label_index[key]); vals.append(max(1, int(conf * 10)))
+                sources.append(label_index[doc_id])
+                targets.append(label_index[key])
+                vals.append(max(1, int(conf * 10)))
+
+        # Tree Nodes → Physical Quantities
         node_to_pq = defaultdict(set)
         for item in extracted_items:
             pq = item.get("physical_quantity", "unknown")
             doc_id = item.get("doc_source", item.get("doc_id", "unknown"))
             for r in retrieved_nodes:
                 if r.get("doc_id") == doc_id:
-                    node_id = r.get("node_id", "unknown"); key = f"{doc_id}:{node_id}"
+                    node_id = r.get("node_id", "unknown")
+                    key = f"{doc_id}:{node_id}"
                     node_to_pq[key].add(f"pq:{pq}")
         for node_key, pq_set in node_to_pq.items():
             for pq_key in pq_set:
                 if node_key in label_index and pq_key in label_index:
-                    sources.append(label_index[node_key]); targets.append(label_index[pq_key]); vals.append(1)
+                    sources.append(label_index[node_key])
+                    targets.append(label_index[pq_key])
+                    vals.append(1)
+
+        # Physical Quantities → Answer
         for pq_key in pq_nodes_list:
-            sources.append(label_index[pq_key]); targets.append(label_index["Answer"]); vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
-        # Publication-quality color scheme
+            pq_name = pq_key.replace("pq:", "")
+            sources.append(label_index[pq_key])
+            targets.append(label_index["Answer"])
+            vals.append(max(1, len(pq_groups.get(pq_name, []))))
+
+        # ── Publication-quality color scheme ──
         node_colors = ["#1e3a5f"]  # Query: deep navy
         node_colors += ["#2563eb"] * len(doc_nodes)  # Docs: blue
         node_colors += ["#059669"] * len(node_labels_list)  # Nodes: emerald
         node_colors += ["#dc2626"] * len(pq_nodes_list)  # PQ: red
         node_colors += ["#7c3aed"]  # Answer: purple
+
+        link_colors = []
+        for s in sources:
+            if s == 0:
+                link_colors.append("rgba(37, 99, 235, 0.30)")
+            elif s < len(doc_nodes) + 1:
+                link_colors.append("rgba(5, 150, 105, 0.25)")
+            else:
+                link_colors.append("rgba(220, 38, 38, 0.20)")
+
         fig = go.Figure(data=[go.Sankey(
             node=dict(
-                pad=20, thickness=24, line=dict(color="#334155", width=0.8),
-                label=labels, color=node_colors,
+                pad=22,
+                thickness=26,
+                line=dict(color="#1e293b", width=0.6),
+                label=labels,
+                color=node_colors,
                 hovertemplate="%{label}<extra></extra>"
             ),
             link=dict(
-                source=sources, target=targets, value=vals,
-                color=["rgba(37, 99, 235, 0.25)" if s < len(doc_nodes)+1 else "rgba(5, 150, 105, 0.2)" for s in sources],
-                hovertemplate="From: %{source.label}<br>To: %{target.label}<br>Value: %{value}<extra></extra>"
+                source=sources,
+                target=targets,
+                value=vals,
+                color=link_colors,
+                hovertemplate="<b>From:</b> %{source.label}<br><b>To:</b> %{target.label}<br><b>Flow:</b> %{value}<extra></extra>"
             )
         )])
+
         fig.update_layout(
-            title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'",
-            font=dict(family=self.font_family, size=self.font_size, color="#1e293b"),
-            paper_bgcolor="white", plot_bgcolor="white",
-            height=650, width=1100,
-            margin=dict(l=40, r=40, t=80, b=40)
+            title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query) > 50 else ''}'",
+            font=dict(
+                family=self.cfg.font_family or "DejaVu Sans",
+                size=self.cfg.font_size or 10,
+                color="#1e293b"
+            ),
+            paper_bgcolor="#f8fafc",
+            plot_bgcolor="#f8fafc",
+            height=680,
+            width=1150,
+            margin=dict(l=40, r=40, t=90, b=40)
         )
         return fig
 
@@ -3551,7 +3730,7 @@ def render_sidebar():
         st.checkbox("Enable two-stage retrieval (semantic)", value=True, key="two_stage")
 
         st.markdown("#### Visualization Settings")
-        st.selectbox("Default colormap", list(PublicationVisualizationEngine.COLORMAP_OPTIONS.keys()), index=0, key="viz_colormap")
+        st.selectbox("Default colormap", list(PublicationVisualizationEngine.COLORMAP_OPTIONS.keys()), index=0, key="viz_colormap", help="50+ colormaps including perceptually uniform (viridis, plasma), sequential, diverging, and high-contrast (jet, turbo, rainbow)")
         st.selectbox("Document label style", ["doi", "number", "alias", "short"], index=0, key="viz_label_style")
         st.slider("Top N concepts", 5, 100, 25, key="viz_top_n")
         st.multiselect("Filter domains", options=["laser_power","scan_speed","yield_strength","tensile_strength","hardness","temperature","energy_density"], default=["laser_power","scan_speed","yield_strength"], key="viz_domains")

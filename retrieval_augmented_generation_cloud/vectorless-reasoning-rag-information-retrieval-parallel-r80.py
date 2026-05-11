@@ -4051,3 +4051,981 @@ network.on("click", function(params) {
         except Exception as e:
             logger.error(f"Query sunburst failed: {e}")
             return go.Figure().update_layout(title="Sunburst unavailable for this query")
+
+# =============================================================================
+# PUBLICATION VISUALIZATION ENGINE - CONTINUED
+# =============================================================================
+class PublicationVisualizationEngine:
+    # ... [Previous class definition, __init__, properties, helpers from Part 5] ...
+    
+    # -------------------------------------------------------------------------
+    # HISTOGRAM & BAR CHART METHODS
+    # -------------------------------------------------------------------------
+    def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str, 
+                                     group_by: str = "material", 
+                                     colormap: Optional[str] = None) -> go.Figure:
+        """
+        Plot histogram of quantitative values grouped by material or document.
+        
+        Args:
+            df: Filtered DataFrame from extract_dataframe()
+            quantity_name: Canonical physical quantity name (e.g., "yield_strength")
+            group_by: Column to group by ("material" or "doc_stem")
+            colormap: Matplotlib colormap name for bar coloring
+            
+        Returns:
+            Plotly Figure object
+        """
+        if df.empty:
+            return go.Figure().update_layout(
+                title=f"No {quantity_name} data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Filter to target quantity
+        subset = df[df["physical_quantity"] == quantity_name].copy()
+        if subset.empty:
+            return go.Figure().update_layout(
+                title=f"No data for '{quantity_name}'",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Clean grouping column
+        clean_col = subset[group_by].fillna("Unknown").replace("", "Unknown")
+        subset = subset.assign(clean_group=clean_col)
+        
+        groups = sorted(subset["clean_group"].unique())
+        if not groups:
+            return go.Figure().update_layout(
+                title=f"No valid groups for '{quantity_name}'",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        fig = go.Figure()
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap))
+        
+        for i, grp in enumerate(groups):
+            data = subset[subset["clean_group"] == grp]["value"].dropna()
+            if data.empty:
+                continue
+                
+            # Color assignment
+            if len(groups) > 1 and cmap_obj:
+                color = mcolors.to_hex(cmap_obj(i / max(len(groups) - 1, 1)))
+            else:
+                color = self.DOMAIN_COLORS.get(quantity_name, "#3b82f6")
+            
+            # Compute stats
+            mean_val = float(data.mean())
+            std_val = float(data.std()) if len(data) > 1 else 0.0
+            
+            fig.add_trace(go.Bar(
+                name=str(grp),
+                x=[str(grp)],
+                y=[mean_val],
+                error_y=dict(
+                    type='data',
+                    array=[std_val],
+                    visible=True,
+                    thickness=1.5,
+                    width=0.5
+                ),
+                marker_color=color,
+                marker_line_color="#ffffff",
+                marker_line_width=0.5,
+                opacity=0.9,
+                text=[f"n={len(data)}<br>μ={mean_val:.2f}<br>σ={std_val:.2f}"],
+                textposition="outside",
+                hovertemplate=f"<b>{grp}</b><br>Mean: %{{y:.2f}}<br>Std: {std_val:.2f}<br>n=%{{text}}<extra></extra>"
+            ))
+        
+        # Axis labels with unit
+        unit = subset["unit"].iloc[0] if not subset.empty and subset["unit"].notna().any() else ""
+        yaxis_title = f"{quantity_name.replace('_', ' ').title()} ({unit})" if unit else quantity_name.replace('_', ' ').title()
+        
+        fig.update_layout(
+            barmode='group',
+            title=f"{quantity_name.replace('_', ' ').title()} Values by {group_by.title()}",
+            xaxis_title=group_by.title(),
+            yaxis_title=yaxis_title,
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        # Add gridlines for readability
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        
+        return fig
+    
+    def plot_quantities_bar(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Bar chart showing occurrence counts of each physical quantity.
+        
+        Args:
+            df: DataFrame from extract_dataframe()
+            colormap: Optional colormap for bar coloring
+            
+        Returns:
+            Plotly Figure object
+        """
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for quantity analysis",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Count occurrences per physical quantity
+        counts = df["physical_quantity"].value_counts().reset_index()
+        counts.columns = ["Physical Quantity", "Count"]
+        
+        if counts.empty:
+            return go.Figure().update_layout(
+                title="No physical quantities extracted",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Sort by count descending
+        counts = counts.sort_values("Count", ascending=False)
+        
+        # Color assignment using domain colors or colormap
+        colors = []
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        
+        for i, pq in enumerate(counts["Physical Quantity"]):
+            if cmap_obj and len(counts) > 1:
+                colors.append(mcolors.to_hex(cmap_obj(i / max(len(counts) - 1, 1))))
+            else:
+                colors.append(self.DOMAIN_COLORS.get(pq, "#6b7280"))
+        
+        fig = px.bar(
+            counts,
+            x="Physical Quantity",
+            y="Count",
+            color="Physical Quantity",
+            color_discrete_sequence=colors,
+            title="Occurrence Counts by Physical Quantity",
+            labels={"Count": "Number of Extractions", "Physical Quantity": "Parameter"}
+        )
+        
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            xaxis_tickangle=-45,
+            hovermode="x unified"
+        )
+        
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        
+        return fig
+    
+    def plot_material_counts(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Bar chart of top materials/alloys by mention count.
+        
+        Args:
+            df: DataFrame from extract_dataframe()
+            colormap: Optional colormap
+            
+        Returns:
+            Plotly Figure object
+        """
+        # Filter to material-type entries or use all materials column
+        if "material" in df.columns and df["material"].notna().any():
+            mat_df = df[df["material"].notna() & (df["material"] != "") & (df["material"] != "Unknown")]
+        else:
+            mat_df = df.copy()
+        
+        if mat_df.empty or "material" not in mat_df.columns:
+            return go.Figure().update_layout(
+                title="No materials found in extracted data",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Count and get top 10
+        counts = mat_df["material"].value_counts().head(10).reset_index()
+        counts.columns = ["Material", "Count"]
+        
+        if counts.empty:
+            return go.Figure().update_layout(
+                title="No material data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Color assignment
+        colors = []
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        
+        for i in range(len(counts)):
+            if cmap_obj and len(counts) > 1:
+                colors.append(mcolors.to_hex(cmap_obj(i / max(len(counts) - 1, 1))))
+            else:
+                colors.append(self.DOMAIN_COLORS.get("material", "#3b82f6"))
+        
+        fig = px.bar(
+            counts,
+            x="Material",
+            y="Count",
+            color="Material",
+            color_discrete_sequence=colors,
+            title="Top 10 Materials/Alloys Mentioned",
+            labels={"Count": "Mention Count", "Material": "Material/Alloy"}
+        )
+        
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            xaxis_tickangle=-45,
+            hovermode="x unified"
+        )
+        
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        
+        return fig
+    
+    # -------------------------------------------------------------------------
+    # PIE & DONUT CHART METHODS
+    # -------------------------------------------------------------------------
+    def plot_quantity_distribution_pie(self, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Pie chart showing distribution of physical quantities by extraction count.
+        
+        Args:
+            colormap: Optional colormap for slice coloring
+            
+        Returns:
+            Plotly Figure object
+        """
+        pq_counts = self.kgraph.get_all_physical_quantities()
+        
+        if not pq_counts:
+            return go.Figure().update_layout(
+                title="No physical quantities found in knowledge graph",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Get top 10 quantities
+        sorted_pq = sorted(pq_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        # Human-readable labels
+        labels = [self.kgraph.phys_classifier.get_human_readable(pq) for pq, _ in sorted_pq]
+        values = [count for _, count in sorted_pq]
+        
+        # Color assignment
+        if colormap:
+            color_seq = px.colors.qualitative.Set3 if colormap == "Set3" else px.colors.qualitative.Plotly
+        else:
+            color_seq = px.colors.qualitative.Set3
+        
+        fig = px.pie(
+            values=values,
+            names=labels,
+            title="Top Physical Quantities Distribution",
+            color_discrete_sequence=color_seq,
+            hole=0  # 0 for pie, >0 for donut
+        )
+        
+        fig.update_traces(
+            textposition='inside',
+            textinfo='percent+label',
+            hovertemplate="<b>%{label}</b><br>Count: %{value}<br>Percent: %{percent}<extra></extra>",
+            marker=dict(line=dict(color='#ffffff', width=2))
+        )
+        
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5)
+        )
+        
+        return fig
+    
+    def plot_material_distribution_donut(self, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Donut chart showing material/alloy distribution across documents.
+        
+        Args:
+            colormap: Optional colormap
+            
+        Returns:
+            Plotly Figure object
+        """
+        mat_dict = self.kgraph.get_all_materials()
+        
+        if not mat_dict:
+            return go.Figure().update_layout(
+                title="No materials found in knowledge graph",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Count material occurrences across all documents
+        mat_counts = Counter(m for mats in mat_dict.values() for m in mats)
+        
+        if not mat_counts:
+            return go.Figure().update_layout(
+                title="No material data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Get top 10 materials
+        top_mats = mat_counts.most_common(10)
+        labels = [m for m, _ in top_mats]
+        values = [c for _, c in top_mats]
+        
+        # Generate colors using hash-based approach for consistency
+        colors = [f"#{hash(l) % 0xFFFFFF:06x}" for l in labels]
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.4,  # Donut hole
+            marker=dict(colors=colors, line=dict(color='#ffffff', width=2)),
+            textinfo='percent+label',
+            hovertemplate="<b>%{label}</b><br>Occurrences: %{value}<br>Percent: %{percent}<extra></extra>",
+            insidetextorientation='radial'
+        )])
+        
+        fig.update_layout(
+            title="Material Distribution (Donut)",
+            annotations=[dict(
+                text='Materials',
+                x=0.5, y=0.5,
+                font_size=14,
+                font_family=self.font_family,
+                showarrow=False,
+                font_color="#1e293b"
+            )],
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5)
+        )
+        
+        return fig
+    
+    # -------------------------------------------------------------------------
+    # SUNBURST & TREEMAP HIERARCHY METHODS
+    # -------------------------------------------------------------------------
+    def plot_quantitative_sunburst(self, df: pd.DataFrame, quantity: str, 
+                                    colormap: Optional[str] = None) -> go.Figure:
+        """
+        Sunburst hierarchy for a specific quantity: Material → Document → Value Range.
+        
+        Args:
+            df: Filtered DataFrame
+            quantity: Canonical physical quantity name
+            colormap: Optional Plotly colorscale
+            
+        Returns:
+            Plotly Figure object
+        """
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Filter to target quantity
+        subset = df[df["physical_quantity"] == quantity].copy()
+        if subset.empty:
+            return go.Figure().update_layout(
+                title=f"No data for '{quantity}'",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Clean columns for hierarchy
+        subset["material"] = subset["material"].fillna("Unknown").replace("", "Unknown")
+        subset["doc_stem"] = subset["doc_stem"].fillna("Unknown").replace("", "Unknown")
+        
+        # Drop rows with missing hierarchy values
+        subset = subset.dropna(subset=["material", "doc_stem", "value"])
+        if subset.empty or len(subset) < 2:
+            # Fallback without value binning
+            try:
+                fig = px.sunburst(
+                    subset,
+                    path=["material", "doc_stem"],
+                    values="value",
+                    color="value",
+                    color_continuous_scale=self._get_plotly_colorscale(colormap),
+                    title=f"{quantity.replace('_', ' ').title()} Distribution Hierarchy"
+                )
+                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+                return fig
+            except Exception as e:
+                logger.warning(f"Sunburst fallback failed: {e}")
+                return go.Figure().update_layout(
+                    title=f"Sunburst unavailable for '{quantity}'",
+                    font=dict(family=self.font_family, size=self.font_size)
+                )
+        
+        # Bin values for better hierarchy visualization
+        n_bins = min(5, max(2, len(subset) // 3))
+        try:
+            subset["value_range"] = pd.cut(
+                subset["value"], 
+                bins=n_bins, 
+                precision=1
+            ).astype(str).fillna("unknown")
+            
+            fig = px.sunburst(
+                subset,
+                path=["material", "doc_stem", "value_range"],
+                values="value",
+                color="value",
+                color_continuous_scale=self._get_plotly_colorscale(colormap),
+                title=f"{quantity.replace('_', ' ').title()} Distribution Hierarchy",
+                maxdepth=4
+            )
+            
+            fig.update_traces(
+                textinfo="label+percent entry",
+                hovertemplate="<b>%{label}</b><br>Value: %{value:.2f}<br>Percent: %{percent}<extra></extra>"
+            )
+            fig.update_layout(
+                font=dict(family=self.font_family, size=self.font_size),
+                height=600,
+                plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff"
+            )
+            return fig
+            
+        except Exception as e:
+            logger.warning(f"Sunburst binning failed: {e}")
+            # Fallback without binning
+            try:
+                fig = px.sunburst(
+                    subset,
+                    path=["material", "doc_stem"],
+                    values="value",
+                    color="value",
+                    color_continuous_scale=self._get_plotly_colorscale(colormap),
+                    title=f"{quantity.replace('_', ' ').title()} Distribution Hierarchy"
+                )
+                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+                return fig
+            except:
+                return go.Figure().update_layout(
+                    title=f"Sunburst unavailable for '{quantity}'",
+                    font=dict(family=self.font_family, size=self.font_size)
+                )
+    
+    def plot_sunburst_hierarchy(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Full hierarchy sunburst: Physical Quantity → Material → Document.
+        
+        Args:
+            df: DataFrame from extract_dataframe()
+            colormap: Optional Plotly colorscale
+            
+        Returns:
+            Plotly Figure object
+        """
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for hierarchy",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        df_hier = df.copy()
+        df_hier["physical_quantity"] = df_hier["physical_quantity"].fillna("Unknown").replace("", "Unknown")
+        df_hier["material"] = df_hier["material"].fillna("Unknown").replace("", "Unknown")
+        df_hier["doc_stem"] = df_hier["doc_stem"].fillna("Unknown").replace("", "Unknown")
+        
+        # Add dummy value for counting
+        df_hier["value_dummy"] = 1
+        
+        try:
+            fig = px.sunburst(
+                df_hier,
+                path=["physical_quantity", "material", "doc_stem"],
+                values="value_dummy",
+                title="Hierarchy of Physical Quantities, Materials, and Documents",
+                color="value_dummy",
+                color_continuous_scale=self._get_plotly_colorscale(colormap)
+            )
+            fig.update_traces(textinfo="label+percent entry")
+            fig.update_layout(
+                font=dict(family=self.font_family, size=self.font_size),
+                height=600,
+                plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff"
+            )
+            return fig
+        except Exception as e:
+            logger.error(f"Sunburst hierarchy error: {e}")
+            # Try simplified hierarchy
+            try:
+                fig = px.sunburst(
+                    df_hier,
+                    path=["physical_quantity", "material"],
+                    values="value_dummy",
+                    title="Hierarchy (simplified: Quantity → Material)",
+                    color="value_dummy",
+                    color_continuous_scale=self._get_plotly_colorscale(colormap)
+                )
+                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+                return fig
+            except:
+                return go.Figure().update_layout(
+                    title="Sunburst unavailable",
+                    font=dict(family=self.font_family, size=self.font_size)
+                )
+    
+    def plot_treemap(self, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Treemap showing entity co-occurrence: Physical Quantity → Material.
+        
+        Args:
+            colormap: Optional Plotly colorscale
+            
+        Returns:
+            Plotly Figure object
+        """
+        df = self.extract_dataframe()
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for treemap",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Aggregate by quantity and material
+        agg = df.groupby(["physical_quantity", "material"]).size().reset_index(name="count")
+        
+        if agg.empty:
+            return go.Figure().update_layout(
+                title="No quantity-material pairs found",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        fig = px.treemap(
+            agg,
+            path=["physical_quantity", "material"],
+            values="count",
+            title="Entity Treemap: Quantities and Materials",
+            color="count",
+            color_continuous_scale=self._get_plotly_colorscale(colormap)
+        )
+        
+        fig.update_traces(
+            textinfo="label+value",
+            hovertemplate="<b>%{label}</b><br>Count: %{value}<extra></extra>"
+        )
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=600,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        
+        return fig
+    
+    def plot_treemap_materials(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Treemap focused on material distribution.
+        
+        Args:
+            df: DataFrame from extract_dataframe()
+            colormap: Optional Plotly colorscale
+            
+        Returns:
+            Plotly Figure object
+        """
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Count materials
+        if "material" in df.columns and df["material"].notna().any():
+            mat_counts = df[df["material"].notna() & (df["material"] != "")]["material"].value_counts().reset_index()
+        else:
+            mat_counts = pd.DataFrame(columns=["material", "Count"])
+        
+        mat_counts.columns = ["Material", "Count"]
+        
+        if mat_counts.empty:
+            return go.Figure().update_layout(
+                title="No material data for treemap",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        fig = px.treemap(
+            mat_counts,
+            path=["Material"],
+            values="Count",
+            title="Material Treemap",
+            color="Count",
+            color_continuous_scale=self._get_plotly_colorscale(colormap)
+        )
+        
+        fig.update_traces(textinfo="label+value+percent parent")
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        
+        return fig
+    
+    # -------------------------------------------------------------------------
+    # RADAR CHART METHODS
+    # -------------------------------------------------------------------------
+    def plot_radar_by_material(self, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Radar chart comparing materials across top physical quantities.
+        
+        Args:
+            colormap: Optional matplotlib colormap for line coloring
+            
+        Returns:
+            Plotly Figure object
+        """
+        df = self.extract_dataframe()
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for radar chart",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Get top 5 quantities by occurrence
+        top_quantities = df["physical_quantity"].value_counts().head(5).index.tolist()
+        if len(top_quantities) < 2:
+            return go.Figure().update_layout(
+                title="Need at least 2 quantities for radar",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Pivot: materials × quantities → mean values
+        pivot = df[df["physical_quantity"].isin(top_quantities)].pivot_table(
+            index="material",
+            columns="physical_quantity",
+            values="value",
+            aggfunc="mean"
+        ).fillna(0)
+        
+        if pivot.empty or len(pivot) < 1:
+            return go.Figure().update_layout(
+                title="No data for radar chart",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        fig = go.Figure()
+        cmap = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        materials = pivot.index.tolist()
+        
+        for i, mat in enumerate(materials):
+            values = pivot.loc[mat].tolist()
+            # Close the radar by repeating first value
+            values_closed = values + [values[0]]
+            
+            # Color assignment
+            if cmap and len(materials) > 1:
+                color = mcolors.to_hex(cmap(i / max(len(materials) - 1, 1)))
+            else:
+                color = self.DOMAIN_COLORS.get("material", "#3b82f6")
+            
+            fig.add_trace(go.Scatterpolar(
+                r=values_closed,
+                theta=top_quantities + [top_quantities[0]],
+                fill='toself',
+                name=mat,
+                line_color=color,
+                line_width=2,
+                marker=dict(size=6, color=color),
+                opacity=0.7,
+                hovertemplate="<b>%{fullData.name}</b><br>%{theta}: %{r:.2f}<extra></extra>"
+            ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, max(pivot.max().max() * 1.1, 1)],
+                    gridcolor="#e2e8f0",
+                    linecolor="#94a3b8"
+                ),
+                angularaxis=dict(
+                    gridcolor="#e2e8f0",
+                    linecolor="#94a3b8",
+                    tickfont=dict(size=self.label_font_size, family=self.font_family)
+                )
+            ),
+            title="Material Performance Radar (Mean Values)",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        return fig
+    
+    def plot_document_radar(self, colormap: Optional[str] = None) -> go.Figure:
+        """
+        Radar chart comparing documents by quantity coverage.
+        
+        Args:
+            colormap: Optional matplotlib colormap
+            
+        Returns:
+            Plotly Figure object
+        """
+        df = self.extract_dataframe()
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Pivot: documents × quantities → count of extractions
+        pivot = df.pivot_table(
+            index="doc_stem",
+            columns="physical_quantity",
+            values="value",
+            aggfunc="count"
+        ).fillna(0)
+        
+        if pivot.empty:
+            return go.Figure().update_layout(
+                title="No data for document radar",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        fig = go.Figure()
+        cmap = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        docs = pivot.index.tolist()
+        
+        for i, doc in enumerate(docs):
+            values = pivot.loc[doc].tolist()
+            values_closed = values + [values[0]]
+            
+            if cmap and len(docs) > 1:
+                color = mcolors.to_hex(cmap(i / max(len(docs) - 1, 1)))
+            else:
+                color = self.DOMAIN_COLORS.get("document", "#10b981")
+            
+            fig.add_trace(go.Scatterpolar(
+                r=values_closed,
+                theta=pivot.columns.tolist() + [pivot.columns[0]],
+                fill='toself',
+                name=doc,
+                line_color=color,
+                line_width=2,
+                marker=dict(size=6, color=color),
+                opacity=0.7
+            ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=True, gridcolor="#e2e8f0"),
+                angularaxis=dict(gridcolor="#e2e8f0")
+            ),
+            title="Document Coverage Radar (Counts per Quantity Type)",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        return fig
+    
+    def plot_quantitative_radar(self, df: pd.DataFrame, quantity_name: str, 
+                                 colormap: Optional[str] = None) -> go.Figure:
+        """
+        Radar chart showing statistics for a specific quantity by material.
+        
+        Args:
+            df: Filtered DataFrame
+            quantity_name: Canonical physical quantity name
+            colormap: Optional matplotlib colormap
+            
+        Returns:
+            Plotly Figure object
+        """
+        if df.empty:
+            return go.Figure().update_layout(
+                title=f"No {quantity_name} data",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        # Compute statistics by material
+        stats = df[df["physical_quantity"] == quantity_name].groupby("material")["value"].agg(
+            ["mean", "std", "min", "max", "count"]
+        ).fillna(0)
+        
+        if stats.empty:
+            return go.Figure().update_layout(
+                title=f"No data for {quantity_name} radar",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        categories = ["Mean", "Max", "Min", "Std", "Count"]
+        fig = go.Figure()
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        
+        for i, (mat, row) in enumerate(stats.iterrows()):
+            values = [
+                float(row["mean"]),
+                float(row["max"]),
+                float(row["min"]),
+                float(row["std"]),
+                float(row["count"])
+            ]
+            values_closed = values + [values[0]]
+            
+            if cmap_obj and len(stats) > 1:
+                color = mcolors.to_hex(cmap_obj(i / max(len(stats) - 1, 1)))
+            else:
+                color = self.DOMAIN_COLORS.get(quantity_name, "#3b82f6")
+            
+            fig.add_trace(go.Scatterpolar(
+                r=values_closed,
+                theta=categories + [categories[0]],
+                fill='toself',
+                name=mat,
+                line_color=color,
+                line_width=2,
+                marker=dict(size=6, color=color),
+                opacity=0.7
+            ))
+        
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, gridcolor="#e2e8f0")),
+            showlegend=True,
+            title=f"{quantity_name.replace('_', ' ').title()} Statistics by Material",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        
+        return fig
+    
+    # -------------------------------------------------------------------------
+    # CHORD DIAGRAM FOR CO-OCCURRENCE
+    # -------------------------------------------------------------------------
+    def plot_chord_cooccurrence(self, filtered_concepts: Optional[List[str]] = None, 
+                                 top_n: int = 14, 
+                                 colormap: Optional[str] = None) -> go.Figure:
+        """
+        Chord diagram showing entity co-occurrence patterns.
+        
+        Args:
+            filtered_concepts: Optional list of concepts to include
+            top_n: Number of top concepts by salience to display
+            colormap: Optional matplotlib colormap for node coloring
+            
+        Returns:
+            Plotly Figure object
+        """
+        # Select entities
+        if filtered_concepts:
+            entities = filtered_concepts[:top_n]
+        else:
+            all_pq = self.kgraph.get_all_physical_quantities()
+            entities = [pq for pq, _ in sorted(all_pq.items(), key=lambda x: x[1], reverse=True)[:top_n]]
+        
+        if not entities:
+            return go.Figure().update_layout(
+                title="No entity co-occurrence data",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+        
+        n = len(entities)
+        node_to_idx = {node: i for i, node in enumerate(entities)}
+        
+        # Build adjacency matrix: count of documents where both entities appear
+        adj = np.zeros((n, n))
+        for doc in self.kgraph.doc_graphs:
+            present = [
+                ent for ent in entities 
+                if any(
+                    item.get("physical_quantity") == ent or item.get("parameter_name") == ent 
+                    for item in self.kgraph.doc_graphs[doc]["all_items"]
+                )
+            ]
+            for i, e1 in enumerate(present):
+                for j, e2 in enumerate(present):
+                    if i != j:
+                        adj[node_to_idx[e1]][node_to_idx[e2]] += 1
+        
+        # Compute angles for circular layout
+        angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
+        
+        fig = go.Figure()
+        
+        # Add nodes as barpolar segments
+        for i, ent in enumerate(entities):
+            color = mcolors.to_hex(cmap_obj(i / max(n - 1, 1))) if cmap_obj else self.DOMAIN_COLORS.get(ent, "#6b7280")
+            fig.add_trace(go.Barpolar(
+                r=[1],
+                theta=[np.degrees(angles[i])],
+                width=[360 / n * 0.9],  # Leave small gap between segments
+                marker_color=color,
+                name=ent,
+                opacity=0.9,
+                showlegend=False,
+                hovertemplate=f"<b>{ent}</b><extra></extra>"
+            ))
+        
+        # Add chords for co-occurrence
+        for i in range(n):
+            for j in range(i + 1, n):
+                if adj[i][j] > 0:
+                    # Draw curved line between nodes
+                    fig.add_trace(go.Scatterpolar(
+                        r=[0.2, 0.6, 0.2],  # Curve: start at edge, peak at center, end at edge
+                        theta=[
+                            np.degrees(angles[i]),
+                            np.degrees((angles[i] + angles[j]) / 2),  # Midpoint angle
+                            np.degrees(angles[j])
+                        ],
+                        mode='lines',
+                        line=dict(
+                            color='rgba(100, 100, 100, 0.3)',
+                            width=min(adj[i][j], 3)  # Thickness proportional to co-occurrence
+                        ),
+                        showlegend=False,
+                        hovertemplate=f"Co-occurrence: {int(adj[i][j])} documents<extra></extra>"
+                    ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=False),
+                angularaxis=dict(visible=False)
+            ),
+            title=f"Salience-Aware Chord Diagram (Top {n} Concepts)",
+            height=700,
+            width=700,
+            font=dict(family=self.font_family, size=self.font_size),
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        
+        # Add legend manually
+        legend_items = []
+        for i, ent in enumerate(entities):
+            color = mcolors.to_hex(cmap_obj(i / max(n - 1, 1))) if cmap_obj else self.DOMAIN_COLORS.get(ent, "#6b7280")
+            legend_items.append(dict(marker=dict(color=color, size=10), name=ent))
+        
+        fig.update_layout(legend=dict(items=legend_items, orientation="h", y=-0.05))
+        
+        return fig

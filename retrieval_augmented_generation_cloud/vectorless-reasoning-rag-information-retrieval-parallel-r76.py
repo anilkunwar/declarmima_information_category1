@@ -1,24 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v17.2 - CORRECTED & EXPANDED
+DECLARMIMA v17.2 - UNIFIED ROBUST VECTORLESS RAG WITH QUERY-DRIVEN VISUALIZATION
 ================================================================================
-Bug fixes:
-- Fixed "PREN_values" pydantic field mismatch (PREN -> pren key)
-- Fixed missing method defs (get_entity_consensus, plot_query_sunburst, plot_page_coverage_heatmap)
-- Removed dead code after build_extracted_values return
-- Fixed semantic scoring trapped inside document loop in TwoStageRetriever
-- Fixed ambiguous unit matching ("c" catching "mJ/cm²")
-- Fixed duplicate QUERY edges in PyVis query graph
-- Added Field(default_factory=list) to all DocumentMetadata list fields
-
-Expansions:
-- Phase Field, CALPHAD, MD/LAMMPS, DFT, FEM, PINNs, U-Net, ConvLSTM, FNO
-- Digital Twin, XAI/UQ, Bimodal microstructure, Nanotwinned structures
-- Martensitic transformation, IMC morphology, SRO/MRO
-- Lewis number, Jackson parameter, Hollomon params, VEC, ΔH_mix, Ω, λ, δ
-- Melt pool metrics, nanoindentation metrics, dislocation density
-- Advanced corrosion: apparent polarization resistance, hysteresis
+Merged strengths from v13.0+, v16.0, and v13.3 without weaknesses:
+- Comprehensive physical quantity classifier
+- Vectorless retrieval with robust semantic fallback
+- Fixed networkx "None cannot be a node" error
+- Fixed sunburst hierarchy error
+- Full visualization suite: 35+ chart types
+- Query-driven contextual visualization layer
+- Retrieval diagnostics dashboard
+- Concept normalization & synonym resolution
+- Enhanced structured metadata extraction
+- Comprehensive Ollama model catalog
+- Safe hierarchical tree building
+- LRU cache, timing utilities, fast JSON serialization
 """
 
 import streamlit as st
@@ -230,7 +227,6 @@ class DocumentMetadata(BaseModel):
     open_circuit_potential_values: List[float] = Field(default_factory=list)
     corrosion_current_density_values: List[float] = Field(default_factory=list)
     polarization_resistance_values: List[float] = Field(default_factory=list)
-    apparent_polarization_resistance_values: List[float] = Field(default_factory=list)
     current_density_values: List[float] = Field(default_factory=list)
     pren_values: List[float] = Field(default_factory=list)
     phase_fraction_values: List[float] = Field(default_factory=list)
@@ -258,25 +254,7 @@ class DocumentMetadata(BaseModel):
     youngs_modulus_values: List[float] = Field(default_factory=list)
     poisson_ratio_values: List[float] = Field(default_factory=list)
     cte_values: List[float] = Field(default_factory=list)
-    hollomon_strength_coeff_values: List[float] = Field(default_factory=list)
-    hollomon_exponent_values: List[float] = Field(default_factory=list)
-    indentation_force_values: List[float] = Field(default_factory=list)
-    indentation_depth_values: List[float] = Field(default_factory=list)
-    dislocation_density_values: List[float] = Field(default_factory=list)
-    hatch_distance_values: List[float] = Field(default_factory=list)
-    build_platform_temperature_values: List[float] = Field(default_factory=list)
-    melt_pool_depth_values: List[float] = Field(default_factory=list)
-    melt_pool_width_values: List[float] = Field(default_factory=list)
-    melt_pool_length_values: List[float] = Field(default_factory=list)
-    lewis_number_values: List[float] = Field(default_factory=list)
-    jackson_parameter_values: List[float] = Field(default_factory=list)
-    vec_values: List[float] = Field(default_factory=list)
-    delta_h_mix_values: List[float] = Field(default_factory=list)
-    delta_s_mix_values: List[float] = Field(default_factory=list)
-    omega_parameter_values: List[float] = Field(default_factory=list)
-    atomic_size_difference_values: List[float] = Field(default_factory=list)
-    lambda_parameter_values: List[float] = Field(default_factory=list)
-    other_parameters: Dict[str, List[float]] = Field(default_factory=dict)
+    other_parameters: Dict[str, List[float]] = {}
 
 
 # =============================================================================
@@ -365,25 +343,42 @@ class PhysicalQuantityClassifier:
         "viscosity": ["viscosity", "dynamic viscosity", "apparent viscosity"],
         "thermal_conductivity": ["thermal conductivity", "k", "kth", "heat conductivity"],
         "density": ["density", "mass density", "specific density", "volumetric density"],
-        # NEW ENTRIES v17.2
         "lewis_number": ["lewis number", "le", "thermal mass diffusivity ratio", "lewis no"],
+
         "jackson_parameter": ["jackson parameter", "alpha_j", "αj", "jackson alpha", "morphology parameter"],
+
         "hollomon_strength_coeff": ["hollomon strength coefficient", "strength coefficient", "sigma_0", "σ0", "k (hollomon)"],
+
         "hollomon_exponent": ["strain hardening exponent", "hollomon exponent", "work hardening exponent", "n value"],
+
         "vec": ["valence electron concentration", "vec", "electron concentration", "valence electrons"],
+
         "delta_h_mix": ["enthalpy of mixing", "δh_mix", "delta h mix", "mixing enthalpy", "dh_mix"],
+
         "delta_s_mix": ["entropy of mixing", "δs_mix", "delta s mix", "mixing entropy", "ds_mix"],
+
         "omega_parameter": ["omega parameter", "Ω", "omega", "omega hea"],
+
         "atomic_size_difference": ["atomic size difference", "δ", "delta", "atomic size diff"],
+
         "lambda_parameter": ["lambda parameter", "λ", "lambda hea", "geometrical parameter"],
+
         "indentation_force": ["indentation force", "indenter force", "load", "nanoindentation load"],
+
         "indentation_depth": ["indentation depth", "penetration depth", "displacement", "indent depth"],
+
         "dislocation_density": ["dislocation density", "rho_d", "ρd", "geometrically necessary dislocation"],
+
         "melt_pool_depth": ["melt pool depth", "meltpool depth", "penetration depth", "melt pool"],
+
         "melt_pool_width": ["melt pool width", "meltpool width", "track width"],
+
         "melt_pool_length": ["melt pool length", "meltpool length"],
+
         "hatch_distance": ["hatch distance", "hatch spacing", "scan spacing", "hatch offset"],
+
         "build_platform_temperature": ["build platform temperature", "substrate temperature", "bed temperature", "preheat temperature"],
+
     }
     UNIT_HINTS = {
         "scan_speed": ["mm/s", "cm/s", "m/s", "mm/min", "in/min"],
@@ -412,7 +407,6 @@ class PhysicalQuantityClassifier:
         "corrosion_current_density": ["ua/cm2", "uA/cm2", "ma/cm2", "a/cm2", "ua", "ma", "µA/cm²"],
         "current_density": ["a/cm2", "ma/cm2", "ua/cm2", "µA/cm²"],
         "polarization_resistance": ["kohm·cm2", "ohm·cm2", "kω·cm2", "ω·cm2", "kΩ·cm²"],
-        "apparent_polarization_resistance": ["kohm·cm2", "ohm·cm2", "kω·cm2", "ω·cm2", "kΩ·cm²"],
         "PREN": ["unitless", ""],
         "phase_fraction": ["%", "vol%", "fraction"],
         "austenite_fraction": ["%", "vol%"],
@@ -434,25 +428,42 @@ class PhysicalQuantityClassifier:
         "viscosity": ["pa·s", "mpa·s", "cp"],
         "thermal_conductivity": ["w/m·k", "w/mk", "W/m·K"],
         "density": ["g/cm3", "kg/m3", "g/ml", "g/cm³", "kg/m³"],
-        # NEW ENTRIES v17.2
         "lewis_number": ["unitless", ""],
+
         "jackson_parameter": ["unitless", ""],
+
         "hollomon_strength_coeff": ["mpa", "gpa", "pa"],
+
         "hollomon_exponent": ["unitless", ""],
+
         "vec": ["unitless", "electrons/atom", "e/a"],
+
         "delta_h_mix": ["kj/mol", "j/mol", "ev/atom"],
+
         "delta_s_mix": ["j/mol·k", "kj/mol·k"],
+
         "omega_parameter": ["unitless", ""],
+
         "atomic_size_difference": ["%", "unitless", ""],
+
         "lambda_parameter": ["unitless", ""],
+
         "indentation_force": ["mn", "μn", "nn", "n"],
+
         "indentation_depth": ["nm", "um", "µm", "mm"],
+
         "dislocation_density": ["m-2", "1/m2", "cm-2"],
+
         "melt_pool_depth": ["um", "µm", "nm", "mm"],
+
         "melt_pool_width": ["um", "µm", "nm", "mm"],
+
         "melt_pool_length": ["um", "µm", "nm", "mm"],
+
         "hatch_distance": ["um", "µm", "nm", "mm"],
+
         "build_platform_temperature": ["°c", "k", "°f"],
+
     }
 
     def __init__(self):
@@ -481,13 +492,18 @@ class PhysicalQuantityClassifier:
         self.keyword_to_canonical["ved"] = "energy_density"
         self.keyword_to_canonical["aed"] = "areal_energy_density"
         self.keyword_to_canonical["led"] = "linear_energy_density"
-        # NEW v17.2
         self.keyword_to_canonical["le"] = "lewis_number"
+
         self.keyword_to_canonical["alpha_j"] = "jackson_parameter"
+
         self.keyword_to_canonical["vec"] = "vec"
+
         self.keyword_to_canonical["dh_mix"] = "delta_h_mix"
+
         self.keyword_to_canonical["ds_mix"] = "delta_s_mix"
+
         self.keyword_to_canonical["omega"] = "omega_parameter"
+
 
     def classify(self, parameter_name: Optional[str], unit: Optional[str], context: str) -> str:
         if parameter_name:
@@ -504,7 +520,7 @@ class PhysicalQuantityClassifier:
                 if kw in context_lower:
                     return canonical
         if unit:
-            unit_lower = unit.lower().strip()
+            unit_lower = unit.lower()
             if "yield" in context_lower and "mpa" in unit_lower:
                 return "yield_strength"
             if "tensile" in context_lower and "mpa" in unit_lower:
@@ -519,7 +535,9 @@ class PhysicalQuantityClassifier:
                 for u in units:
                     if u in unit_lower:
                         return canonical
-            # Safer exact-ish checks
+        if unit:
+            if "w/cm" in unit_lower or "kw/cm" in unit_lower:
+                return "irradiance"
             if unit_lower in ["w", "kw", "mw"]:
                 return "laser_power"
             if "mm/s" in unit_lower:
@@ -538,8 +556,6 @@ class PhysicalQuantityClassifier:
                 return "corrosion_current_density"
             if "kω·cm2" in unit_lower or "kohm·cm2" in unit_lower:
                 return "polarization_resistance"
-            if "w/cm" in unit_lower or "kw/cm" in unit_lower:
-                return "irradiance"
         return "unknown"
 
     def get_human_readable(self, canonical: str) -> str:
@@ -560,8 +576,7 @@ class PhysicalQuantityClassifier:
             "repassivation_potential": "Repassivation Potential", "breakdown_potential": "Breakdown Potential",
             "open_circuit_potential": "Open Circuit Potential",
             "corrosion_current_density": "Corrosion Current Density", "current_density": "Current Density",
-            "polarization_resistance": "Polarization Resistance", "apparent_polarization_resistance": "Apparent Polarization Resistance",
-            "PREN": "PREN",
+            "polarization_resistance": "Polarization Resistance", "PREN": "PREN",
             "phase_fraction": "Phase Fraction", "austenite_fraction": "Austenite Fraction",
             "ferrite_fraction": "Ferrite Fraction", "grain_size": "Grain Size", "cell_size": "Cell Size",
             "porosity": "Porosity", "relative_density": "Relative Density",
@@ -574,17 +589,25 @@ class PhysicalQuantityClassifier:
             "absorption_coefficient": "Absorption Coefficient",
             "enthalpy": "Enthalpy", "viscosity": "Viscosity",
             "thermal_conductivity": "Thermal Conductivity", "density": "Density",
-            # NEW v17.2
-            "lewis_number": "Lewis Number", "jackson_parameter": "Jackson Parameter",
-            "hollomon_strength_coeff": "Hollomon Strength Coeff", "hollomon_exponent": "Hollomon Exponent",
-            "vec": "Valence Electron Concentration (VEC)", "delta_h_mix": "Enthalpy of Mixing (ΔHmix)",
-            "delta_s_mix": "Entropy of Mixing (ΔSmix)", "omega_parameter": "Omega Parameter (Ω)",
-            "atomic_size_difference": "Atomic Size Difference (δ)", "lambda_parameter": "Lambda Parameter (λ)",
-            "indentation_force": "Indentation Force", "indentation_depth": "Indentation Depth",
-            "dislocation_density": "Dislocation Density", "melt_pool_depth": "Melt Pool Depth",
-            "melt_pool_width": "Melt Pool Width", "melt_pool_length": "Melt Pool Length",
-            "hatch_distance": "Hatch Distance", "build_platform_temperature": "Build Platform Temperature",
             "unknown": "Other Quantities"
+            "lewis_number": "Lewis Number", "jackson_parameter": "Jackson Parameter",
+
+            "hollomon_strength_coeff": "Hollomon Strength Coeff", "hollomon_exponent": "Hollomon Exponent",
+
+            "vec": "Valence Electron Concentration (VEC)", "delta_h_mix": "Enthalpy of Mixing (ΔHmix)",
+
+            "delta_s_mix": "Entropy of Mixing (ΔSmix)", "omega_parameter": "Omega Parameter (Ω)",
+
+            "atomic_size_difference": "Atomic Size Difference (δ)", "lambda_parameter": "Lambda Parameter (λ)",
+
+            "indentation_force": "Indentation Force", "indentation_depth": "Indentation Depth",
+
+            "dislocation_density": "Dislocation Density", "melt_pool_depth": "Melt Pool Depth",
+
+            "melt_pool_width": "Melt Pool Width", "melt_pool_length": "Melt Pool Length",
+
+            "hatch_distance": "Hatch Distance", "build_platform_temperature": "Build Platform Temperature",
+
         }
         return mapping.get(canonical, canonical.replace("_", " ").title())
 
@@ -668,7 +691,7 @@ class ConceptNormalizer:
         ],
         "nanoindentation": [
             "nanoindentation", "nano-indentation", "indentation test", "indentation force",
-            "nano indentation", "berkovich", "oliver-pharr", "continuous stiffness measurement", "csm"
+            "nano indentation"
         ],
         "sfe": [
             "stacking fault energy", "sfe", "generalized stacking fault energy", "gsfe",
@@ -689,104 +712,13 @@ class ConceptNormalizer:
             "led", "linear energy density", "line energy density", "linear energy density (led)"
         ],
         "fem": [
-            "fem", "finite element method", "finite element analysis", "fea", "finite element",
-            "comsol", "abaqus", "ansys"
+            "fem", "finite element method", "finite element analysis", "fea", "finite element"
         ],
         "md": [
-            "md", "molecular dynamics", "molecular dynamics simulation", "molecular dynamics (md)",
-            "lammps", "embedded atom method", "eam", "interatomic potential"
-        ],
-        # NEW v17.2
-        "phase_field": [
-            "phase field", "phase-field", "pfm", "cahn-hilliard", "allen-cahn",
-            "diffuse interface", "landau polynomial", "phase field method"
-        ],
-        "calphad": [
-            "calphad", "thermodynamic database", "tdb", "gibbs free energy fitting",
-            "pycalphad", "phase diagram calculation"
-        ],
-        "dft": [
-            "density functional theory", "dft", "first principles", "ab initio",
-            "vasp", "quantum espresso", "castep"
-        ],
-        "pinns": [
-            "physics-informed neural network", "pinns", "physics informed",
-            "physics-constrained ml", "pde-constrained neural network"
-        ],
-        "unet": [
-            "u-net", "unet", "u net", "convolutional encoder-decoder", "semantic segmentation"
-        ],
-        "convlstm": [
-            "convlstm", "conv lstm", "convolutional lstm", "spatiotemporal forecasting",
-            "sequence prediction cnn"
-        ],
-        "fno": [
-            "fourier neural operator", "fno", "neural operator", "surrogate model"
-        ],
-        "digital_twin": [
-            "digital twin", "digitaltwin", "virtual replica", "closed-loop control",
-            "real-time monitoring", "predictive maintenance"
-        ],
-        "xai": [
-            "explainable ai", "xai", "interpretable ml", "feature attribution",
-            "shap", "lime", "uncertainty quantification", "uq"
-        ],
-        "bimodal_microstructure": [
-            "bimodal microstructure", "bimodal grain structure", "bimodal grain size",
-            "coarse and fine grain", "strength-ductility synergy"
-        ],
-        "nanotwinned": [
-            "nanotwinned", "nt-cu", "nanotwin", "twin boundary", "coherent twin boundary",
-            "ctb", "nanotwinned copper", "nt fcc"
-        ],
-        "martensite_transformation": [
-            "martensitic transformation", "martensite", "bain strain", "invariant plane strain",
-            "habit plane", "shape memory alloy", "sma", "ttt diagram", "cct diagram"
-        ],
-        "imc_morphology": [
-            "imc morphology", "scalloped imc", "prismatic imc", "rooftop imc",
-            "lead-lag dynamics", "intermetallic morphology", "cu6sn5 morphology"
-        ],
-        "sro_mro": [
-            "short range order", "sro", "medium range order", "mro", "liquid metal clustering",
-            "chemical short range order", "csro"
-        ],
-        "dislocation": [
-            "dislocation", "dislocation density", "geometrically necessary dislocation",
-            "gn dislocation", "dislocation exhaustion", "dislocation multiplication"
-        ],
-        "melt_pool": [
-            "melt pool", "meltpool", "melt pool morphology", "melt pool dynamics",
-            "keyhole", "keyhole mode", "conduction mode"
-        ],
-        "boussinesq": [
-            "boussinesq approximation", "boussinesq", "thermal buoyancy", "thermo-capillary",
-            "marangoni convection", "marangoni flow"
-        ],
-        "heat_source": [
-            "gaussian beam", "super-gaussian", "flat-top beam", "ring beam", "bessel beam",
-            "heat source profile", "laser beam profile"
-        ],
-        "eigenstrain": [
-            "eigenstrain", "stress-free strain", "khachaturyan", "transformation strain",
-            "mismatch strain", "coherency strain"
-        ],
-        "nernst_planck": [
-            "nernst-planck", "nernst planck", "ionic migration", "ion transport",
-            "electrochemical transport"
-        ],
-        "butler_volmer": [
-            "butler-volmer", "butler volmer", "charge transfer kinetics", "overpotential",
-            "exchange current density"
-        ],
-        "hollomon": [
-            "hollomon", "hollomon equation", "power law hardening", "ramberg-osgood",
-            "ramberg osgood", "strain hardening"
-        ],
-        "lewis_number": [
-            "lewis number", "le", "lewis no", "thermal to mass diffusivity ratio"
+            "md", "molecular dynamics", "molecular dynamics simulation", "molecular dynamics (md)"
         ],
     }
+
 
     def __init__(self, embedding_fn: Optional[Callable] = None):
         self.embedding_fn = embedding_fn
@@ -833,6 +765,7 @@ class ConceptNormalizer:
         return [self.normalize(t) for t in terms]
 
 
+
 # ============================================================================
 # DISPLAY NAME HELPERS (DOI postprocessing + user aliases)
 # ============================================================================
@@ -842,9 +775,12 @@ def normalize_doi_display(name: str) -> str:
     """
     if not name:
         return name
+    # Remove .pdf extension
     base = name[:-4] if name.lower().endswith('.pdf') else name
+    # If it looks like a DOI (starts with 10. and contains _)
     if re.match(r'10\.\d+_', base):
-        base = re.sub(r'^(10\.\d+)_(.*)', r'/', base)
+        # Replace first _ after 10.xxx with /
+        base = re.sub(r'^(10\.\d+)_(.*)', r'\1/\2', base)
     return base
 
 
@@ -900,9 +836,9 @@ class StructuredMetadataExtractor:
     ERP_PATTERN = r'(?:Erp|repassivation potential)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
     EPIT_PATTERN = r'(?:Epit|pitting potential|breakdown potential|Ebr)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
     EBR_PATTERN = r'(?:Ebr|breakdown potential|depassivation point)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mV|V)'
+
     JCORR_PATTERN = r'(?:Jcorr|corrosion current density|i_corr)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µA/cm²|uA/cm2|mA/cm2|A/cm2)'
     RP_PATTERN = r'(?:Rp|polarization resistance)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(kΩ·cm²|ohm·cm2|Ω·cm2)'
-    RPA_PATTERN = r'(?:Rp,app|apparent polarization resistance|rp_app)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(kΩ·cm²|ohm·cm2|Ω·cm2|kohm·cm2)'
     PREN_PATTERN = r'(?:PREN|pitting resistance equivalent)\s*[=:]\s*(\d+(?:\.\d+)?)'
     SFE_PATTERN = r'(?:SFE|stacking fault energy|GSFE)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(mJ/m²|mj/m2|J/m2)'
     SMD_PATTERN = r'(?:SMD|Sauter mean diameter)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µm|um|nm|mm)'
@@ -915,17 +851,26 @@ class StructuredMetadataExtractor:
     GRAIN_SIZE_PATTERN = r'(?:grain size|cell size)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(µm|um|nm|mm)'
     POROSITY_PATTERN = r'(?:porosity|pore fraction)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|fraction)'
     RELATIVE_DENSITY_PATTERN = r'(?:relative density)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(%|fraction)'
-    # NEW v17.2 patterns
     HOLL_K_PATTERN = r'(?:strength coefficient|sigma_0|σ₀|K)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(MPa|GPa|Pa)'
+
     HOLL_N_PATTERN = r'(?:strain hardening exponent|work hardening exponent|n)\s*[=:]\s*(\d+(?:\.\d+)?)'
+
     IND_FORCE_PATTERN = r'(?:indentation force|load|F)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(mN|μN|N|nN)'
+
     IND_DEPTH_PATTERN = r'(?:indentation depth|penetration depth|h)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(nm|μm|um|mm)'
+
     DISL_DENSITY_PATTERN = r'(?:dislocation density|ρ_d)\s*[=:]\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(m⁻²|cm⁻²|1/m2|m-2)'
+
     HATCH_PATTERN = r'(?:hatch distance|hatch spacing)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(μm|um|mm|nm)'
+
     BED_TEMP_PATTERN = r'(?:build platform|substrate|bed|preheat)\s+(?:temp|temperature|T)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(°C|K|°F)'
+
     MELT_DEPTH_PATTERN = r'(?:melt\s*pool\s*depth|penetration\s*depth)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(μm|um|mm|nm)'
+
     MELT_WIDTH_PATTERN = r'(?:melt\s*pool\s*width|track\s*width)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(μm|um|mm|nm)'
+
     MELT_LENGTH_PATTERN = r'(?:melt\s*pool\s*length)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(μm|um|mm|nm)'
+
 
     ALLOY_PATTERNS = [
         r'\b(?:AlSi[\dMg]+|Ti\d*Al\d*V\d*|Inconel\s?\d{3}|SS\s?\d{4}|UNS\s?S\d{5}|Ti\s?6Al\s?4V|Cu\s?[A-Za-z0-9]+|Fe-based|Mg\s?alloy)\b',
@@ -955,7 +900,6 @@ class StructuredMetadataExtractor:
             "breakdown_potential": (re.compile(self.EBR_PATTERN, re.IGNORECASE), float),
             "corrosion_current_density": (re.compile(self.JCORR_PATTERN, re.IGNORECASE), float),
             "polarization_resistance": (re.compile(self.RP_PATTERN, re.IGNORECASE), float),
-            "apparent_polarization_resistance": (re.compile(self.RPA_PATTERN, re.IGNORECASE), float),
             "pren": (re.compile(self.PREN_PATTERN, re.IGNORECASE), float),
             "stacking_fault_energy": (re.compile(self.SFE_PATTERN, re.IGNORECASE), float),
             "sauter_mean_diameter": (re.compile(self.SMD_PATTERN, re.IGNORECASE), float),
@@ -968,17 +912,26 @@ class StructuredMetadataExtractor:
             "grain_size": (re.compile(self.GRAIN_SIZE_PATTERN, re.IGNORECASE), float),
             "porosity": (re.compile(self.POROSITY_PATTERN, re.IGNORECASE), float),
             "relative_density": (re.compile(self.RELATIVE_DENSITY_PATTERN, re.IGNORECASE), float),
-            # NEW v17.2
             "hollomon_strength_coeff": (re.compile(self.HOLL_K_PATTERN, re.IGNORECASE), float),
+
             "hollomon_exponent": (re.compile(self.HOLL_N_PATTERN, re.IGNORECASE), float),
+
             "indentation_force": (re.compile(self.IND_FORCE_PATTERN, re.IGNORECASE), float),
+
             "indentation_depth": (re.compile(self.IND_DEPTH_PATTERN, re.IGNORECASE), float),
+
             "dislocation_density": (re.compile(self.DISL_DENSITY_PATTERN, re.IGNORECASE), float),
+
             "hatch_distance": (re.compile(self.HATCH_PATTERN, re.IGNORECASE), float),
+
             "build_platform_temperature": (re.compile(self.BED_TEMP_PATTERN, re.IGNORECASE), float),
+
             "melt_pool_depth": (re.compile(self.MELT_DEPTH_PATTERN, re.IGNORECASE), float),
+
             "melt_pool_width": (re.compile(self.MELT_WIDTH_PATTERN, re.IGNORECASE), float),
+
             "melt_pool_length": (re.compile(self.MELT_LENGTH_PATTERN, re.IGNORECASE), float),
+
         }
         self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
 
@@ -1098,37 +1051,52 @@ class TwoStageRetriever:
                 if meta.areal_energy_density_values:
                     score += 0.5
             if "led" in query_lower or "linear energy density" in query_lower:
+            # NEW v17.2 scoring
+
+            if any(t in query_lower for t in ["melt pool", "meltpool", "penetration depth"]):
+
+                if meta.melt_pool_depth_values or meta.melt_pool_width_values:
+
+                    score += 0.5
+
+            if "hatch" in query_lower and meta.hatch_distance_values:
+
+                score += 0.4
+
+            if "nanoindentation" in query_lower or "indentation" in query_lower:
+
+                if meta.indentation_force_values or meta.indentation_depth_values:
+
+                    score += 0.5
+
+            if "dislocation" in query_lower and meta.dislocation_density_values:
+
+                score += 0.4
+
+            if "hollomon" in query_lower and (meta.hollomon_strength_coeff_values or meta.hollomon_exponent_values):
+
+                score += 0.5
+
+            if "vec" in query_lower and meta.vec_values:
+
+                score += 0.4
+
+            if "lewis" in query_lower and meta.lewis_number_values:
+
+                score += 0.4
+
                 if meta.linear_energy_density_values:
                     score += 0.5
-            # NEW v17.2 scoring
-            if any(t in query_lower for t in ["melt pool", "meltpool", "penetration depth"]):
-                if meta.melt_pool_depth_values or meta.melt_pool_width_values:
-                    score += 0.5
-            if "hatch" in query_lower and meta.hatch_distance_values:
-                score += 0.4
-            if "nanoindentation" in query_lower or "indentation" in query_lower:
-                if meta.indentation_force_values or meta.indentation_depth_values:
-                    score += 0.5
-            if "dislocation" in query_lower and meta.dislocation_density_values:
-                score += 0.4
-            if "hollomon" in query_lower and (meta.hollomon_strength_coeff_values or meta.hollomon_exponent_values):
-                score += 0.5
-            if "vec" in query_lower and meta.vec_values:
-                score += 0.4
-            if "lewis" in query_lower and meta.lewis_number_values:
-                score += 0.4
             for proc in meta.process_types:
                 if proc.lower() in query_lower:
                     score += 0.2
             scores.append((name, min(score, 1.0)))
 
-        # FIXED v17.2: semantic scoring moved OUTSIDE the document loop
-        try:
-            if self.embedding_model:
-                doc_texts = [
-                    f"{meta.alloys} {meta.process_types} {self.doc_summaries.get(name, '')}"
-                    for name, meta in self.doc_metadata.items()
-                ]
+
+
+            try:
+                doc_texts = [f"{meta.alloys} {meta.process_types} {self.doc_summaries.get(name, '')}"
+                             for name, meta in self.doc_metadata.items()]
                 if doc_texts:
                     doc_emb = self.embedding_model.encode(doc_texts, convert_to_tensor=True)
                     query_emb = self.embedding_model.encode(query, convert_to_tensor=True)
@@ -1136,9 +1104,8 @@ class TwoStageRetriever:
                     for i, (name, kw_score) in enumerate(scores):
                         sem_score = float(sem_scores[i])
                         scores[i] = (name, min(kw_score * 0.6 + sem_score * 0.4, 1.0))
-        except Exception as e:
-            logger.warning(f"Semantic blending failed: {e}")
-
+            except Exception as e:
+                logger.warning(f"Semantic blending failed: {e}")
         scores.sort(key=lambda x: x[1], reverse=True)
         if not any(s[1] > 0 for s in scores):
             return [(name, 0.2) for name in self.doc_metadata.keys()][:top_k]
@@ -1192,7 +1159,7 @@ class PageNode:
             "summary": self.summary, "prefix_summary": self.prefix_summary, "level": self.level,
             "doc_id": self.doc_id, "section_type": self.section_type, "node_id": self.node_id,
             "text_token_count": self.text_token_count, "children": [c.to_dict() for c in self.children],
-            "metadata": self.metadata.model_dump() if self.metadata else None
+            "metadata": self.metadata.dict() if self.metadata else None
         }
 
     def to_tree_format(self, max_chars: int = 20000) -> Dict[str, Any]:
@@ -1205,7 +1172,7 @@ class PageNode:
         if text:
             result["text"] = text
         if self.metadata:
-            result["metadata"] = self.metadata.model_dump()
+            result["metadata"] = self.metadata.dict()
         return result
 
     @classmethod
@@ -1749,6 +1716,7 @@ class QuantitativeKnowledgeGraph:
                     continue
                 unit = item.get("unit", "")
                 phys_q = item.get("physical_quantity") or self.phys_classifier.classify(item.get("parameter_name"), unit, item.get("context", ""))
+                # Do NOT skip "unknown" — keep them so the user can see what was missed
                 all_values.append(ExtractedValue(
                     query=query, value=val, unit=unit, physical_quantity=phys_q or "unknown",
                     parameter_name=item.get("parameter_name"), material=item.get("material"),
@@ -1757,8 +1725,9 @@ class QuantitativeKnowledgeGraph:
                 ))
         return all_values
 
-    # FIXED v17.2: extracted dead code into proper method
     def get_entity_consensus(self, entity_name: str) -> Dict[str, Any]:
+
+
         values = []
         units = set()
         docs = set()
@@ -1771,14 +1740,7 @@ class QuantitativeKnowledgeGraph:
                         docs.add(doc_id)
         if not values:
             return {"found": False, "entity": entity_name}
-        return {
-            "found": True, "entity": entity_name, "count": len(values),
-            "unit": list(units)[0] if units else "unknown",
-            "range": (min(values), max(values)),
-            "mean": float(np.mean(values)),
-            "std": float(np.std(values)) if len(values) > 1 else 0.0,
-            "documents": list(docs), "values": values
-        }
+        return {"found": True, "entity": entity_name, "count": len(values), "unit": list(units)[0] if units else "unknown", "range": (min(values), max(values)), "mean": float(np.mean(values)), "std": float(np.std(values)) if len(values) > 1 else 0.0, "documents": list(docs), "values": values}
 
     def get_entity_contradictions(self, entity_name: str, threshold_factor: float = 2.0) -> List[Dict[str, Any]]:
         by_doc = defaultdict(list)
@@ -1830,26 +1792,34 @@ Return JSON array of extracted items with fields:
   "page": page_number,
   "parameter_name": "...",
   "value": number,
-  "unit": "e.g., W, kW, mW, J, mm/s, C, K, MPa, GPa, HV, mV, V, µA/cm², A/cm², J/mm³, J/mm², J/m, mJ/m², nm, µm, mm, K, °C, wt%, at%, vol%, g/cm³, kg/m³, W/m·K, Pa·s, mPa·s, kΩ·cm², ppm, mN, nN, m⁻²",
-  "physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, feed_rate, irradiance, temperature, melting_temperature, energy_density, areal_energy_density, linear_energy_density, layer_thickness, spot_size, exposure_time, enthalpy, viscosity, thermal_conductivity, density, yield_strength, tensile_strength, ultimate_tensile_strength, hardness, elongation, modulus, stacking_fault_energy, unstable_stacking_fault_energy, ideal_shear_strength, corrosion_potential, pitting_potential, breakdown_potential, repassivation_potential, open_circuit_potential, corrosion_current_density, polarization_resistance, apparent_polarization_resistance, current_density, PREN, phase_fraction, austenite_fraction, ferrite_fraction, grain_size, cell_size, porosity, relative_density, surface_roughness, sauter_mean_diameter, spray_penetration, plume_height, film_thickness, absorption_coefficient, youngs_modulus, poisson_ratio, coefficient_thermal_expansion, lewis_number, jackson_parameter, hollomon_strength_coeff, hollomon_exponent, vec, delta_h_mix, delta_s_mix, omega_parameter, atomic_size_difference, lambda_parameter, indentation_force, indentation_depth, dislocation_density, melt_pool_depth, melt_pool_width, melt_pool_length, hatch_distance, build_platform_temperature, unknown",
-  "material": "alloy or material name if mentioned (e.g., Ti3Au, CP Ti, Grade II Ti, SDSS 2507, UNS S32750, AlSiMgZr, Al-Si-Mg-Zr, TiB2/Al-Si-Mg-Zr, Fe-based metallic glass, Au-Ti, 316L, 2205, Inconel 718, Ti6Al4V, nt-Cu, Cu6Sn5)",
-  "method": "e.g., LPBF, L-PBF, DED, SLM, PFI, GDI, FEM, MD, nanoindentation, EIS, CPP, XRD, SEM, TEM, EBSD, EDS, DTA, Phase Field, CALPHAD, PINNs, U-Net, ConvLSTM, FNO, Digital Twin"
+  "unit": "e.g., W, kW, mm/s, MPa, GPa, HV, mV, V, µA/cm², A/cm², J/mm³, J/mm², J/m, mJ/m², nm, µm, mm, K, °C, wt%, at%, vol%, g/cm³, kg/m³, W/m·K, Pa·s, mPa·s, kΩ·cm², ppm",
+  "physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, feed_rate, irradiance, temperature, melting_temperature, energy_density, areal_energy_density, linear_energy_density, layer_thickness, spot_size, exposure_time, enthalpy, viscosity, thermal_conductivity, density, yield_strength, tensile_strength, ultimate_tensile_strength, hardness, elongation, modulus, stacking_fault_energy, unstable_stacking_fault_energy, ideal_shear_strength, corrosion_potential, pitting_potential, breakdown_potential, repassivation_potential, open_circuit_potential, corrosion_current_density, polarization_resistance, apparent_polarization_resistance, current_density, PREN, phase_fraction, austenite_fraction, ferrite_fraction, grain_size, cell_size, porosity, relative_density, surface_roughness, sauter_mean_diameter, spray_penetration, plume_height, film_thickness, absorption_coefficient, youngs_modulus, poisson_ratio, coefficient_thermal_expansion, unknown",
+  "material": "alloy or material name if mentioned (e.g., Ti3Au, CP Ti, Grade II Ti, SDSS 2507, UNS S32750, AlSiMgZr, Al-Si-Mg-Zr, TiB2/Al-Si-Mg-Zr, Fe-based metallic glass, Au-Ti, 316L, 2205, Inconel 718, Ti6Al4V)",
+  "method": "e.g., LPBF, L-PBF, DED, SLM, PFI, GDI, FEM, MD, nanoindentation, EIS, CPP, XRD, SEM, TEM, EBSD, EDS, DTA"
 }}
 
 CRITICAL RULES:
 1. Capture ALL numbers with units, even if they describe corrosion, electrochemistry, thermal properties, mechanical properties, microstructural features, or spray dynamics.
 2. For electrochemical data: map Ecorr/Erp/Epit/Ebr to corrosion_potential/pitting_potential/etc., NOT just generic potential.
-3. For LPBF/DED: capture VED, AED, LED, hatch distance, layer thickness, laser power, scan speed, melt pool depth/width.
-4. For nanoindentation: capture indentation force, hardness, modulus, SFE, USFE, dislocation density.
+3. For LPBF/DED: capture VED, AED, LED, hatch distance, layer thickness, laser power, scan speed.
+4. For nanoindentation: capture indentation force, hardness, modulus, SFE, USFE.
 5. NEVER truncate numbers.
 6. If an alloy or material name appears, create an item with item_type="material", content=the name, material=the name.
 7. Return ONLY valid JSON, no extra text.
 8. Set confidence based on clarity.
+
+
+
 9. Capture computational & multiphysics methods: Phase Field (Cahn-Hilliard/Allen-Cahn), CALPHAD (.TDB, pycalphad), Molecular Dynamics (LAMMPS, EAM, Morse, GSFE), DFT/VASP, FEM (COMSOL, Abaqus, Ansys), Navier-Stokes, Boussinesq approximation, Marangoni convection, enthalpy method for phase change, eigenstrain/Khachaturyan scheme.
+
 10. Capture AI/ML spatio-temporal models: Physics-Informed Neural Networks (PINNs), U-Net, ConvLSTM, Fourier Neural Operator (FNO), Variational Autoencoder (VAE), Digital Twin, Explainable AI (XAI), Uncertainty Quantification (UQ).
+
 11. Capture advanced alloy descriptors & thermodynamics: VEC, ΔH_mix, ΔS_mix, Ω (omega parameter), λ (lambda), δ (atomic size difference), Jackson parameter (αJ), Lewis number (Le), PREN, apparent polarization resistance (Rp,app).
+
 12. Capture microstructural phenomena: Bimodal microstructure, nanotwinned structures (nt-Cu), SRO/MRO clusters, martensitic transformation, Bain strain, habit plane, scalloped vs prismatic/rooftop IMC, lead-lag dynamics, coherent/incoherent interfaces, 9R phase, stacking faults.
+
 13. Capture nanoindentation metrics: Indentation force, penetration depth, Oliver-Pharr hardness/modulus, continuous stiffness measurement (CSM), dislocation nucleation, dislocation exhaustion.
+
 14. Capture melt-pool & process metrics: Melt pool depth/width/length, hatch distance, build platform temperature, keyhole mode, conduction mode, layer thickness, spot size.
 
 Return [] if no relevant information found."""
@@ -2164,45 +2134,55 @@ Include up to {self.max_results} selections."""
         return None
 
 
+
 # ============================================================================
 # VISUALIZATION CONFIGURATION
 # ============================================================================
 @dataclass
 class VisConfig:
     """Centralized configuration for all visualization styling parameters."""
+    # Font settings
     font_family: str = "DejaVu Sans"
     font_size: int = 10
     title_font_size: int = 14
     label_font_size: int = 9
+    # Figure settings
     figure_dpi: int = 300
     figsize_network: Tuple[int, int] = (14, 12)
     figsize_knowledge_graph: Tuple[int, int] = (14, 12)
     figsize_embedding: Tuple[int, int] = (10, 8)
     figsize_tree: Tuple[int, int] = (14, 10)
+    # Network/node settings
     node_size_factor: float = 1.0
     node_size_base_doc: int = 800
     node_size_base_entity: int = 500
     node_size_base_material: int = 600
     node_size_base_value: int = 300
     node_size_base_hub: int = 2500
+    # Edge settings
     edge_alpha: float = 0.25
     edge_width: float = 0.8
     edge_width_pyvis: float = 1.0
+    # PyVis settings
     pyvis_height: str = "700px"
     pyvis_width: str = "100%"
     pyvis_physics_enabled: bool = True
     pyvis_gravity: int = -1800
     pyvis_spring_length: int = 140
     pyvis_damping: float = 0.85
+    # Plotly settings
     plotly_height: int = 500
     plotly_width: int = None
+    # Matplotlib settings
     marker_size: int = 80
     line_width: float = 1.5
     alpha: float = 0.8
+    # Colormap
     default_colormap: str = "viridis"
+    # Label style
     label_style: str = "doi"
+    # Aliases
     aliases: Optional[Dict[str, str]] = None
-
 
 class PublicationVisualizationEngine:
     DOMAIN_COLORS = {
@@ -2221,6 +2201,7 @@ class PublicationVisualizationEngine:
     def __init__(self, kgraph: QuantitativeKnowledgeGraph, config: Optional[VisConfig] = None):
         self.kgraph = kgraph
         self.cfg = config or VisConfig()
+        # Apply matplotlib rcParams from config
         plt.rcParams['font.family'] = self.cfg.font_family
         plt.rcParams['font.size'] = self.cfg.font_size
         plt.rcParams['axes.titlesize'] = self.cfg.title_font_size
@@ -2272,7 +2253,11 @@ class PublicationVisualizationEngine:
                     rows.append({"doc": doc_id, "doc_stem": display, "doc_citation": citation, "physical_quantity": phys, "material": mat, "value": value, "unit": unit, "confidence": item.get("confidence", 0.5), "page": item.get("page", 0), "context": item.get("context", "")[:200]})
         return pd.DataFrame(rows)
 
+    # =============================================================================
+    # QUERY-AWARE DATA FILTERING
+    # =============================================================================
     def get_query_focused_df(self, query_ctx: QueryContext) -> pd.DataFrame:
+        """Return dataframe filtered to current query context."""
         df = self.extract_dataframe(aliases=self.cfg.aliases, label_style=self.cfg.label_style)
         if df.empty or not query_ctx.has_data():
             return df
@@ -2283,29 +2268,45 @@ class PublicationVisualizationEngine:
         )
         return df[mask].copy()
 
+    # =============================================================================
+    # QUERY-AWARE KNOWLEDGE GRAPH (NetworkX)
+    # =============================================================================
     def plot_query_knowledge_graph(self, query_ctx: QueryContext, figsize=(14, 11)) -> plt.Figure:
+        """Query-focused interactive Knowledge Graph"""
         if not query_ctx.has_data():
             fig, ax = plt.subplots(figsize=figsize)
             ax.text(0.5, 0.5, "No quantitative data for this query", ha='center', va='center', fontsize=14)
             ax.axis("off")
             return fig
+
         df_focus = self.get_query_focused_df(query_ctx)
         G = nx.Graph()
+
+        # Central Query Node
         G.add_node("QUERY", node_type="query", label=query_ctx.query[:45] + "...", 
                   title=f"Query: {query_ctx.query}")
+
+        # Add relevant documents
         for doc_id in query_ctx.relevant_doc_ids:
             display_name = get_display_name(doc_id, self.cfg.aliases)
             G.add_node(display_name, node_type="doc", color="#10b981", size=1400,
                       title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
+
+        # Add physical quantities
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
             G.add_node(pq, node_type="pq", label=readable, color="#3b82f6", size=1100)
+
+        # Add materials
         for mat in query_ctx.materials:
             G.add_node(mat, node_type="material", color="#f59e0b", size=1300)
+
+        # Add extracted values as leaf nodes
         for val in query_ctx.extracted_values[:20]:
             label = f"{val.value:.1f} {val.unit or ''}"
             G.add_node(label, node_type="value", color="#ec4899", size=600,
                       title=f"{val.value} {val.unit} | {val.material or ''} | p.{val.page}")
+
             if val.material and val.material in G:
                 G.add_edge(val.material, label, weight=2)
             if val.doc_name and get_display_name(val.doc_name, self.cfg.aliases) in G:
@@ -2313,178 +2314,55 @@ class PublicationVisualizationEngine:
             for pq in query_ctx.physical_quantities:
                 if val.physical_quantity == pq and pq in G:
                     G.add_edge(pq, label, weight=1)
+
+        # Connect query to everything
         for node in list(G.nodes()):
             if node != "QUERY":
                 G.add_edge("QUERY", node, weight=0.8)
+
+        # Draw
         pos = nx.spring_layout(G, k=0.65, iterations=80, seed=42)
         fig, ax = plt.subplots(figsize=figsize)
+        
         query_nodes = ["QUERY"]
         doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
         pq_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "pq"]
         mat_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "material"]
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
+
         nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", node_size=3200, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", node_size=1400, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", node_size=1100, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", node_size=1300, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#ec4899", node_size=650, ax=ax)
+
         nx.draw_networkx_edges(G, pos, alpha=0.35, width=1.2, edge_color="#94a3b8", ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=9, font_family=self.font_family, ax=ax)
+
         ax.set_title(f"Query-Focused Knowledge Graph\n{query_ctx.query[:70]}...", 
                     fontsize=15, fontweight='bold', pad=20)
         ax.axis("off")
         plt.tight_layout()
         return fig
 
-    def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
-        if not PYVIS_AVAILABLE:
-            return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
-        if not query_ctx.has_data():
-            return "<p>No quantitative data available for this query.</p>"
-        net = Network(
-            height="780px", 
-            width="100%", 
-            bgcolor="#ffffff",
-            font_color="#1e293b",
-            cdn_resources='remote'
-        )
-        net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
-        high_conf_threshold = 0.75
-        net.add_node(
-            "QUERY", 
-            label="YOUR QUERY",
-            title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
-            color="#7c3aed",
-            size=45,
-            font={"size": 18, "bold": True, "color": "#1e293b"}
-        )
-        # Track connected nodes to avoid duplicate edges
-        connected_to_query = set()
-        for doc_id in query_ctx.relevant_doc_ids:
-            display = get_display_name(doc_id, self.cfg.aliases)
-            count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
-            tooltip = f"<b>Document:</b> {display}<br>"
-            tooltip += f"<b>Extracted Values:</b> {count}<br><br>"
-            for item in query_ctx.extracted_values[:5]:
-                if item.doc_name == doc_id:
-                    tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
-            net.add_node(
-                display,
-                label=display[:25],
-                title=tooltip,
-                color="#16a34a",
-                size=32,
-                font={"size": 14, "color": "#1e293b"}
-            )
-            net.add_edge("QUERY", display, value=3)
-            connected_to_query.add(display)
-        for pq in query_ctx.physical_quantities:
-            readable = self.kgraph.phys_classifier.get_human_readable(pq)
-            net.add_node(
-                pq,
-                label=readable,
-                title=f"<b>Physical Quantity:</b><br>{readable}",
-                color="#2563eb",
-                size=28,
-                font={"color": "#1e293b"}
-            )
-            net.add_edge("QUERY", pq, value=2)
-            connected_to_query.add(pq)
-        for mat in query_ctx.materials:
-            net.add_node(
-                mat,
-                label=mat[:22],
-                title=f"<b>Material/Alloy:</b><br>{mat}",
-                color="#d97706",
-                size=30,
-                font={"color": "#1e293b"}
-            )
-            net.add_edge("QUERY", mat, value=2)
-            connected_to_query.add(mat)
-        for i, val in enumerate(sorted(query_ctx.extracted_values, key=lambda x: x.confidence, reverse=True)[:30]):
-            node_id = f"val_{i}"
-            label = f"{val.value:.1f}{val.unit or ''}"
-            conf = val.confidence
-            color = "#e11d48" if conf >= high_conf_threshold else "#ea580c" if conf >= 0.6 else "#64748b"
-            excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
-            tooltip = f"""
-            <b>{val.value} {val.unit}</b><br>
-            <b>Confidence:</b> {conf:.2f}<br>
-            <b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br>
-            <b>Material:</b> {val.material or '—'}<br>
-            <b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br>
-            <b>Context:</b><br>{excerpt}
-            """
-            net.add_node(
-                node_id, 
-                label=label, 
-                title=tooltip,
-                color=color,
-                size=24 + int(conf * 18),
-                font={"size": 11, "color": "#1e293b"}
-            )
-            edge_width = 3 if conf >= high_conf_threshold else 1.5
-            if val.material and val.material in net.get_nodes():
-                net.add_edge(val.material, node_id, value=edge_width, color="#cbd5e1")
-            if val.physical_quantity in net.get_nodes():
-                net.add_edge(val.physical_quantity, node_id, value=edge_width*0.8)
-            doc_name = get_display_name(val.doc_name, self.cfg.aliases)
-            if doc_name in net.get_nodes():
-                net.add_edge(doc_name, node_id, value=edge_width, color="#86efac")
-        # Only connect unconnected nodes to QUERY
-        for node in net.get_nodes():
-            if node != "QUERY" and node not in connected_to_query:
-                net.add_edge("QUERY", node, value=1, color="#64748b")
-        html = net.generate_html()
-        modal_js = """
-        <script>
-        var modal = null;
-        network.on("click", function(params) {
-            if (params.nodes.length === 0) return;
-            var nodeId = params.nodes[0];
-            if (nodeId.startsWith("val_")) {
-                var node = network.body.nodes[nodeId];
-                var title = node.options.title || "No details";
-                if (!modal) {
-                    modal = document.createElement("div");
-                    modal.style.cssText = `
-                        position:fixed; top:0; left:0; width:100%; height:100%; 
-                        background:rgba(0,0,0,0.6); z-index:9999; display:flex; 
-                        align-items:center; justify-content:center; font-family:system-ui;
-                    `;
-                    document.body.appendChild(modal);
-                }
-                modal.innerHTML = `
-                    <div style="background:#f8fafc; color:#1e293b; padding:25px; border-radius:12px; 
-                                max-width:620px; max-height:85vh; overflow:auto; border:1px solid #cbd5e1;">
-                        <h3 style="margin-top:0; color:#db2777;">Extracted Value Details</h3>
-                        <div style="white-space:pre-wrap; font-size:15px; line-height:1.5;">${title}</div>
-                        <br>
-                        <button onclick="this.parentElement.parentElement.remove()" 
-                                style="padding:10px 20px; background:#e11d48; color:white; border:none; 
-                                border-radius:6px; cursor:pointer;">Close</button>
-                    </div>
-                `;
-            }
-        });
-        </script>
-        """
-        if "</body>" in html:
-            html = html.replace("</body>", modal_js + "</body>")
-        else:
-            html += modal_js
-        return html
+    # =============================================================================
+    # QUERY-AWARE KNOWLEDGE GRAPH (PyVis with Modal)
+    # =============================================================================
 
-
-    # FIXED v17.2: extracted from dead code inside plot_query_knowledge_graph_pyvis
     def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
+
+
         """Query-focused hierarchical sunburst"""
         df_focus = self.get_query_focused_df(query_ctx)
         if df_focus.empty:
             return go.Figure().update_layout(title="No data for current query")
+
+        # Create hierarchy: Physical Quantity → Material → Document → Value Range
         df_sun = df_focus.copy()
         df_sun["material"] = df_sun["material"].fillna("Unknown").replace("", "Unknown")
         df_sun["doc_stem"] = df_sun["doc_stem"].fillna("Unknown").replace("", "Unknown")
+        
+        # Bin values for better hierarchy
         if not df_sun.empty and len(df_sun) >= 3:
             try:
                 n_bins = min(5, max(2, len(df_sun)//3))
@@ -2503,6 +2381,8 @@ class PublicationVisualizationEngine:
                 return fig
             except Exception as e:
                 logger.warning(f"Sunburst binning failed: {e}")
+        
+        # Fallback: simpler hierarchy
         try:
             fig = px.sunburst(
                 df_sun, 
@@ -2519,6 +2399,182 @@ class PublicationVisualizationEngine:
             logger.error(f"Query sunburst failed: {e}")
             return go.Figure().update_layout(title="Sunburst unavailable for this query")
 
+    # =============================================================================
+    # EXISTING VISUALIZATION METHODS (REPAIRED)
+    # =============================================================================
+    def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
+        """Interactive PyVis KG with confidence highlighting + modal-ready JS"""
+        if not PYVIS_AVAILABLE:
+            return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
+
+        if not query_ctx.has_data():
+            return "<p>No quantitative data available for this query.</p>"
+
+        net = Network(
+            height="780px", 
+            width="100%", 
+            bgcolor="#ffffff",      # White bright background
+            font_color="#1e293b",   # Dark slate text
+            cdn_resources='remote'
+        )
+
+        net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
+
+        # Confidence threshold for strong paths
+        high_conf_threshold = 0.75
+        connected_to_query = set()
+
+        # ====================== ADD NODES ======================
+
+        # 1. Central Query Node
+        net.add_node(
+            "QUERY", 
+            label="YOUR QUERY",
+            title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
+            color="#7c3aed",  # Darker purple for white bg
+            size=45,
+            font={"size": 18, "bold": True, "color": "#1e293b"}
+        )
+
+        # 2. Documents
+        for doc_id in query_ctx.relevant_doc_ids:
+            display = get_display_name(doc_id, self.cfg.aliases)
+            count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
+
+            tooltip = f"<b>Document:</b> {display}<br>"
+            tooltip += f"<b>Extracted Values:</b> {count}<br><br>"
+            for item in query_ctx.extracted_values[:5]:
+                if item.doc_name == doc_id:
+                    tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
+
+            net.add_node(
+                display,
+                label=display[:25],
+                title=tooltip,
+                color="#16a34a",  # Darker green
+                size=32,
+                font={"size": 14, "color": "#1e293b"}
+            )
+            net.add_edge("QUERY", display, value=3)
+            connected_to_query.add(display)
+
+        # 3. Physical Quantities
+        for pq in query_ctx.physical_quantities:
+            readable = self.kgraph.phys_classifier.get_human_readable(pq)
+            net.add_node(
+                pq,
+                label=readable,
+                title=f"<b>Physical Quantity:</b><br>{readable}",
+                color="#2563eb",  # Darker blue
+                size=28,
+                font={"color": "#1e293b"}
+            )
+            net.add_edge("QUERY", pq, value=2)
+            connected_to_query.add(pq)
+
+        # 4. Materials
+        for mat in query_ctx.materials:
+            net.add_node(
+                mat,
+                label=mat[:22],
+                title=f"<b>Material/Alloy:</b><br>{mat}",
+                color="#d97706",  # Darker orange
+                size=30,
+                font={"color": "#1e293b"}
+            )
+            net.add_edge("QUERY", mat, value=2)
+            connected_to_query.add(mat)
+
+        # 5. Extracted Values (Clickable Leaves)
+        for i, val in enumerate(sorted(query_ctx.extracted_values, key=lambda x: x.confidence, reverse=True)[:30]):
+            node_id = f"val_{i}"
+            label = f"{val.value:.1f}{val.unit or ''}"
+
+            # Color by confidence
+            conf = val.confidence
+            color = "#e11d48" if conf >= high_conf_threshold else "#ea580c" if conf >= 0.6 else "#64748b"
+
+            excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
+            tooltip = f"""
+            <b>{val.value} {val.unit}</b><br>
+            <b>Confidence:</b> {conf:.2f}<br>
+            <b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br>
+            <b>Material:</b> {val.material or '—'}<br>
+            <b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br>
+            <b>Context:</b><br>{excerpt}
+            """
+
+            net.add_node(
+                node_id, 
+                label=label, 
+                title=tooltip,
+                color=color,
+                size=24 + int(conf * 18),
+                font={"size": 11, "color": "#1e293b"}
+            )
+
+            # Connect with thickness based on confidence
+            edge_width = 3 if conf >= high_conf_threshold else 1.5
+
+            if val.material and val.material in net.get_nodes():
+                net.add_edge(val.material, node_id, value=edge_width, color="#cbd5e1")
+            if val.physical_quantity in net.get_nodes():
+                net.add_edge(val.physical_quantity, node_id, value=edge_width*0.8)
+            doc_name = get_display_name(val.doc_name, self.cfg.aliases)
+            if doc_name in net.get_nodes():
+                net.add_edge(doc_name, node_id, value=edge_width, color="#86efac")
+
+        # Connect everything to QUERY
+        for node in net.get_nodes():
+            if node != "QUERY" and node not in connected_to_query:
+                net.add_edge("QUERY", node, value=1, color="#64748b")
+
+        html = net.generate_html()
+
+        # ====================== ADVANCED JS MODAL ======================
+        modal_js = """
+        <script>
+        var modal = null;
+        network.on("click", function(params) {
+            if (params.nodes.length === 0) return;
+            var nodeId = params.nodes[0];
+
+            if (nodeId.startsWith("val_")) {
+                var node = network.body.nodes[nodeId];
+                var title = node.options.title || "No details";
+
+                if (!modal) {
+                    modal = document.createElement("div");
+                    modal.style.cssText = `
+                        position:fixed; top:0; left:0; width:100%; height:100%; 
+                        background:rgba(0,0,0,0.6); z-index:9999; display:flex; 
+                        align-items:center; justify-content:center; font-family:system-ui;
+                    `;
+                    document.body.appendChild(modal);
+                }
+
+                modal.innerHTML = `
+                    <div style="background:#f8fafc; color:#1e293b; padding:25px; border-radius:12px; 
+                                max-width:620px; max-height:85vh; overflow:auto; border:1px solid #cbd5e1;">
+                        <h3 style="margin-top:0; color:#db2777;">Extracted Value Details</h3>
+                        <div style="white-space:pre-wrap; font-size:15px; line-height:1.5;">${title}</div>
+                        <br>
+                        <button onclick="this.parentElement.parentElement.remove()" 
+                                style="padding:10px 20px; background:#e11d48; color:white; border:none; 
+                                border-radius:6px; cursor:pointer;">Close</button>
+                    </div>
+                `;
+            }
+        });
+        </script>
+        """
+
+        if "</body>" in html:
+            html = html.replace("</body>", modal_js + "</body>")
+        else:
+            html += modal_js
+
+        return html
     def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str, group_by: str = "material", colormap: Optional[str] = None) -> go.Figure:
         if df.empty:
             return go.Figure().update_layout(title=f"No {quantity_name} data")
@@ -2593,6 +2649,7 @@ class PublicationVisualizationEngine:
         subset = subset.dropna(subset=["material", "doc_stem"])
         subset = subset.dropna(subset=["value"])
         if subset.empty or len(subset) < 2:
+            # Fallback without value_range binning
             try:
                 fig = px.sunburst(subset, path=["material", "doc_stem"], values="value", color="value",
                                   color_continuous_scale=self._get_plotly_colorscale(colormap),
@@ -2712,7 +2769,6 @@ class PublicationVisualizationEngine:
             fig.add_trace(go.Scatterpolar(r=values, theta=categories + [categories[0]], fill='toself', name=mat, line_color=color))
         fig.update_layout(polar=dict(radialaxis=dict(visible=True)), showlegend=True, title=f"{quantity_name.replace('_',' ').title()} Statistics by Material", font=dict(family=self.font_family, size=self.font_size))
         return fig
-
 
     def plot_quantitative_knowledge_graph(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, figsize: Tuple[int,int] = (14,12), aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> plt.Figure:
         G = nx.Graph()
@@ -2941,6 +2997,7 @@ class PublicationVisualizationEngine:
         return net.generate_html()
 
     def plot_quantitative_knowledge_graph_pyvis(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> str:
+        """PyVis interactive version of quantitative knowledge graph."""
         if not PYVIS_AVAILABLE:
             return "<p>PyVis not installed. pip install pyvis</p>"
         subset = df[df["physical_quantity"] == quantity]
@@ -2976,6 +3033,7 @@ class PublicationVisualizationEngine:
         return net.generate_html()
 
     def plot_knowledge_network_pyvis(self, df: pd.DataFrame, colormap: Optional[str] = None, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> str:
+        """PyVis interactive version of full knowledge network."""
         if not PYVIS_AVAILABLE:
             return "<p>PyVis not installed. pip install pyvis</p>"
         net = Network(height=self.cfg.pyvis_height, width=self.cfg.pyvis_width, bgcolor="#ffffff", font_color="#000000", cdn_resources='remote')
@@ -3007,7 +3065,6 @@ class PublicationVisualizationEngine:
             cmap = plt.get_cmap(self._get_colormap(colormap))
             return mcolors.to_hex(cmap(index / max(total - 1, 1)))
         return self.DOMAIN_COLORS.get(domain, "#6b7280")
-
 
     def plot_contradiction_matrix(self, quantity: Optional[str] = None, colormap: Optional[str] = None) -> go.Figure:
         df = self.extract_dataframe()
@@ -3212,6 +3269,17 @@ class PublicationVisualizationEngine:
         fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
         return fig
 
+
+    def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
+
+
+        if not doc_trees or not retrieved_nodes:
+            return go.Figure().update_layout(title="No coverage data")
+        doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))
+        max_pages = 0
+        for tree in doc_trees:
+            doc_id = tree.get("doc_id", tree.get("doc_name", "unknown"))
+            pages = []
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
         if not relevant_docs and not retrieved_nodes:
             return go.Figure().update_layout(title="No retrieval data available")
@@ -3267,11 +3335,12 @@ class PublicationVisualizationEngine:
                     sources.append(label_index[node_key]); targets.append(label_index[pq_key]); vals.append(1)
         for pq_key in pq_nodes_list:
             sources.append(label_index[pq_key]); targets.append(label_index["Answer"]); vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
-        node_colors = ["#1e3a5f"]
-        node_colors += ["#2563eb"] * len(doc_nodes)
-        node_colors += ["#059669"] * len(node_labels_list)
-        node_colors += ["#dc2626"] * len(pq_nodes_list)
-        node_colors += ["#7c3aed"]
+        # Publication-quality color scheme
+        node_colors = ["#1e3a5f"]  # Query: deep navy
+        node_colors += ["#2563eb"] * len(doc_nodes)  # Docs: blue
+        node_colors += ["#059669"] * len(node_labels_list)  # Nodes: emerald
+        node_colors += ["#dc2626"] * len(pq_nodes_list)  # PQ: red
+        node_colors += ["#7c3aed"]  # Answer: purple
         fig = go.Figure(data=[go.Sankey(
             node=dict(
                 pad=20, thickness=24, line=dict(color="#334155", width=0.8),
@@ -3292,17 +3361,6 @@ class PublicationVisualizationEngine:
             margin=dict(l=40, r=40, t=80, b=40)
         )
         return fig
-
-
-    # FIXED v17.2: extracted from dead code inside plot_retrieval_sankey
-    def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
-        if not doc_trees or not retrieved_nodes:
-            return go.Figure().update_layout(title="No coverage data")
-        doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))
-        max_pages = 0
-        for tree in doc_trees:
-            doc_id = tree.get("doc_id", tree.get("doc_name", "unknown"))
-            pages = []
             def collect_pages(node):
                 pages.append(node.get("start_index", 1))
                 if node.get("end_index"):
@@ -3390,7 +3448,8 @@ class PublicationVisualizationEngine:
         nx.draw_networkx_edges(G, pos, alpha=0.3, arrows=True, arrowsize=10, ax=ax)
         labels = {n: d["label"] for n, d in G.nodes(data=True)}
         nx.draw_networkx_labels(G, pos, labels, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-        legend_elements = [mpatches.Patch(facecolor="#ef4444", label="Retrieved Node"), mpatches.Patch(facecolor="#93c5fd", label="Has Quantitative Data"), mpatches.Patch(facecolor="#e5e7eb", label="Other Node")]
+        from matplotlib.patches import Patch
+        legend_elements = [Patch(facecolor="#ef4444", label="Retrieved Node"), Patch(facecolor="#93c5fd", label="Has Quantitative Data"), Patch(facecolor="#e5e7eb", label="Other Node")]
         ax.legend(handles=legend_elements, loc='upper right')
         ax.set_title(f"Retrieval Tree: {Path(doc_id).stem if doc_id else 'Document'}", fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")
@@ -3503,9 +3562,9 @@ def get_cached_llm(model_choice: str, use_4bit: bool):
 
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v17.2 - Corrected & Expanded", layout="wide")
+    st.set_page_config(page_title="DECLARMIMA v17.2 - Unified Robust RAG + Query Viz", layout="wide")
     st.markdown("# DECLARMIMA v17.2 - Unified Robust Vectorless RAG + Query-Driven Visualizations")
-    st.caption("Vectorless retrieval with semantic fallback. 35+ chart types. Query-aware contextual visualization. Concept normalization. Retrieval diagnostics. Expanded for MD, Phase Field, CALPHAD, PINNs, U-Net, ConvLSTM, HEA descriptors.")
+    st.caption("Vectorless retrieval with semantic fallback. 35+ chart types. Query-aware contextual visualization. Concept normalization. Retrieval diagnostics.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -3561,7 +3620,7 @@ def run_streamlit():
                     for c in node.children:
                         collect_leaves(c)
                 collect_leaves(tree)
-                initial_prompt = "Extract ALL quantitative parameters: laser power, scan speed, VED, AED, LED, layer thickness, hatch distance, temperature, enthalpy, viscosity, thermal conductivity, density, yield strength, UTS, elongation, hardness, modulus, stacking fault energy, ideal shear strength, corrosion potential (Ecorr), pitting potential (Epit), repassivation potential (Erp), breakdown potential (Ebr), corrosion current density (Jcorr), polarization resistance (Rp), apparent polarization resistance (Rp,app), PREN, phase fractions (austenite, ferrite), grain size, porosity, relative density, Sauter mean diameter (SMD), spray penetration, plume height, film thickness, absorption coefficient, Young's modulus, Poisson's ratio, CTE, Lewis number (Le), Jackson parameter (alpha_J), Hollomon strength coefficient, Hollomon exponent (n), VEC, delta_H_mix, delta_S_mix, Omega parameter, atomic size difference (delta), lambda parameter, indentation force, indentation depth, dislocation density, melt pool depth/width/length, hatch distance, build platform temperature. Include units, material names, and page numbers. Also extract alloy names, process methods (LPBF, DED, PFI, GDI, FEM, MD, Phase Field, CALPHAD, PINNs, U-Net, ConvLSTM, FNO), and phases (Ti3Au, Al3Zr, beta-Ti3Au, nt-Cu, Cu6Sn5, etc.)."
+                initial_prompt = "Extract ALL quantitative parameters: laser power, scan speed, VED, AED, LED, layer thickness, hatch distance, temperature, enthalpy, viscosity, thermal conductivity, density, yield strength, UTS, elongation, hardness, modulus, stacking fault energy, ideal shear strength, corrosion potential (Ecorr), pitting potential (Epit), repassivation potential (Erp), breakdown potential (Ebr), corrosion current density (Jcorr), polarization resistance (Rp), PREN, phase fractions (austenite, ferrite), grain size, porosity, relative density, Sauter mean diameter (SMD), spray penetration, plume height, film thickness, absorption coefficient, Young's modulus, Poisson's ratio, CTE. Include units, material names, and page numbers. Also extract alloy names, process methods (LPBF, DED, PFI, GDI, FEM, MD), and phases (Ti3Au, Al3Zr, beta-Ti3Au, etc.)."
                 items = extractor.extract_from_chunks(leaf_texts, initial_prompt)
                 all_items.extend(items)
                 kg.add_extractions(doc_name, items)
@@ -3581,7 +3640,7 @@ def run_streamlit():
                 ann = kg.to_tree_annotation(tree, max_chars=max_retrieval_chars)
                 ann["doc_id"] = doc_name
                 ann["doc_name"] = doc_name
-                ann["metadata"] = tree.metadata.model_dump() if tree.metadata else {}
+                ann["metadata"] = tree.metadata.dict() if tree.metadata else {}
                 annotated.append(ann)
             st.session_state.annotated_trees = annotated
             progress.progress(1.0)
@@ -3706,12 +3765,14 @@ def run_streamlit():
                     st.info("Ask a question about the documents.")
                     return
 
+
         st.markdown("---")
         st.subheader("Quantitative Results")
         display_mode = st.radio("Display format", ["Table", "JSON", "Human Summary"], horizontal=True, key="display_mode")
         if display_mode == "Table" and extracted_values:
             df_disp = pd.DataFrame([{"Document": v.doc_name, "Page": v.page, "Value": f"{v.value:.2f}", "Unit": v.unit, "Physical Quantity": PhysicalQuantityClassifier().get_human_readable(v.physical_quantity), "Material": v.material or "", "Parameter": v.parameter_name or "", "Confidence": f"{v.confidence:.2f}"} for v in extracted_values])
             st.dataframe(df_disp, use_container_width=True, key="df_df_disp")
+
         elif display_mode == "JSON" and extracted_values:
             st.json([v.model_dump() for v in extracted_values])
         elif display_mode == "Human Summary" and extracted_values:
@@ -3720,20 +3781,23 @@ def run_streamlit():
             conclusion = synthesizer.generate_human_conclusion(active_prompt, report)
             st.markdown(conclusion)
 
-
+        # =============================================================================
+        # QUERY-AWARE VISUALIZATIONS
+        # =============================================================================
         if active_prompt and st.session_state.get("cached_query_result"):
             query_ctx = QueryContext.from_cache(st.session_state.cached_query_result)
+            
             if query_ctx.has_data():
                 st.markdown("---")
-                st.subheader("Query-Focused Visualizations")
+                st.subheader("🎯 Query-Focused Visualizations")
                 st.caption(f"**Focused on:** {active_prompt[:90]}{'...' if len(active_prompt)>90 else ''}")
 
                 viz_tabs = st.tabs([
-                    "Interactive Knowledge Graph", 
-                    "Sunburst Hierarchy", 
-                    "Provenance Flow",
-                    "Quick Charts",
-                    "Global Dashboard"
+                    "🌐 Interactive Knowledge Graph", 
+                    "☀️ Sunburst Hierarchy", 
+                    "🔄 Provenance Flow",
+                    "📊 Quick Charts",
+                    "🌍 Global Dashboard"
                 ])
 
                 aliases = st.session_state.get("doc_aliases", {})
@@ -3766,39 +3830,42 @@ def run_streamlit():
                         if PYVIS_AVAILABLE:
                             html_graph = viz.plot_query_knowledge_graph_pyvis(query_ctx)
                             st.components.v1.html(html_graph, height=820, scrolling=True, key="html_html_graph")
+
                             st.download_button(
                                 "Download Interactive Graph HTML", 
                                 html_graph.encode('utf-8'), 
                                 "query_knowledge_graph.html", 
                                 mime="text/html",
                                 key="dl_pyvis_query"
-                            )
+                            , key="dl_dl")
+
                         else:
                             fig_kg = viz.plot_query_knowledge_graph(query_ctx)
                             st.pyplot(fig_kg, key="py_fig_kg")
+
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi, bbox_inches='tight')
-                            st.download_button("Download Query KG (PNG)", buf.getvalue(),
-                key="dl_Download_Query_KG_PNG")
-                                             "query_knowledge_graph.png", mime="image/png", key="dl_kg")
+                            st.download_button("Download Query KG (PNG)", buf.getvalue() "query_knowledge_graph.png", mime="image/png", key="dl_kg")
+
                     with col2:
                         st.markdown("### Legend")
                         st.markdown("""
-                        - **Purple** -> Your Query (Center)
-                        - **Green** -> Relevant Documents
-                        - **Blue** -> Physical Quantities  
-                        - **Orange** -> Materials/Alloys
-                        - **Pink** -> Extracted Values (clickable)
+                        - **Purple** → Your Query (Center)
+                        - **Green** → Relevant Documents
+                        - **Blue** → Physical Quantities  
+                        - **Orange** → Materials/Alloys
+                        - **Pink** → Extracted Values (clickable)
                         """)
-                        st.caption("**Tip:** Hover for tooltips. Click pink nodes for context.")
+                        st.caption("**Tip:** Hover for tooltips • Click pink nodes for context")
 
                 with viz_tabs[1]:
                     fig_sun = viz.plot_query_sunburst(query_ctx)
                     st.plotly_chart(fig_sun, use_container_width=True, key="plc_fig_sun")
-                    st.caption("This sunburst shows the hierarchy of quantities -> materials -> documents for your specific query.")
+
+                    st.caption("This sunburst shows the hierarchy of quantities → materials → documents for your specific query.")
 
                 with viz_tabs[2]:
-                    st.subheader("Retrieval Provenance Flow")
+                    st.subheader("🔄 Retrieval Provenance Flow")
                     cached = st.session_state.cached_query_result
                     fig_sankey = viz.plot_retrieval_sankey(
                         active_prompt, 
@@ -3808,17 +3875,22 @@ def run_streamlit():
                     )
                     st.plotly_chart(fig_sankey, use_container_width=True, key="plc_fig_sankey")
 
+
                 with viz_tabs[3]:
                     st.markdown("### Quick Relevant Charts")
                     for pq in query_ctx.physical_quantities[:3]:
                         fig = viz.plot_quantitative_histogram(df_all, pq)
                         st.plotly_chart(fig, use_container_width=True, key="plc_fig")
 
+
                 with viz_tabs[4]:
-                    st.info("Full corpus visualizations are available in the dashboard below.")
+                    st.info("Full corpus visualizations are available in the dashboard below ↓")
             else:
                 st.info("No quantitative data extracted for this query yet. Run a query to see query-focused visualizations.")
 
+        # =============================================================================
+        # GLOBAL DASHBOARD (Existing, now below query-focused section)
+        # =============================================================================
         if st.session_state.knowledge_graph and st.session_state.annotated_trees:
             st.markdown("---")
             with st.expander("Document Aliases & Label Editor", expanded=False):
@@ -3877,42 +3949,56 @@ def run_streamlit():
                     if selected_qty != "All":
                         fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
                         st.plotly_chart(fig_hist, use_container_width=True, key="plc_fig_hist")
+
                     fig_bar = viz.plot_quantities_bar(df_all, colormap)
                     st.plotly_chart(fig_bar, use_container_width=True, key="plc_fig_bar")
+
                     fig_mat = viz.plot_material_counts(df_all, colormap)
                     st.plotly_chart(fig_mat, use_container_width=True, key="plc_fig_mat")
+
 
                 with tabs[1]:
                     fig_pie = viz.plot_quantity_distribution_pie(colormap)
                     st.plotly_chart(fig_pie, use_container_width=True, key="plc_fig_pie")
+
                     fig_donut = viz.plot_material_distribution_donut(colormap)
                     st.plotly_chart(fig_donut, use_container_width=True, key="plc_fig_donut")
+
 
                 with tabs[2]:
                     if selected_qty != "All":
                         fig_sun = viz.plot_quantitative_sunburst(df_all, selected_qty, colormap)
                         st.plotly_chart(fig_sun, use_container_width=True, key="plc_fig_sun_2")
+
                     fig_sun_all = viz.plot_sunburst_hierarchy(df_all, colormap)
                     st.plotly_chart(fig_sun_all, use_container_width=True, key="plc_fig_sun_all")
+
                     fig_treemap = viz.plot_treemap(colormap)
                     st.plotly_chart(fig_treemap, use_container_width=True, key="plc_fig_treemap")
+
                     fig_treemap_mat = viz.plot_treemap_materials(df_all, colormap)
                     st.plotly_chart(fig_treemap_mat, use_container_width=True, key="plc_fig_treemap_mat")
+
 
                 with tabs[3]:
                     if selected_qty != "All":
                         fig_radar_qty = viz.plot_quantitative_radar(df_all, selected_qty, colormap)
                         st.plotly_chart(fig_radar_qty, use_container_width=True, key="plc_fig_radar_qty")
+
                     fig_radar_mat = viz.plot_radar_by_material(colormap)
                     st.plotly_chart(fig_radar_mat, use_container_width=True, key="plc_fig_radar_mat")
+
                     fig_radar_doc = viz.plot_document_radar(colormap)
                     st.plotly_chart(fig_radar_doc, use_container_width=True, key="plc_fig_radar_doc")
+
                     fig_chord = viz.plot_chord_cooccurrence(None, st.session_state.get("viz_top_n", 25), colormap)
                     st.plotly_chart(fig_chord, use_container_width=True, key="plc_fig_chord")
+
 
                 with tabs[4]:
                     fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
                     st.plotly_chart(fig_contra, use_container_width=True, key="plc_fig_contra")
+
                     fig_cons = viz.plot_consensus_waterfall(None if selected_qty=="All" else selected_qty, colormap)
                     st.plotly_chart(fig_cons, use_container_width=True, key="plc_fig_cons")
 
@@ -3925,9 +4011,11 @@ def run_streamlit():
                         if selected_qty != "All":
                             fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
                             st.pyplot(fig_kg, key="py_fig_kg_2")
+
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi)
                             st.download_button("Download KG as PNG", buf.getvalue(), f"{selected_qty}_kg.png", mime="image/png", key="dl_Download_KG_as_PNG")
+
                         else:
                             st.info("Select a specific quantity to see its knowledge graph.")
 
@@ -3935,37 +4023,47 @@ def run_streamlit():
                         if PYVIS_AVAILABLE and selected_qty != "All":
                             html_kg = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
                             st.components.v1.html(html_kg, height=750, scrolling=True, key="html_html_kg")
+
                             st.download_button("Download PyVis KG HTML", html_kg.encode('utf-8'), f"{selected_qty}_kg_pyvis.html", mime="text/html", key="dl_Download_PyVis_KG_HTML")
+
                         else:
                             st.info("Select a specific quantity and install pyvis for interactive graph.")
 
                     with net_subtabs[2]:
                         fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
                         st.pyplot(fig_net, key="py_fig_net")
+
                         buf = BytesIO()
                         fig_net.savefig(buf, format="png", dpi=config.figure_dpi)
                         st.download_button("Download Network PNG", buf.getvalue(), "knowledge_network.png", mime="image/png", key="dl_Download_Network_PNG")
+
 
                     with net_subtabs[3]:
                         if PYVIS_AVAILABLE:
                             html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
                             st.components.v1.html(html_full, height=750, scrolling=True, key="html_html_full")
+
                             st.download_button("Download PyVis Network HTML", html_full.encode('utf-8'), "knowledge_network_pyvis.html", mime="text/html", key="dl_Download_PyVis_Network_HTML")
+
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
 
                     with net_subtabs[4]:
                         fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
                         st.pyplot(fig_static, key="py_fig_static")
+
                         buf = BytesIO()
                         fig_static.savefig(buf, format="png", dpi=config.figure_dpi)
                         st.download_button("Download Salience Network PNG", buf.getvalue(), "salience_network.png", mime="image/png", key="dl_Download_Salience_Network_PNG")
+
 
                     with net_subtabs[5]:
                         if PYVIS_AVAILABLE:
                             html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
                             st.components.v1.html(html_salience, height=750, scrolling=True, key="html_html_salience")
+
                             st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html", key="dl_Download_PyVis_Salience_HTML")
+
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
 
@@ -3976,34 +4074,44 @@ def run_streamlit():
                             fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_tsne:
                                 st.pyplot(fig_tsne, key="py_fig_tsne")
+
                                 buf = BytesIO()
                                 fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
                                 st.download_button("Download t-SNE PNG", buf.getvalue(), "tsne.png", mime="image/png", key="dl_Download_t-SNE_PNG")
+
                             fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_pca:
                                 st.pyplot(fig_pca, key="py_fig_pca")
+
                                 buf = BytesIO()
                                 fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
                                 st.download_button("Download PCA PNG", buf.getvalue(), "pca.png", mime="image/png", key="dl_Download_PCA_PNG")
+
                         if UMAP_AVAILABLE:
                             fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_umap:
                                 st.pyplot(fig_umap, key="py_fig_umap")
+
                                 buf = BytesIO()
                                 fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
                                 st.download_button("Download UMAP PNG", buf.getvalue(), "umap.png", mime="image/png", key="dl_Download_UMAP_PNG")
+
                     else:
                         st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
 
                 with tabs[7]:
                     fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
                     st.plotly_chart(fig_scatter, use_container_width=True, key="plc_fig_scatter")
+
                     fig_parallel = viz.plot_parallel_categories(df_all, colormap)
                     st.plotly_chart(fig_parallel, use_container_width=True, key="plc_fig_parallel")
+
                     fig_violin = viz.plot_violin(df_all, colormap)
                     st.plotly_chart(fig_violin, use_container_width=True, key="plc_fig_violin")
+
                     fig_timeline = viz.plot_timeline(colormap)
                     st.plotly_chart(fig_timeline, use_container_width=True, key="plc_fig_timeline")
+
 
                 with tabs[8]:
                     st.markdown("### Interactive Knowledge Graph Explorer")
@@ -4038,6 +4146,7 @@ def run_streamlit():
                             if items_for_entity:
                                 df_entity = pd.DataFrame([{"Doc": i["doc_source"], "Page": i.get("page",0), "Type": i.get("item_type",""), "Content": i.get("content","")[:150], "Value": i.get("value",""), "Unit": i.get("unit",""), "Confidence": i.get("confidence",0)} for i in items_for_entity])
                                 st.dataframe(df_entity, use_container_width=True, key="df_df_entity")
+
                             else:
                                 st.info("No extracted items found for this entity.")
                     else:
@@ -4066,17 +4175,21 @@ def run_streamlit():
                     fig_sankey = viz.plot_retrieval_sankey(active_prompt, rel_docs, retrieved_nodes, raw_items)
                     st.plotly_chart(fig_sankey, use_container_width=True, key="plc_fig_sankey_2")
 
+
                     st.markdown("#### Document Filter Scores")
                     fig_doc_scores = viz.plot_doc_filter_scores(rel_docs, len(st.session_state.annotated_trees))
                     st.plotly_chart(fig_doc_scores, use_container_width=True, key="plc_fig_doc_scores")
+
 
                     st.markdown("#### Page Coverage Heatmap")
                     fig_coverage = viz.plot_page_coverage_heatmap(st.session_state.annotated_trees, retrieved_nodes)
                     st.plotly_chart(fig_coverage, use_container_width=True, key="plc_fig_coverage")
 
+
                     st.markdown("#### Node Selection Confidence")
                     fig_conf = viz.plot_node_confidence_distribution(retrieved_nodes)
                     st.plotly_chart(fig_conf, use_container_width=True, key="plc_fig_conf")
+
 
                     st.markdown("#### Hierarchical Tree Explorer")
                     tree_doc_options = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in st.session_state.annotated_trees)))
@@ -4085,9 +4198,11 @@ def run_streamlit():
                         fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
                         if fig_tree:
                             st.pyplot(fig_tree, key="py_fig_tree")
+
                             buf = BytesIO()
                             fig_tree.savefig(buf, format="png", dpi=config.figure_dpi)
                             st.download_button("Download Tree PNG", buf.getvalue(), f"{selected_tree_doc}_tree.png", mime="image/png", key="dl_Download_Tree_PNG")
+
                         else:
                             st.info("No tree data available for this document.")
                     else:
@@ -4099,6 +4214,7 @@ def run_streamlit():
                         fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
                         if fig_comp:
                             st.plotly_chart(fig_comp, use_container_width=True, key="plc_fig_comp")
+
                         else:
                             st.info("Could not compute semantic scores for comparison.")
 
@@ -4106,8 +4222,10 @@ def run_streamlit():
                     if retrieved_nodes:
                         df_ret = pd.DataFrame([{"Document": r.get("doc_id", ""), "Node ID": r.get("node_id", ""), "Section": r.get("section_title", ""), "Page": r.get("page_start", 0), "Confidence": r.get("confidence", 0), "Reasoning": r.get("selection_reasoning", "")[:100]} for r in retrieved_nodes])
                         st.dataframe(df_ret, use_container_width=True, key="df_df_ret")
+
                         csv_ret = df_ret.to_csv(index=False).encode('utf-8')
                         st.download_button("Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv", key="dl_Download_Retrieval_Metadata_CS")
+
                     else:
                         st.info("No retrieved node metadata available.")
             else:
@@ -4126,9 +4244,11 @@ def run_streamlit():
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
             st.download_button("Download JSON Report", report.to_json(), "results.json", "application/json", key="dl_Download_JSON_Report")
+
         with col_dl2:
             tree_export = {"query": active_prompt, "annotated_trees": st.session_state.annotated_trees, "retrieved_nodes": retrieved, "extracted_items": [i.to_dict() for i in items], "answer": answer}
             st.download_button("Download Tree Export", json.dumps(tree_export, indent=2, ensure_ascii=False, default=str), "tree_report.json", "application/json", key="dl_Download_Tree_Export")
+
 
         if "index" in st.session_state.query_processor:
             st.session_state.query_processor["index"].cleanup()

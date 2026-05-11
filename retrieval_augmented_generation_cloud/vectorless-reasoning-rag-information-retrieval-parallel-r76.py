@@ -125,7 +125,7 @@ except ImportError:
     SKLEARN_AVAILABLE = False
 
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 class UniversalExtractionItem(BaseModel):
     item_type: Literal["quantitative", "qualitative", "definition", "comparison", "relationship", "process", "material", "method"]

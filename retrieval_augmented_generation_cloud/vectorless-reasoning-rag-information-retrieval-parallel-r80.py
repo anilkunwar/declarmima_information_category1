@@ -5029,3 +5029,731 @@ class PublicationVisualizationEngine:
         fig.update_layout(legend=dict(items=legend_items, orientation="h", y=-0.05))
         
         return fig
+
+# =============================================================================
+# PUBLICATION VISUALIZATION ENGINE - CONTINUED (Part 7/14)
+# Contradiction Matrices, Consensus Waterfalls, Embedding Projections,
+# Parallel Categories, Violin, Timeline & Retrieval Diagnostics
+# =============================================================================
+
+    def plot_contradiction_matrix(self, quantity: Optional[str] = None, 
+                                   colormap: Optional[str] = None) -> go.Figure:
+        """
+        Plot contradiction matrix showing pairwise value divergence across documents.
+        
+        Args:
+            quantity: Filter by specific physical quantity (optional)
+            colormap: Optional Plotly colorscale
+            
+        Returns:
+            Plotly Figure object
+        """
+        df = self.extract_dataframe()
+        if quantity:
+            df = df[df["physical_quantity"] == quantity]
+            
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for contradiction analysis",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        docs = df["doc_stem"].unique()
+        if len(docs) < 2:
+            return go.Figure().update_layout(
+                title="At least 2 documents required for contradiction matrix",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        # Compute normalized absolute difference matrix
+        mat = np.zeros((len(docs), len(docs)))
+        for i, d1 in enumerate(docs):
+            v1 = df[df["doc_stem"] == d1]["value"].mean()
+            for j, d2 in enumerate(docs):
+                if i == j:
+                    continue
+                v2 = df[df["doc_stem"] == d2]["value"].mean()
+                if v2 != 0 and not np.isnan(v1) and not np.isnan(v2):
+                    mat[i, j] = abs(v1 - v2) / v2
+                    
+        fig = go.Figure(data=go.Heatmap(
+            z=mat, 
+            x=docs, 
+            y=docs, 
+            colorscale=self._get_plotly_colorscale(colormap),
+            hoverongaps=False,
+            text=np.round(mat, 3),
+            texttemplate="%{text}",
+            textfont={"size": 9, "color": "#1e293b"},
+            hovertemplate="Doc X: %{x}<br>Doc Y: %{y}<br>Divergence: %{z:.3f}<extra></extra>"
+        ))
+        
+        fig.update_layout(
+            title=f"Cross-Document Contradiction Matrix for {quantity or 'All Quantities'}",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=600, 
+            width=600,
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=False, zeroline=False, autorange="reversed")
+        )
+        
+        return fig
+    
+    def plot_consensus_waterfall(self, quantity: Optional[str] = None, 
+                                  colormap: Optional[str] = None) -> go.Figure:
+        """
+        Plot consensus waterfall showing mean ± std across material/quantity pairs.
+        
+        Args:
+            quantity: Filter by specific physical quantity (optional)
+            colormap: Optional Plotly colorscale
+            
+        Returns:
+            Plotly Figure object
+        """
+        df = self.extract_dataframe()
+        if quantity:
+            df = df[df["physical_quantity"] == quantity]
+            
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for consensus analysis",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        grouped = df.groupby(["material", "physical_quantity"])["value"].agg(
+            ["mean", "std", "count"]
+        ).reset_index()
+        grouped = grouped.sort_values("count", ascending=False).head(10)
+        
+        if grouped.empty:
+            return go.Figure().update_layout(
+                title="Insufficient grouped data for consensus plot",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        x_labels = [f"{m} ({q})" for m, q in zip(grouped["material"], grouped["physical_quantity"])]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=x_labels,
+            y=grouped["mean"],
+            error_y=dict(type='data', array=grouped["std"], visible=True, thickness=2, width=6),
+            marker_color="#059669",
+            text=[f"n={c}" for c in grouped["count"]],
+            textposition="outside",
+            hovertemplate="<b>%{x}</b><br>Mean: %{y:.2f}<br>Std: %{error_y.array:.2f}<br>n=%{text}<extra></extra>"
+        ))
+        
+        fig.update_layout(
+            title="Cross-Document Consensus (Mean ± Standard Deviation)",
+            yaxis_title="Value",
+            xaxis_title="Material (Physical Quantity)",
+            xaxis_tickangle=-45,
+            font=dict(family=self.font_family, size=self.font_size),
+            height=450,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff",
+            hovermode="x unified"
+        )
+        
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="#f1f5f9")
+        
+        return fig
+    
+    def _get_context_embeddings(self, embedding_fn: Callable[[str], np.ndarray], 
+                                 df: pd.DataFrame, 
+                                 quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Compute embeddings for extraction contexts."""
+        if quantity:
+            df = df[df["physical_quantity"] == quantity].copy()
+        else:
+            df = df.copy()
+            
+        if len(df) < 5:
+            return np.array([]), df.iloc[0:0]
+            
+        contexts = df["context"].fillna("").tolist()
+        embs = []
+        valid_indices = []
+        
+        for idx, ctx in enumerate(contexts):
+            try:
+                emb = embedding_fn(ctx)
+                if emb is not None and len(emb) > 0:
+                    embs.append(emb)
+                    valid_indices.append(idx)
+            except Exception:
+                continue
+                
+        if len(embs) < 5:
+            return np.array([]), df.iloc[0:0]
+            
+        df_valid = df.iloc[valid_indices].copy()
+        return np.array(embs), df_valid
+    
+    def plot_tsne(self, embedding_fn: Callable[[str], np.ndarray], 
+                   quantity: Optional[str] = None, 
+                   colormap: Optional[str] = None, 
+                   figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        """t-SNE projection of extraction contexts."""
+        if not GLOBAL_DEPS.get('sklearn', False):
+            return None
+            
+        df = self.extract_dataframe()
+        embs, df_use = self._get_context_embeddings(embedding_fn, df, quantity)
+        if len(embs) < 5:
+            return None
+            
+        perplexity = min(30, len(embs) - 1)
+        tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, init='pca')
+        coords = tsne.fit_transform(embs)
+        
+        fig, ax = plt.subplots(figsize=figsize)
+        materials = df_use["material"].unique()
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        
+        for i, mat in enumerate(materials):
+            mask = df_use["material"] == mat
+            color = mcolors.to_hex(cmap(i / max(len(materials) - 1, 1))) if len(materials) > 1 else "#3b82f6"
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=str(mat), alpha=0.8, s=80, edgecolors='white')
+            
+            for (_, row), coord in zip(df_use[df_use["material"] == mat].iterrows(), coords[mask]):
+                ax.annotate(f"{row['value']:.1f}", (coord[0], coord[1]), fontsize=self.label_font_size - 1, alpha=0.7)
+                
+        ax.legend(loc='best', fontsize=self.label_font_size, framealpha=0.9)
+        ax.set_title(f"t-SNE of Extraction Contexts{' (' + quantity + ')' if quantity else ''}", 
+                    fontsize=self.title_font_size, fontweight='bold', pad=15)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+    
+    def plot_pca(self, embedding_fn: Callable[[str], np.ndarray], 
+                  quantity: Optional[str] = None, 
+                  colormap: Optional[str] = None, 
+                  figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        """PCA projection of extraction contexts."""
+        if not GLOBAL_DEPS.get('sklearn', False):
+            return None
+            
+        df = self.extract_dataframe()
+        embs, df_use = self._get_context_embeddings(embedding_fn, df, quantity)
+        if len(embs) < 5:
+            return None
+            
+        pca = PCA(n_components=2)
+        coords = pca.fit_transform(embs)
+        var_ratio = pca.explained_variance_ratio_
+        
+        fig, ax = plt.subplots(figsize=figsize)
+        materials = df_use["material"].unique()
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        
+        for i, mat in enumerate(materials):
+            mask = df_use["material"] == mat
+            color = mcolors.to_hex(cmap(i / max(len(materials) - 1, 1))) if len(materials) > 1 else "#3b82f6"
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=str(mat), alpha=0.8, s=80, edgecolors='white')
+            
+            for (_, row), coord in zip(df_use[df_use["material"] == mat].iterrows(), coords[mask]):
+                ax.annotate(f"{row['value']:.1f}", (coord[0], coord[1]), fontsize=self.label_font_size - 1, alpha=0.7)
+                
+        ax.legend(loc='best', fontsize=self.label_font_size, framealpha=0.9)
+        ax.set_title(f"PCA of Extraction Contexts{' (' + quantity + ')' if quantity else ''}\nPC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}", 
+                    fontsize=self.title_font_size, fontweight='bold', pad=15)
+        ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})")
+        plt.tight_layout()
+        return fig
+    
+    def plot_umap(self, embedding_fn: Callable[[str], np.ndarray], 
+                   quantity: Optional[str] = None, 
+                   colormap: Optional[str] = None, 
+                   figsize: Tuple[int, int] = (10, 8)) -> Optional[plt.Figure]:
+        """UMAP projection of extraction contexts."""
+        if not GLOBAL_DEPS.get('umap', False):
+            return None
+            
+        df = self.extract_dataframe()
+        embs, df_use = self._get_context_embeddings(embedding_fn, df, quantity)
+        if len(embs) < 5:
+            return None
+            
+        n_neighbors = min(15, len(embs) - 1)
+        reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=0.1, random_state=42)
+        coords = reducer.fit_transform(embs)
+        
+        fig, ax = plt.subplots(figsize=figsize)
+        materials = df_use["material"].unique()
+        cmap = plt.get_cmap(self._get_colormap(colormap))
+        
+        for i, mat in enumerate(materials):
+            mask = df_use["material"] == mat
+            color = mcolors.to_hex(cmap(i / max(len(materials) - 1, 1))) if len(materials) > 1 else "#3b82f6"
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color, label=str(mat), alpha=0.8, s=80, edgecolors='white')
+            
+            for (_, row), coord in zip(df_use[df_use["material"] == mat].iterrows(), coords[mask]):
+                ax.annotate(f"{row['value']:.1f}", (coord[0], coord[1]), fontsize=self.label_font_size - 1, alpha=0.7)
+                
+        ax.legend(loc='best', fontsize=self.label_font_size, framealpha=0.9)
+        ax.set_title(f"UMAP of Extraction Contexts{' (' + quantity + ')' if quantity else ''}", 
+                    fontsize=self.title_font_size, fontweight='bold', pad=15)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+    
+    def plot_parallel_categories(self, df: pd.DataFrame, 
+                                  colormap: Optional[str] = None) -> go.Figure:
+        """Parallel categories plot for quantity → material → document flows."""
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for parallel categories",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        cat_df = df[["physical_quantity", "material", "doc_stem"]].copy().dropna()
+        if cat_df.empty:
+            return go.Figure().update_layout(
+                title="Insufficient categorical data",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        pq_codes = {pq: i for i, pq in enumerate(sorted(cat_df["physical_quantity"].unique()))}
+        cat_df["pq_code"] = cat_df["physical_quantity"].map(pq_codes)
+        
+        fig = px.parallel_categories(
+            cat_df, 
+            dimensions=["physical_quantity", "material", "doc_stem"], 
+            color="pq_code", 
+            color_continuous_scale=self._get_plotly_colorscale(colormap),
+            title="Parallel Categories: Quantities → Materials → Documents"
+        )
+        fig.update_layout(font=dict(family=self.font_family, size=self.font_size), height=500)
+        return fig
+    
+    def plot_violin(self, df: pd.DataFrame, 
+                     colormap: Optional[str] = None) -> go.Figure:
+        """Violin plot of key mechanical/thermal parameters."""
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for violin plot",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        target_q = ["laser_power", "scan_speed", "yield_strength", "tensile_strength", "hardness", "temperature"]
+        num_df = df[df["physical_quantity"].isin(target_q)]
+        if num_df.empty:
+            return go.Figure().update_layout(
+                title="No numerical data for target parameters",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        fig = px.violin(
+            num_df, 
+            x="physical_quantity", 
+            y="value", 
+            color="material", 
+            box=True, 
+            points="all", 
+            title="Distribution of Key Parameters by Material",
+            labels={"physical_quantity": "Physical Quantity", "value": "Value"}
+        )
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=500,
+            xaxis_tickangle=-45,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        return fig
+    
+    def plot_timeline(self, colormap: Optional[str] = None) -> go.Figure:
+        """Temporal distribution of extracted quantities by estimated publication year."""
+        df = self.extract_dataframe()
+        if df.empty:
+            return go.Figure().update_layout(
+                title="No data available for timeline",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        years = {}
+        for doc_id in self.kgraph.doc_graphs.keys():
+            match = re.search(r'\b(19|20)\d{2}\b', doc_id)
+            years[doc_id] = int(match.group(0)) if match else 2024
+            
+        df["year"] = df["doc"].map(years).fillna(2024)
+        top_q = df["physical_quantity"].value_counts().head(5).index.tolist()
+        df_top = df[df["physical_quantity"].isin(top_q)]
+        
+        if df_top.empty:
+            return go.Figure().update_layout(
+                title="Insufficient temporal data",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        fig = px.scatter(
+            df_top, 
+            x="year", 
+            y="physical_quantity", 
+            color="material", 
+            title="Temporal Distribution of Quantities by Material",
+            labels={"year": "Estimated Publication Year", "physical_quantity": "Physical Quantity"},
+            color_discrete_sequence=px.colors.qualitative.Set1
+        )
+        fig.update_layout(
+            font=dict(family=self.font_family, size=self.font_size),
+            height=450,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        return fig
+    
+    def plot_page_coverage_heatmap(self, doc_trees: List[Dict], 
+                                    retrieved_nodes: List[Dict]) -> go.Figure:
+        """Heatmap showing retrieved page coverage across documents."""
+        if not doc_trees or not retrieved_nodes:
+            return go.Figure().update_layout(
+                title="No coverage data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))
+        max_pages = 0
+        
+        for tree in doc_trees:
+            pages = []
+            def collect_pages(node):
+                pages.append(node.get("start_index", 1))
+                if node.get("end_index"):
+                    pages.append(node["end_index"])
+                for c in node.get("nodes", []):
+                    collect_pages(c)
+            collect_pages(tree)
+            max_p = max(pages) if pages else 1
+            max_pages = max(max_pages, max_p)
+            
+        coverage = np.zeros((len(doc_names), max_pages))
+        for r in retrieved_nodes:
+            doc_id = r.get("doc_id")
+            if doc_id in doc_names:
+                doc_idx = doc_names.index(doc_id)
+                start = r.get("page_start", 1) - 1
+                for p in range(max(0, start - 1), min(max_pages, start + 3)):
+                    coverage[doc_idx, p] = 1
+                    
+        doc_labels = [Path(d).stem for d in doc_names]
+        fig = go.Figure(data=go.Heatmap(
+            z=coverage, 
+            x=list(range(1, max_pages + 1)), 
+            y=doc_labels, 
+            colorscale=[[0, "#f3f4f6"], [1, "#059669"]], 
+            showscale=False, 
+            hovertemplate="Doc: %{y}<br>Page: %{x}<br>Retrieved: %{z}<extra></extra>"
+        ))
+        fig.update_layout(
+            title="Page Coverage Heatmap (Retrieved Pages per Document)",
+            xaxis_title="Page Number",
+            yaxis_title="Document",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=max(400, len(doc_names) * 40),
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        return fig
+    
+    def plot_retrieval_sankey(self, query: str, 
+                               relevant_docs: List[Tuple[str, float]], 
+                               retrieved_nodes: List[Dict], 
+                               extracted_items: List[Any]) -> go.Figure:
+        """Sankey diagram showing retrieval provenance flow."""
+        if not relevant_docs and not retrieved_nodes:
+            return go.Figure().update_layout(
+                title="No retrieval data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        labels = ["Query"]
+        label_index = {"Query": 0}
+        doc_nodes = []
+        for doc_name, score in relevant_docs:
+            doc_label = f"{Path(doc_name).stem}\n({score:.2f})"
+            label_index[doc_name] = len(labels)
+            labels.append(doc_label)
+            doc_nodes.append(doc_name)
+            
+        node_labels_list = []
+        for r in retrieved_nodes:
+            doc_id = r.get("doc_id", "unknown")
+            node_id = r.get("node_id", "unknown")
+            key = f"{doc_id}:{node_id}"
+            if key not in label_index:
+                label_index[key] = len(labels)
+                labels.append(f"{Path(doc_id).stem}:{node_id[:15]}")
+            node_labels_list.append(key)
+            
+        pq_groups = defaultdict(list)
+        for item in extracted_items:
+            if hasattr(item, 'physical_quantity'):
+                pq = item.physical_quantity or "unknown"
+                pq_groups[pq].append(item)
+            elif isinstance(item, dict):
+                pq = item.get("physical_quantity", "unknown")
+                pq_groups[pq].append(item)
+                
+        pq_nodes_list = []
+        for pq, items in pq_groups.items():
+            key = f"pq:{pq}"
+            if key not in label_index:
+                label_index[key] = len(labels)
+                labels.append(f"{pq} ({len(items)})")
+            pq_nodes_list.append(key)
+            
+        label_index["Answer"] = len(labels)
+        labels.append("Answer")
+        
+        sources, targets, vals = [], [], []
+        for doc_name, score in relevant_docs:
+            sources.append(0)
+            targets.append(label_index[doc_name])
+            vals.append(max(1, int(score * 10)))
+            
+        for r in retrieved_nodes:
+            doc_id = r.get("doc_id")
+            node_id = r.get("node_id", "unknown")
+            key = f"{doc_id}:{node_id}"
+            conf = r.get("confidence", 0.5)
+            if doc_id in label_index and key in label_index:
+                sources.append(label_index[doc_id])
+                targets.append(label_index[key])
+                vals.append(max(1, int(conf * 10)))
+                
+        node_to_pq = defaultdict(set)
+        for item in extracted_items:
+            pq = item.physical_quantity if hasattr(item, 'physical_quantity') else item.get("physical_quantity", "unknown")
+            doc_id = item.doc_source if hasattr(item, 'doc_source') else item.get("doc_source", item.get("doc_id", "unknown"))
+            for r in retrieved_nodes:
+                if r.get("doc_id") == doc_id:
+                    node_id = r.get("node_id", "unknown")
+                    key = f"{doc_id}:{node_id}"
+                    node_to_pq[key].add(f"pq:{pq}")
+                    
+        for node_key, pq_set in node_to_pq.items():
+            for pq_key in pq_set:
+                if node_key in label_index and pq_key in label_index:
+                    sources.append(label_index[node_key])
+                    targets.append(label_index[pq_key])
+                    vals.append(1)
+                    
+        for pq_key in pq_nodes_list:
+            sources.append(label_index[pq_key])
+            targets.append(label_index["Answer"])
+            vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
+            
+        node_colors = ["#1e3a5f"]
+        node_colors += ["#2563eb"] * len(doc_nodes)
+        node_colors += ["#059669"] * len(node_labels_list)
+        node_colors += ["#dc2626"] * len(pq_nodes_list)
+        node_colors += ["#7c3aed"]
+        
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=20, thickness=24, line=dict(color="#334155", width=0.8),
+                label=labels, color=node_colors,
+                hovertemplate="%{label}<extra></extra>"
+            ),
+            link=dict(
+                source=sources, target=targets, value=vals,
+                color=["rgba(37, 99, 235, 0.25)" if s < len(doc_nodes)+1 else "rgba(5, 150, 105, 0.2)" for s in sources],
+                hovertemplate="From: %{source.label}<br>To: %{target.label}<br>Value: %{value}<extra></extra>"
+            )
+        )])
+        
+        fig.update_layout(
+            title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'",
+            font=dict(family=self.font_family, size=self.font_size, color="#1e293b"),
+            paper_bgcolor="white", plot_bgcolor="white",
+            height=650, width=1100,
+            margin=dict(l=40, r=40, t=80, b=40)
+        )
+        return fig
+    
+    def plot_node_confidence_distribution(self, retrieved_nodes: List[Dict]) -> go.Figure:
+        """Histogram of node selection confidence scores."""
+        if not retrieved_nodes:
+            return go.Figure().update_layout(
+                title="No node confidence data available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        confidences = [r.get("confidence", 0) for r in retrieved_nodes]
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=confidences, 
+            nbinsx=20, 
+            marker_color="#3b82f6", 
+            opacity=0.75, 
+            name="All Nodes"
+        ))
+        fig.add_vline(x=0.5, line_dash="dash", line_color="#ef4444", annotation_text="Typical Threshold")
+        fig.update_layout(
+            title="Node Selection Confidence Distribution",
+            xaxis_title="Confidence Score",
+            yaxis_title="Count",
+            font=dict(family=self.font_family, size=self.font_size),
+            showlegend=False,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        return fig
+    
+    def plot_doc_filter_scores(self, relevant_docs: List[Tuple[str, float]], 
+                                all_doc_count: int) -> go.Figure:
+        """Bar chart of two-stage document retrieval scores."""
+        if not relevant_docs:
+            return go.Figure().update_layout(
+                title="No document filter scores available",
+                font=dict(family=self.font_family, size=self.font_size)
+            )
+            
+        docs = [Path(d).stem for d, _ in relevant_docs]
+        scores = [s for _, s in relevant_docs]
+        colors = ["#10b981" if s > 0.5 else "#f59e0b" if s > 0.2 else "#ef4444" for s in scores]
+        
+        fig = go.Figure(go.Bar(
+            x=docs, 
+            y=scores, 
+            marker_color=colors, 
+            text=[f"{s:.3f}" for s in scores], 
+            textposition="outside"
+        ))
+        fig.add_hline(y=0.5, line_dash="dash", line_color="#ef4444", annotation_text="High Relevance")
+        fig.add_hline(y=0.2, line_dash="dot", line_color="#f59e0b", annotation_text="Medium Relevance")
+        fig.update_layout(
+            title=f"Two-Stage Document Retrieval Scores (showing {len(docs)} of {all_doc_count})",
+            xaxis_title="Document",
+            yaxis_title="Relevance Score",
+            font=dict(family=self.font_family, size=self.font_size),
+            height=450,
+            plot_bgcolor="#ffffff",
+            paper_bgcolor="#ffffff"
+        )
+        return fig
+    
+    def plot_retrieval_tree_highlight(self, annotated_trees: List[Dict], 
+                                       retrieved_nodes: List[Dict], 
+                                       doc_id: Optional[str] = None) -> Optional[plt.Figure]:
+        """Highlight retrieved nodes in hierarchical tree structure."""
+        if not annotated_trees:
+            return None
+            
+        target_tree = None
+        for tree in annotated_trees:
+            tid = tree.get("doc_id", tree.get("doc_name", "unknown"))
+            if doc_id and tid == doc_id:
+                target_tree = tree
+                break
+        if not target_tree and annotated_trees:
+            target_tree = annotated_trees[0]
+            doc_id = target_tree.get("doc_id", target_tree.get("doc_name", "unknown"))
+        if not target_tree:
+            return None
+            
+        G = nx.DiGraph()
+        retrieved_node_ids = set()
+        for r in retrieved_nodes:
+            if r.get("doc_id") == doc_id:
+                retrieved_node_ids.add(r.get("node_id"))
+                
+        def add_nodes(node, parent=None):
+            nid = node.get("node_id", "root")
+            title = node.get("title", "Unknown")
+            is_retrieved = nid in retrieved_node_ids
+            has_quant = bool(node.get("quantitative_items"))
+            G.add_node(nid, label=title[:30], retrieved=is_retrieved, has_quant=has_quant)
+            if parent:
+                G.add_edge(parent, nid)
+            for child in node.get("nodes", []):
+                add_nodes(child, nid)
+                
+        add_nodes(target_tree)
+        if len(G.nodes()) < 2:
+            return None
+            
+        pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
+        fig, ax = plt.subplots(figsize=(14, 10))
+        
+        normal_nodes = [n for n, d in G.nodes(data=True) if not d.get("retrieved") and not d.get("has_quant")]
+        quant_nodes = [n for n, d in G.nodes(data=True) if d.get("has_quant") and not d.get("retrieved")]
+        retrieved_nodes_list = [n for n, d in G.nodes(data=True) if d.get("retrieved")]
+        
+        nx.draw_networkx_nodes(G, pos, nodelist=normal_nodes, node_color="#e5e7eb", node_size=400, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=quant_nodes, node_color="#93c5fd", node_size=600, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=retrieved_nodes_list, node_color="#ef4444", node_size=900, ax=ax)
+        nx.draw_networkx_edges(G, pos, alpha=0.3, arrows=True, arrowsize=10, ax=ax)
+        
+        labels = {n: d["label"] for n, d in G.nodes(data=True)}
+        nx.draw_networkx_labels(G, pos, labels, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
+        
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor="#ef4444", label="Retrieved Node"), 
+            Patch(facecolor="#93c5fd", label="Has Quantitative Data"), 
+            Patch(facecolor="#e5e7eb", label="Other Node")
+        ]
+        ax.legend(handles=legend_elements, loc='upper right')
+        ax.set_title(f"Retrieval Tree: {Path(doc_id).stem if doc_id else 'Document'}", 
+                    fontsize=self.title_font_size, fontweight='bold', pad=15)
+        ax.axis("off")
+        plt.tight_layout()
+        return fig
+    
+    def plot_semantic_vs_vectorless(self, query: str, 
+                                     relevant_docs: List[Tuple[str, float]], 
+                                     annotated_trees: List[Dict], 
+                                     embedding_fn: Optional[Callable[[str], np.ndarray]] = None) -> Optional[plt.Figure]:
+        """Compare semantic (embedding) vs vectorless (keyword/heuristic) retrieval scores."""
+        if not relevant_docs or not embedding_fn:
+            return None
+            
+        doc_names = [d for d, _ in relevant_docs]
+        keyword_scores = [s for _, s in relevant_docs]
+        doc_texts = []
+        for tree in annotated_trees:
+            tid = tree.get("doc_id", tree.get("doc_name", "unknown"))
+            if tid in doc_names:
+                text = tree.get("summary", "") + " " + str(tree.get("metadata", {}))
+                doc_texts.append(text)
+                
+        if not doc_texts or not any(doc_texts):
+            return None
+            
+        try:
+            query_emb = embedding_fn(query)
+            doc_embs = [embedding_fn(t) for t in doc_texts]
+            
+            def cosine(a, b):
+                return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
+                
+            semantic_scores = [cosine(query_emb, de) for de in doc_embs]
+        except Exception:
+            return None
+            
+        fig, ax = plt.subplots(figsize=(8, 6))
+        doc_labels = [Path(d).stem for d in doc_names]
+        
+        for i in range(len(doc_names)):
+            color = "#10b981" if keyword_scores[i] > 0.5 else "#f59e0b" if keyword_scores[i] > 0.2 else "#ef4444"
+            ax.scatter(keyword_scores[i], semantic_scores[i], c=color, s=100, alpha=0.8, edgecolors='white')
+            ax.annotate(doc_labels[i], (keyword_scores[i], semantic_scores[i]), fontsize=8, alpha=0.9)
+            
+        min_val = min(min(keyword_scores), min(semantic_scores))
+        max_val = max(max(keyword_scores), max(semantic_scores))
+        ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.6, label="Agreement Line")
+        
+        ax.set_title("Semantic (Embedding) vs Vectorless (Keyword/Heuristic) Retrieval Scores",
+                    fontsize=self.title_font_size, fontweight='bold', pad=15)
+        ax.set_xlabel("Vectorless Score (Keyword/Heuristic)", fontsize=self.label_font_size)
+        ax.set_ylabel("Semantic Score (Cosine Similarity)", fontsize=self.label_font_size)
+        ax.legend(loc='best', fontsize=self.label_font_size)
+        plt.tight_layout()
+        return fig

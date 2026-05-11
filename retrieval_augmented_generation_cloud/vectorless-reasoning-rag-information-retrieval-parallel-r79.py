@@ -3568,7 +3568,7 @@ class PublicationVisualizationEngine:
         label_index = {"Query": 0}
         doc_nodes = []
         for doc_name, score in relevant_docs:
-            doc_label = f"{Path(doc_name).stem}\n({score:.2f})"
+            doc_label = f"{normalize_doi_display(Path(doc_name).stem)}\n({score:.2f})"
             label_index[doc_name] = len(labels)
             labels.append(doc_label)
             doc_nodes.append(doc_name)
@@ -3579,7 +3579,7 @@ class PublicationVisualizationEngine:
             key = f"{doc_id}:{node_id}"
             if key not in label_index:
                 label_index[key] = len(labels)
-                labels.append(f"{Path(doc_id).stem}:{node_id[:15]}")
+                labels.append(f"{normalize_doi_display(Path(doc_id).stem)}:{node_id[:15]}")
                 node_labels_list.append(key)
         pq_groups = defaultdict(list)
         for item in extracted_items:
@@ -3656,7 +3656,7 @@ class PublicationVisualizationEngine:
     def plot_doc_filter_scores(self, relevant_docs, all_doc_count):
         if not relevant_docs:
             return go.Figure().update_layout(title="No document filter scores")
-        docs = [Path(d).stem for d, _ in relevant_docs]
+        docs = [normalize_doi_display(Path(d).stem) for d, _ in relevant_docs]
         scores = [s for _, s in relevant_docs]
         colors = ["#10b981" if s > 0.5 else "#f59e0b" if s > 0.2 else "#ef4444" for s in scores]
         fig = go.Figure(go.Bar(x=docs, y=scores, marker_color=colors, text=[f"{s:.3f}" for s in scores], textposition="outside"))
@@ -3711,7 +3711,7 @@ class PublicationVisualizationEngine:
         from matplotlib.patches import Patch
         legend_elements = [Patch(facecolor="#ef4444", label="Retrieved Node"), Patch(facecolor="#93c5fd", label="Has Quantitative Data"), Patch(facecolor="#e5e7eb", label="Other Node")]
         ax.legend(handles=legend_elements, loc='upper right')
-        ax.set_title(f"Retrieval Tree: {Path(doc_id).stem if doc_id else 'Document'}", fontsize=self.title_font_size, fontweight='bold')
+        ax.set_title(f"Retrieval Tree: {normalize_doi_display(Path(doc_id).stem) if doc_id else 'Document'}", fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")
         plt.tight_layout()
         return fig
@@ -3738,7 +3738,7 @@ class PublicationVisualizationEngine:
         except Exception:
             return None
         fig = go.Figure()
-        doc_labels = [Path(d).stem for d in doc_names]
+        doc_labels = [normalize_doi_display(Path(d).stem) for d in doc_names]
         fig.add_trace(go.Scatter(x=keyword_scores, y=semantic_scores, mode='markers+text', text=doc_labels, textposition="top center", marker=dict(size=14, color="#3b82f6"), name="Documents"))
         min_val = min(min(keyword_scores), min(semantic_scores))
         max_val = max(max(keyword_scores), max(semantic_scores))
@@ -4101,7 +4101,7 @@ def run_streamlit():
 
                         else:
                             fig_kg = viz.plot_query_knowledge_graph(query_ctx)
-                            st.pyplot(fig_kg, key="py_fig_kg")
+                            st.pyplot(fig_kg)
 
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi, bbox_inches='tight')
@@ -4270,7 +4270,7 @@ def run_streamlit():
                     with net_subtabs[0]:
                         if selected_qty != "All":
                             fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.pyplot(fig_kg, key="py_fig_kg_2")
+                            st.pyplot(fig_kg)
 
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4291,7 +4291,7 @@ def run_streamlit():
 
                     with net_subtabs[2]:
                         fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_net, key="py_fig_net")
+                        st.pyplot(fig_net)
 
                         buf = BytesIO()
                         fig_net.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4310,7 +4310,7 @@ def run_streamlit():
 
                     with net_subtabs[4]:
                         fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_static, key="py_fig_static")
+                        st.pyplot(fig_static)
 
                         buf = BytesIO()
                         fig_static.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4333,7 +4333,7 @@ def run_streamlit():
                         if SKLEARN_AVAILABLE:
                             fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_tsne:
-                                st.pyplot(fig_tsne, key="py_fig_tsne")
+                                st.pyplot(fig_tsne)
 
                                 buf = BytesIO()
                                 fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4341,7 +4341,7 @@ def run_streamlit():
 
                             fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_pca:
-                                st.pyplot(fig_pca, key="py_fig_pca")
+                                st.pyplot(fig_pca)
 
                                 buf = BytesIO()
                                 fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4350,7 +4350,7 @@ def run_streamlit():
                         if UMAP_AVAILABLE:
                             fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_umap:
-                                st.pyplot(fig_umap, key="py_fig_umap")
+                                st.pyplot(fig_umap)
 
                                 buf = BytesIO()
                                 fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4457,7 +4457,7 @@ def run_streamlit():
                         selected_tree_doc = st.selectbox("Select document to visualize", tree_doc_options, key="tree_doc_select")
                         fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
                         if fig_tree:
-                            st.pyplot(fig_tree, key="py_fig_tree")
+                            st.pyplot(fig_tree)
 
                             buf = BytesIO()
                             fig_tree.savefig(buf, format="png", dpi=config.figure_dpi)

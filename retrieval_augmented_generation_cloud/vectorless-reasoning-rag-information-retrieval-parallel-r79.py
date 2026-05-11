@@ -486,7 +486,7 @@ class PhysicalQuantityClassifier:
 
     }
 
-    def __init__(self, llm: Optional[HybridLLM] = None):
+    def __init__(self, llm: Optional['HybridLLM'] = None):
         self._build_keyword_index()
         self.llm = llm  # Optional LLM for ambiguous classification
 
@@ -1552,7 +1552,7 @@ Return ONLY valid JSON."""
 
     async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
         """
-        HighIQ-style hierarchical roll-up summarization:
+        PageIndex-style hierarchical roll-up summarization:
         1. Generate leaf summaries from raw text
         2. Roll up: parent reads child summaries → writes parent summary
         3. Root gets executive summary of entire document
@@ -1614,7 +1614,7 @@ Summary:"""
 
     async def _rollup_summarize_node(self, node: PageNode):
         """
-        HighIQ-style roll-up: parent summary from child summaries.
+        PageIndex-style roll-up: parent summary from child summaries.
         Enables the LLM to reason about higher-level structure without reading all text.
         """
         if not node.children:
@@ -1837,7 +1837,7 @@ class HybridLLM:
 
 
 class QuantitativeKnowledgeGraph:
-    def __init__(self, llm: Optional[HybridLLM] = None):
+    def __init__(self, llm: Optional['HybridLLM'] = None):
         self.doc_graphs: Dict[str, Dict] = {}
         self.phys_classifier = PhysicalQuantityClassifier(llm=llm)
         self.metadata_index: Dict[str, DocumentMetadata] = {}
@@ -2228,7 +2228,7 @@ Return ONLY the answer text."""
 
 class HierarchicalTreeRetriever:
     """
-    HighIQ-style 2-call query architecture:
+    PageIndex-style 2-call query architecture:
     Call 1: Tree navigation → node_id(s) via LLM reasoning
     Call 2: Answer generation from raw text + query (handled by caller)
     """

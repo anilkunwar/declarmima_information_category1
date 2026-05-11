@@ -2450,7 +2450,8 @@ class PublicationVisualizationEngine:
         # 1. Central Query Node
         net.add_node(
             "QUERY", 
-            label="YOUR QUERY",
+            #label="YOUR QUERY",
+            label="USER'S QUERY",
             title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
             color="#7c3aed",  # Darker purple for white bg
             size=45,

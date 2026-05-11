@@ -6531,3 +6531,370 @@ def render_visualization_dashboard(config: VisConfig):
 # ============================================================================
 if __name__ == "__main__":
     run_streamlit()
+
+
+# ============================================================================
+# FAST HIERARCHICAL INDEX (ASYNC, PARALLEL, LLM-TOC)
+# ============================================================================
+class FastHierarchicalIndex(HierarchicalIndex):
+    """
+    Enhanced Indexer that builds document trees asynchronously and uses 
+    LLMs to extract accurate Tables of Contents (TOC) and headings.
+    """
+    def __init__(self, cache_dir: str = ".declarmima_cache_v18", llm: Optional['HybridLLM'] = None):
+        super().__init__(cache_dir)
+        self.llm = llm
+        self.summarizer = RollupSummarizer(llm) if llm else None
+
+    async def build_from_pdfs_fast(self, files: List, max_workers: int = 4) -> Dict[str, PageNode]:
+        """
+        Main entry point: Extracts pages, detects TOC via LLM, builds trees, and caches them.
+        """
+        loop = asyncio.get_event_loop()
+        
+        # Phase 1: Parallel Raw Page Extraction
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [loop.run_in_executor(pool, self._extract_pages_raw, f) for f in files]
+            raw_docs = await asyncio.gather(*futures)
+            
+        # Phase 2: Parallel LLM TOC/Heading Extraction
+        if self.llm:
+            logger.info("Extracting TOCs/Headings via LLM...")
+            toc_tasks = [self._llm_extract_toc(doc_name, pages) for doc_name, pages in raw_docs]
+            toc_results = await asyncio.gather(*toc_tasks)
+        else:
+            # Fallback: no LLM, use empty TOC
+            toc_results = [{"has_toc": False, "headings_detected": [], "doc_type": "unknown"} for _ in raw_docs]
+            
+        # Phase 3: Tree Construction & Metadata Extraction
+        trees = {}
+        for (doc_name, pages), toc in zip(raw_docs, toc_results):
+            tree = self._build_tree_from_toc(doc_name, pages, toc)
+            full_text = "\n".join([p['text'] for p in pages])
+            meta = self.metadata_extractor.extract_metadata(doc_name, full_text)
+            tree.metadata = meta
+            trees[doc_name] = tree
+            
+        # Phase 4: Parallel Summary Generation & Caching
+        if self.llm and self.summarizer:
+            logger.info("Generating hierarchical roll-up summaries...")
+            # Batch summarization to avoid rate limits / OOM
+            await self._generate_summaries_async(trees)
+            
+        for doc_name, tree in trees.items():
+            self.doc_trees[doc_name] = tree
+            # Save to cache
+            buf = BytesIO()
+            # We need file content for hashing. If files were passed as BytesIO, we can re-read,
+            # but for simplicity, we hash the doc_name + summary structure for cache key.
+            self._save_tree_fast(doc_name, tree)
+            
+        return trees
+
+    def _extract_pages_raw(self, file_obj) -> Tuple[str, List[Dict]]:
+        """Thread-safe extraction of page text from PDF."""
+        if hasattr(file_obj, 'getbuffer'):
+            buf = BytesIO(file_obj.getbuffer())
+            doc_name = file_obj.name
+        else:
+            buf = file_obj
+            doc_name = "unknown.pdf"
+            
+        doc = fitz.open(stream=buf.getvalue(), filetype="pdf")
+        pages = []
+        for p in range(len(doc)):
+            page = doc[p]
+            pages.append({
+                'page_num': p + 1, 
+                'text': page.get_text("text"), 
+                'images': len(page.get_images()), 
+                'blocks': page.get_text("blocks")
+            })
+        doc.close()
+        return doc_name, pages
+
+    async def _llm_extract_toc(self, doc_name: str, pages: List[Dict]) -> Dict[str, Any]:
+        """Uses LLM to detect document structure (TOC, Headings)."""
+        # Sample first 5 pages (or fewer if doc is short)
+        sample_text = "\n".join(p['text'][:1500] for p in pages[:5])
+        
+        prompt = f"""Analyze this document and extract its hierarchical structure.
+Return JSON with:
+- "has_toc": bool
+- "toc_entries": list of {{"title": str, "level": int, "page": int}}
+- "headings_detected": list of {{"title": str, "level": int, "page": int}}
+- "doc_type": str (e.g., "research_paper", "report", "manual")
+- "suggested_root_title": str
+Document sample:
+{sample_text[:6000]}
+Return ONLY valid JSON."""
+        try:
+            response = await asyncio.to_thread(
+                self.llm.generate, 
+                prompt, 
+                max_new_tokens=1024, 
+                fast_json=True, 
+                temperature=0.0
+            )
+            result = self._extract_json_safe(response)
+            if result and isinstance(result, dict):
+                return result
+        except Exception as e:
+            logger.warning(f"LLM TOC extraction failed for {doc_name}: {e}")
+            
+        return {"has_toc": False, "headings_detected": [], "doc_type": "unknown", "suggested_root_title": doc_name}
+
+    def _build_tree_from_toc(self, doc_name: str, pages: List[Dict], toc: Dict) -> PageNode:
+        """Constructs the PageNode tree based on LLM-detected TOC."""
+        safe_title = toc.get("suggested_root_title") or doc_name
+        root = PageNode(
+            f"{doc_name}_root", safe_title, 1, len(pages), "", 
+            f"Document {doc_name}", 0, doc_id=doc_name, node_id="0000"
+        )
+        
+        entries = toc.get("toc_entries", []) or toc.get("headings_detected", [])
+        window = 7
+        
+        if entries:
+            nodes_by_level = {}
+            for entry in entries:
+                level_val = entry.get("level")
+                level = 1 if level_val is None else (int(level_val) if str(level_val).isdigit() else 1)
+                title = str(entry.get("title", "Unknown")).strip()
+                page_raw = entry.get("page")
+                page = 1 if page_raw is None else (int(page_raw) if str(page_raw).isdigit() else 1)
+                
+                if page < 1 or page > len(pages):
+                    continue
+                    
+                end = min(page + window, len(pages))
+                text_parts = []
+                for i in range(page, min(end + 1, len(pages) + 1)):
+                    try:
+                        page_data = pages[i - 1]
+                        if isinstance(page_data, dict) and 'text' in page_
+                            text_parts.append(page_data['text'])
+                    except:
+                        continue
+                text = "\n".join(text_parts)
+                
+                node = PageNode(
+                    f"{doc_name}_toc_{level}_{title[:20]}", title, page, end, 
+                    text, text[:200], level, doc_id=doc_name
+                )
+                nodes_by_level.setdefault(level, []).append(node)
+                
+            # Attach nodes to parent based on level and page proximity
+            for level in sorted(nodes_by_level.keys()):
+                for node in nodes_by_level[level]:
+                    parent = self._find_parent(root, level - 1, node.page_start)
+                    parent.children.append(node)
+        else:
+            # Fallback: Page-level chunks
+            for p in pages:
+                text = p.get('text', '')
+                if not str(text).strip():
+                    continue
+                page_num = int(p.get('page_num', 1)) if str(p.get('page_num', 1)).isdigit() else 1
+                node = PageNode(
+                    f"{doc_name}_p{page_num}", f"Page {page_num}", page_num, page_num, 
+                    text, str(text)[:200], 3, doc_id=doc_name
+                )
+                root.children.append(node)
+                
+        self._assign_node_ids(root)
+        return root
+
+    async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
+        """Batched async summarization for all nodes."""
+        all_nodes = []
+        def collect_nodes(node: PageNode):
+            all_nodes.append(node)
+            for c in node.children:
+                collect_nodes(c)
+        for tree in trees.values():
+            collect_nodes(tree)
+            
+        batch_size = 5
+        for i in range(0, len(all_nodes), batch_size):
+            batch = all_nodes[i:i+batch_size]
+            tasks = []
+            for node in batch:
+                if len(node.full_text) > 200:
+                    tasks.append(self.summarizer._post_order_summarize(node))
+                else:
+                    node.summary = node.full_text[:200]
+            if tasks:
+                # Run in thread pool to avoid blocking event loop if LLM is sync
+                await asyncio.gather(*(asyncio.to_thread(lambda n: self.summarizer._post_order_summarize(n)) for n in batch if len(n.full_text) > 200))
+
+    def _save_tree_fast(self, doc_name: str, tree: PageNode):
+        """Persist tree to disk cache."""
+        safe = re.sub(r'[^\w\-_.]', '_', doc_name)
+        doc_hash = hashlib.sha256(doc_name.encode()).hexdigest()[:16]
+        path = self.cache_dir / f"{safe}.{doc_hash}.tree.json"
+        try:
+            with open(path, "wb") as f:
+                f.write(fast_json_dumps(tree.to_dict(), indent=True))
+        except Exception as e:
+            logger.warning(f"Fast save failed for {doc_name}: {e}")
+
+
+# ============================================================================
+# ENHANCED QUANTITATIVE KNOWLEDGE GRAPH
+# ============================================================================
+class QuantitativeKnowledgeGraph:
+    """
+    Manages extracted entities, computes consensus/contradictions, 
+    and maps quantitative data back to the hierarchical tree.
+    """
+    def __init__(self):
+        self.doc_graphs: Dict[str, Dict] = {}
+        self.phys_classifier = PhysicalQuantityClassifier()
+        self.metadata_index: Dict[str, DocumentMetadata] = {}
+        self.concept_normalizer = ConceptNormalizer()
+
+    def add_document_metadata(self, doc_name: str, metadata: DocumentMetadata):
+        """Store raw metadata for quick lookup."""
+        self.metadata_index[doc_name] = metadata
+
+    def add_extractions(self, doc_id: str, items: List[UniversalExtractionItem]):
+        """Ingest extracted items and build internal indices."""
+        graph = {
+            "doc_id": doc_id, 
+            "parameters": defaultdict(list), 
+            "materials": defaultdict(list),
+            "methods": defaultdict(list), 
+            "by_page": defaultdict(list), 
+            "by_section": defaultdict(list),
+            "by_physical_quantity": defaultdict(list), 
+            "all_items": []
+        }
+        
+        for item in items:
+            item_dict = item.to_dict()
+            # Normalize concepts
+            if item.physical_quantity:
+                item_dict["physical_quantity"] = self.concept_normalizer.normalize(item.physical_quantity)
+            if item.material:
+                item_dict["material"] = self.concept_normalizer.normalize(item.material)
+                
+            graph["all_items"].append(item_dict)
+            
+            # Indexing
+            if item.parameter_name:
+                graph["parameters"][item.parameter_name.lower()].append(item_dict)
+            if item.material:
+                graph["materials"][item.material.lower()].append(item_dict)
+            if item.method:
+                graph["methods"][item.method.lower()].append(item_dict)
+            if item.physical_quantity:
+                graph["by_physical_quantity"][item.physical_quantity].append(item_dict)
+            graph["by_page"][item.page].append(item_dict)
+            if item.section_title:
+                graph["by_section"][item.section_title].append(item_dict)
+                
+        self.doc_graphs[doc_id] = dict(graph)
+
+    def get_entity_consensus(self, entity_name: str) -> Dict[str, Any]:
+        """Calculate statistical consensus for an entity (material or quantity)."""
+        values = []
+        units = set()
+        docs = set()
+        for doc_id, graph in self.doc_graphs.items():
+            for item in graph["all_items"]:
+                if (item.get("material") == entity_name or item.get("physical_quantity") == entity_name):
+                    if item.get("value") is not None:
+                        values.append(item["value"])
+                        units.add(item.get("unit", ""))
+                        docs.add(doc_id)
+                        
+        if not values:
+            return {"found": False, "entity": entity_name}
+            
+        return {
+            "found": True, 
+            "entity": entity_name, 
+            "count": len(values), 
+            "unit": list(units)[0] if units else "unknown", 
+            "range": (min(values), max(values)), 
+            "mean": float(np.mean(values)), 
+            "std": float(np.std(values)) if len(values) > 1 else 0.0, 
+            "documents": list(docs), 
+            "values": values
+        }
+
+    def get_entity_contradictions(self, entity_name: str, threshold_factor: float = 2.0) -> List[Dict[str, Any]]:
+        """Detect contradictions between documents for the same entity."""
+        by_doc = defaultdict(list)
+        for doc_id, graph in self.doc_graphs.items():
+            for item in graph["all_items"]:
+                if (item.get("material") == entity_name or item.get("physical_quantity") == entity_name):
+                    if item.get("value") is not None:
+                        by_doc[doc_id].append(item["value"])
+                        
+        contradictions = []
+        docs = list(by_doc.keys())
+        for i in range(len(docs)):
+            for j in range(i + 1, len(docs)):
+                if by_doc[docs[i]] and by_doc[docs[j]]:
+                    mean_i = np.mean(by_doc[docs[i]])
+                    mean_j = np.mean(by_doc[docs[j]])
+                    if mean_i > 0 and mean_j > 0:
+                        ratio = max(mean_i, mean_j) / min(mean_i, mean_j)
+                        if ratio > threshold_factor:
+                            contradictions.append({
+                                "entity": entity_name, 
+                                "doc_a": docs[i], 
+                                "value_a": mean_i, 
+                                "doc_b": docs[j], 
+                                "value_b": mean_j, 
+                                "ratio": ratio, 
+                                "severity": "high" if ratio > 5 else "moderate"
+                            })
+        return contradictions
+
+    def to_tree_annotation(self, doc_tree: PageNode, max_chars: int = 20000) -> Dict[str, Any]:
+        """
+        Crucial for v18.0 2-call architecture:
+        Maps quantitative extractions back to the hierarchical tree nodes 
+        so the LLM navigator can see "hints" (e.g., has_quantitative, candidate_values).
+        """
+        doc_id = doc_tree.doc_id
+        graph = self.doc_graphs.get(doc_id, {})
+        
+        def annotate_node(node: PageNode) -> Dict[str, Any]:
+            result = node.to_tree_format(max_chars=max_chars)
+            node_items = []
+            # Collect items from all pages covered by this node
+            end_page = node.page_end or node.page_start
+            for page in range(node.page_start, end_page + 1):
+                node_items.extend(graph.get("by_page", {}).get(page, []))
+                
+            if node_items:
+                seen = set()
+                unique_items = []
+                for item in node_items:
+                    # Deduplicate
+                    key = (item.get('parameter_name'), item.get('value'), item.get('page'))
+                    if key not in seen:
+                        seen.add(key)
+                        unique_items.append(item)
+                result["quantitative_items"] = unique_items
+                
+            # Recurse
+            if node.children:
+                result["nodes"] = [annotate_node(c) for c in node.children]
+            return result
+            
+        return annotate_node(doc_tree)
+
+    def get_all_entity_names(self) -> List[str]:
+        """Extract all unique materials and quantities."""
+        entities = set()
+        for doc_id, graph in self.doc_graphs.items():
+            for item in graph["all_items"]:
+                if item.get("material"): entities.add(item["material"])
+                if item.get("physical_quantity"): entities.add(item["physical_quantity"])
+                if item.get("parameter_name"): entities.add(item["parameter_name"])
+        return sorted(entities)

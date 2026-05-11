@@ -1,5 +1,10 @@
 # Information fusion for unraveling laser-microstructure information
 
+# Query Driven Vectorless RAG for Laser and/or Microstructure Related Documents
+
+[![meaningtowords](https://img.shields.io/badge/lmvr-v0.0-green)](https://laser-microstructure-vectorlessrag1c.streamlit.app/) (stable models, As indicated by the name 1c single call, No LLM fallback when the exact term of query is not found during the interactive chat, corresponding version-v76)
+
+
 # Materials
 
 Microstructure phase

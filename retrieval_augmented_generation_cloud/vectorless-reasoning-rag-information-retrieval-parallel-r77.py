@@ -3494,7 +3494,7 @@ def run_streamlit():
                         st.components.v1.html(html_graph, height=820, scrolling=True)
                     else:
                         fig_kg = viz.plot_query_knowledge_graph(query_ctx)
-                        st.pyplot(fig_kg, key="query_kg_matplotlib")
+                        st.pyplot(fig_kg)
                 with viz_tabs[1]:
                     fig_sun = viz.plot_query_sunburst(query_ctx)
                     st.plotly_chart(fig_sun, use_container_width=True, key="query_sunburst")
@@ -3599,7 +3599,7 @@ def run_streamlit():
                     with net_subtabs[0]:
                         if selected_qty != "All":
                             fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.pyplot(fig_kg, key=f"kg_nx_{selected_qty}")
+                            st.pyplot(fig_kg)
                         else:
                             st.info("Select a specific quantity to see its knowledge graph.")
                     with net_subtabs[1]:
@@ -3610,7 +3610,7 @@ def run_streamlit():
                             st.info("Select a specific quantity and install pyvis for interactive graph.")
                     with net_subtabs[2]:
                         fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_net, key="full_network_nx")
+                        st.pyplot(fig_net)
                     with net_subtabs[3]:
                         if PYVIS_AVAILABLE:
                             html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
@@ -3619,7 +3619,7 @@ def run_streamlit():
                             st.info("Install pyvis for interactive network: pip install pyvis")
                     with net_subtabs[4]:
                         fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_static, key="salience_nx")
+                        st.pyplot(fig_static)
                     with net_subtabs[5]:
                         if PYVIS_AVAILABLE:
                             html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
@@ -3632,14 +3632,14 @@ def run_streamlit():
                         if SKLEARN_AVAILABLE:
                             fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_tsne:
-                                st.pyplot(fig_tsne, key=f"tsne_{selected_qty}")
+                                st.pyplot(fig_tsne)
                             fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_pca:
-                                st.pyplot(fig_pca, key=f"pca_{selected_qty}")
+                                st.pyplot(fig_pca)
                         if UMAP_AVAILABLE:
                             fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_umap:
-                                st.pyplot(fig_umap, key=f"umap_{selected_qty}")
+                                st.pyplot(fig_umap)
                     else:
                         st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
                 with tabs[7]:
@@ -3723,7 +3723,7 @@ def run_streamlit():
                         selected_tree_doc = st.selectbox("Select document to visualize", tree_doc_options, key="tree_doc_select")
                         fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
                         if fig_tree:
-                            st.pyplot(fig_tree, key=f"tree_highlight_{selected_tree_doc}")
+                            st.pyplot(fig_tree)
                         else:
                             st.info("No tree data available for this document.")
                     else:

@@ -7434,3 +7434,446 @@ def get_model_template(model_name: str):
     return MODEL_PROMPT_TEMPLATES["default"]
 
 UNIVERSAL_CONFIG = {"leaf_node_page_window": 7, "min_confidence_threshold": 0.55}
+
+
+# ============================================================================
+# STREAMLIT APP: MAIN APPLICATION LOGIC
+# ============================================================================
+
+@st.cache_resource(show_spinner="Initializing LLM...")
+def get_cached_llm(model_choice: str, use_4bit: bool) -> 'HybridLLM':
+    """
+    Cached initialization of the LLM backend.
+    """
+    internal = LOCAL_LLM_OPTIONS[model_choice]
+    return HybridLLM(model_key=internal, use_4bit=use_4bit)
+
+def initialize_session_state():
+    """
+    Initialize persistent session state variables.
+    """
+    defaults = {
+        "messages": [],
+        "query_processor": {},
+        "knowledge_graph": QuantitativeKnowledgeGraph(),
+        "annotated_trees": [],
+        "cached_query_result": None,
+        "active_prompt": "",
+        "two_stage_retriever": None,
+        "embedding_model": None,
+        "doc_aliases": {},
+        "tree_cache": AnnotatedTreeCache(), # v18.0 feature
+        "uploaded_files": None,
+        "indexing_status": "idle",
+        "pending_query": None
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+def run_streamlit():
+    """
+    Main Streamlit application entry point.
+    Manages file upload, indexing (with roll-up & caching), query execution,
+    and the full visualization dashboard.
+    """
+    st.set_page_config(
+        page_title="DECLARMIMA v18.0 - Enhanced Vectorless RAG",
+        page_icon="🔬",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # --- Header ---
+    st.markdown("# DECLARMIMA v18.0")
+    st.caption("Vectorless RAG with PageIndex-Style Intelligence • 2-Call Architecture • Roll-Up Summarization • Full-Tree Caching")
+
+    # --- Initialize State ---
+    initialize_session_state()
+
+    # --- Render Sidebar ---
+    render_sidebar()
+
+    # --- Global Configuration Object ---
+    config = VisConfig(
+        font_family="DejaVu Sans",
+        font_size=st.session_state.get("viz_font_size", 10),
+        title_font_size=st.session_state.get("viz_title_font_size", 14),
+        label_font_size=st.session_state.get("viz_label_font_size", 9),
+        default_colormap=st.session_state.get("viz_colormap", "viridis"),
+        figure_dpi=st.session_state.get("viz_figure_dpi", 300),
+        node_size_factor=st.session_state.get("viz_node_size_factor", 1.0),
+        edge_alpha=st.session_state.get("viz_edge_alpha", 0.25),
+        edge_width=st.session_state.get("viz_edge_width", 0.8),
+        line_width=st.session_state.get("viz_line_width", 1.5),
+        marker_size=st.session_state.get("viz_marker_size", 80),
+        pyvis_physics_enabled=st.session_state.get("viz_pyvis_physics", True),
+        pyvis_gravity=st.session_state.get("viz_pyvis_gravity", -1800),
+        pyvis_spring_length=st.session_state.get("viz_pyvis_spring_length", 140),
+        aliases=st.session_state.get("doc_aliases", {}),
+        label_style=st.session_state.get("viz_label_style", "doi")
+    )
+
+    # --- File Upload Section ---
+    st.markdown("---")
+    st.subheader("📂 Document Ingestion")
+    
+    uploaded_files = st.file_uploader(
+        "Upload PDF files (Scientific Literature)",
+        type="pdf",
+        accept_multiple_files=True,
+        help="Upload peer-reviewed papers, reports, or technical documentation."
+    )
+
+    if uploaded_files:
+        col_btn, col_info = st.columns([1, 3])
+        with col_btn:
+            build_clicked = st.button("🚀 Build Index & Extract", type="primary", use_container_width=True)
+        
+        with col_info:
+            st.info("Click to start the indexing pipeline. "
+                    "This includes hierarchical parsing, metadata extraction, "
+                    "LLM-based roll-up summarization, and intelligent caching.")
+
+        if build_clicked:
+            st.session_state.uploaded_files = uploaded_files
+            st.session_state.indexing_status = "running"
+            st.rerun()
+
+    # --- Indexing Execution Block ---
+    if st.session_state.get("indexing_status") == "running":
+        st.markdown("---")
+        st.subheader("⚙️ Indexing Pipeline Progress")
+        
+        # Initialize components for indexing
+        llm = get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
+        
+        # Phase 1: Hierarchical Parsing & Metadata Extraction
+        with st.spinner("Phase 1: Hierarchical Parsing & Metadata Extraction..."):
+            progress_bar = st.progress(0, text="Initializing Indexer...")
+            
+            tree_cache = st.session_state.tree_cache
+            progress_bar.progress(0.1, text="Checking Smart Cache...")
+            
+            # Instantiate Indexer
+            idx = FastHierarchicalIndex(cache_dir=".declarmima_cache_v18", llm=llm)
+            progress_bar.progress(0.2, text="Parsing PDF Structure...")
+            
+            # Build trees asynchronously
+            trees = asyncio.run(idx.build_from_pdfs_fast(
+                st.session_state.uploaded_files,
+                max_workers=4
+            ))
+            progress_bar.progress(0.5, text="Metadata Extraction & Roll-Up Summarization...")
+
+        # Phase 2: Roll-up Summarization & Caching
+        if llm:
+            summarizer = RollupSummarizer(llm, max_summary_length=250)
+            
+            with st.spinner("Phase 2: Generating Roll-Up Summaries (Bottom-Up)..."):
+                total_trees = len(trees)
+                # We need to map files to names for cache setting
+                file_name_map = {f.name: f for f in st.session_state.uploaded_files}
+                
+                for i, (doc_name, root) in enumerate(trees.items()):
+                    progress_bar.progress(
+                        0.5 + (0.2 * (i + 1) / total_trees), 
+                        text=f"Summarizing {doc_name}..."
+                    )
+                    # Generate summaries (async compatible)
+                    await asyncio.gather(summarizer._post_order_summarize(root))
+                    
+                    # Save to AnnotatedTreeCache with content hash
+                    if doc_name in file_name_map:
+                        buf = BytesIO(file_name_map[doc_name].getbuffer())
+                        tree_cache.set(doc_name, buf.getvalue(), root.to_dict())
+        
+        # Phase 3: Quantitative Extraction & Knowledge Graph Population
+        with st.spinner("Phase 3: LLM Quantitative Extraction..."):
+            extractor = UniversalLLMExtractor(llm)
+            kg = QuantitativeKnowledgeGraph()
+            two_stage = TwoStageRetriever(llm=llm)
+            all_items = []
+            
+            progress_bar.progress(0.7, text="Extracting parameters from leaf nodes...")
+            
+            for i, (doc_name, root) in enumerate(trees.items()):
+                # Collect leaf nodes for extraction
+                leaf_chunks = []
+                def collect_leaves(node: PageNode):
+                    if not node.children:
+                        text = node.get_text(max_chars=15000) # Truncate huge pages
+                        if text.strip():
+                            leaf_chunks.append({
+                                "full_text": text,
+                                "page_start": node.page_start,
+                                "doc_id": doc_name,
+                                "section_title": node.title,
+                                "node_id": node.node_id
+                            })
+                    for c in node.children:
+                        collect_leaves(c)
+                
+                collect_leaves(root)
+                
+                # Extract items
+                items = extractor.extract_from_chunks(
+                    leaf_chunks, 
+                    query="Extract ALL quantitative parameters, materials, methods, and definitions.",
+                    query_analysis={"query_type": "quantitative", "keywords": []}
+                )
+                all_items.extend(items)
+                
+                # Add to Knowledge Graph
+                kg.add_extractions(doc_name, items)
+                if root.metadata:
+                    kg.add_document_metadata(doc_name, root.metadata)
+                    two_stage.index_document(doc_name, root.metadata, root.summary)
+                
+                progress_bar.progress(0.7 + (0.2 * (i + 1) / total_trees), text=f"Indexed {doc_name}...")
+
+        # Phase 4: Finalize Session State
+        progress_bar.progress(1.0, text="Finalizing...")
+        
+        st.session_state.query_processor["index"] = idx
+        st.session_state.query_processor["doc_trees"] = trees
+        st.session_state.knowledge_graph = kg
+        st.session_state.two_stage_retriever = two_stage
+        
+        # Build annotated trees for retrieval (JSON format)
+        annotated_trees = []
+        for doc_name, root in trees.items():
+            ann = kg.to_tree_annotation(root, max_chars=st.session_state.max_retrieval_chars)
+            ann["doc_id"] = doc_name
+            ann["doc_name"] = doc_name
+            ann["metadata"] = root.metadata.dict() if root.metadata else {}
+            annotated_trees.append(ann)
+            
+        st.session_state.annotated_trees = annotated_trees
+        st.session_state.indexing_status = "completed"
+        
+        st.success(f"✅ Successfully indexed **{len(trees)} documents** with **{len(all_items)} quantitative items**.")
+        st.session_state.uploaded_files = None # Clear upload to free memory
+        st.rerun()
+
+    elif st.session_state.get("indexing_status") == "completed" or st.session_state.annotated_trees:
+        # --- Chat & Query Section ---
+        st.markdown("---")
+        st.subheader("🤖 Scientific Query Assistant")
+        
+        # Quick Query Buttons
+        quick_queries = [
+            "What are the Hollomon parameters (K, n) mentioned?",
+            "Compare the yield strength of AlSiMgZr alloys.",
+            "What laser powers were used?",
+            "List the electrochemical properties (Ecorr, Jcorr).",
+            "What is the stacking fault energy?"
+        ]
+        
+        cols = st.columns(5)
+        for i, q in enumerate(quick_queries):
+            with cols[i]:
+                if st.button(q[:20] + "...", key=f"qq_{i}"):
+                    st.session_state.pending_query = q
+                    st.rerun()
+        
+        # Display pending query if set
+        prompt = st.chat_input("Ask a question about the documents...", key="chat_input")
+        if st.session_state.get("pending_query"):
+            prompt = st.session_state.pending_query
+            st.session_state.pending_query = None
+        
+        if prompt:
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.session_state.active_prompt = prompt
+            st.rerun()
+
+        # --- Render Messages ---
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        
+        # --- Process Latest Query ---
+        if st.session_state.active_prompt:
+            prompt = st.session_state.active_prompt
+            st.session_state.active_prompt = "" # Reset
+            
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing Query & Retrieving Evidence (2-Call Pipeline)..."):
+                    try:
+                        # Initialize Processor
+                        llm = get_cached_llm(st.session_state.llm_model_choice, st.session_state.get("use_4bit", True))
+                        phys_classifier = PhysicalQuantityClassifier(llm_callback=None)
+                        analyzer = QueryAnalyzer(phys_classifier)
+                        retriever = HierarchicalTreeRetriever(
+                            llm, 
+                            max_results=15, 
+                            max_text_chars=st.session_state.max_retrieval_chars
+                        )
+                        
+                        processor = TwoCallQueryProcessor(
+                            llm=llm,
+                            retriever=retriever,
+                            phys_classifier=phys_classifier,
+                            analyzer=analyzer,
+                            max_text_chars=st.session_state.max_retrieval_chars
+                        )
+                        
+                        # Execute Query (Async)
+                        result = await processor.process_query(prompt, st.session_state.annotated_trees)
+                        
+                        answer = result.get("answer", "I could not find a specific answer.")
+                        metrics = result.get("metrics", {})
+                        
+                        # Store result in cache for visualizations
+                        st.session_state.cached_query_result = {
+                            "prompt": prompt,
+                            "answer": answer,
+                            "metrics": metrics,
+                            "retrieved": result.get("nodes", []),
+                            "items": result.get("items", []),
+                            "relevant_docs": [] # Placeholder
+                        }
+                        
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                        
+                    except Exception as e:
+                        st.error(f"Query Processing Error: {str(e)}")
+                        logger.exception(e)
+
+    # --- Visualization Dashboard (Only if data exists) ---
+    if st.session_state.knowledge_graph and st.session_state.annotated_trees:
+        render_visualization_dashboard(config)
+
+    else:
+        st.info("👆 Upload PDFs and click 'Build Index' to start the analysis.")
+
+def render_visualization_dashboard(config: VisConfig):
+    """Renders the full 35+ chart visualization dashboard."""
+    st.markdown("---")
+    st.subheader("📊 Publication-Quality Visualization Dashboard")
+    
+    viz = PublicationVisualizationEngine(st.session_state.knowledge_graph, config=config)
+    df_all = viz.extract_dataframe(aliases=config.aliases, label_style=config.label_style)
+    
+    if df_all.empty:
+        st.warning("No quantitative data extracted to visualize. Try running a query or check extraction prompts.")
+        return
+
+    # Dashboard Controls
+    with st.expander("Dashboard Controls", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            selected_qty = st.selectbox("Physical Quantity", ["All"] + sorted(df_all["physical_quantity"].unique()), key="dash_qty")
+        with c2:
+            group_by = st.selectbox("Grouping", ["material", "doc_stem"], key="dash_grp")
+        with c3:
+            chart_type = st.selectbox("Chart Type", ["Histogram", "Box Plot", "Scatter", "Radar", "Network"], key="dash_chart")
+    
+    # Main Visualization Tabs
+    tabs = st.tabs([
+        "📈 Quantitative Analysis", 
+        "🕸️ Knowledge Graphs", 
+        "🌍 Embedding Spaces", 
+        "🔍 Retrieval Diagnostics"
+    ])
+    
+    with tabs[0]:
+        if selected_qty != "All":
+            st.markdown(f"### Analysis for `{selected_qty}`")
+            
+            if chart_type == "Histogram":
+                fig = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, config.default_colormap)
+                st.plotly_chart(fig, use_container_width=True)
+            elif chart_type == "Box Plot":
+                fig = px.box(df_all[df_all["physical_quantity"]==selected_qty], x=group_by, y="value", color="material")
+                st.plotly_chart(fig, use_container_width=True)
+            elif chart_type == "Radar":
+                fig = viz.plot_quantitative_radar(df_all, selected_qty, config.default_colormap)
+                st.plotly_chart(fig, use_container_width=True)
+                
+            # Consensus & Contradiction
+            st.markdown("#### Consensus & Contradiction")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.plotly_chart(viz.plot_contradiction_matrix(selected_qty, config.default_colormap), use_container_width=True)
+            with c2:
+                st.plotly_chart(viz.plot_consensus_waterfall(selected_qty, config.default_colormap), use_container_width=True)
+                
+        else:
+            st.markdown("### Global Overview")
+            st.plotly_chart(viz.plot_quantities_bar(df_all, config.default_colormap), use_container_width=True)
+            st.plotly_chart(viz.plot_material_distribution_donut(config.default_colormap), use_container_width=True)
+
+    with tabs[1]:
+        st.markdown("### Knowledge Graph Visualization")
+        graph_type = st.radio("Graph Engine", ["Static (Matplotlib)", "Interactive (PyVis)"], horizontal=True)
+        
+        if selected_qty != "All":
+            if graph_type == "Interactive (PyVis)" and PYVIS_AVAILABLE:
+                html = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, config.default_colormap, aliases=config.aliases)
+                st.components.v1.html(html, height=600, scrolling=True)
+                st.download_button("Download Interactive Graph", html.encode('utf-8'), file_name="kg_interactive.html")
+            else:
+                fig = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, config.default_colormap, figsize=(12,10))
+                st.pyplot(fig)
+                buf = BytesIO()
+                fig.savefig(buf, format="png", dpi=config.figure_dpi)
+                st.download_button("Download Static Graph", buf.getvalue(), file_name=f"kg_{selected_qty}.png")
+        else:
+            st.info("Please select a specific Physical Quantity above to view its Knowledge Graph.")
+            
+        st.markdown("### Full Corpus Network")
+        if graph_type == "Interactive (PyVis)" and PYVIS_AVAILABLE:
+            html = viz.plot_knowledge_network_pyvis(df_all, config.default_colormap)
+            st.components.v1.html(html, height=600, scrolling=True)
+        else:
+            fig = viz.plot_knowledge_network(df_all, config.default_colormap, figsize=(14,12))
+            st.pyplot(fig)
+
+    with tabs[2]:
+        if st.session_state.embedding_model:
+            st.markdown("### Context Embeddings Projection")
+            emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                if SKLEARN_AVAILABLE:
+                    fig_tsne = viz.plot_tsne(emb_fn, selected_qty if selected_qty != "All" else None, config.default_colormap)
+                    if fig_tsne: st.pyplot(fig_tsne)
+            with c2:
+                if UMAP_AVAILABLE:
+                    fig_umap = viz.plot_umap(emb_fn, selected_qty if selected_qty != "All" else None, config.default_colormap)
+                    if fig_umap: st.pyplot(fig_umap)
+        else:
+            st.info("Install `sentence-transformers` to enable embedding analysis.")
+
+    with tabs[3]:
+        st.markdown("### Retrieval Diagnostics")
+        if st.session_state.cached_query_result and "metrics" in st.session_state.cached_query_result:
+            res = st.session_state.cached_query_result
+            st.json(res["metrics"])
+            
+            retrieved_nodes = res.get("retrieved", [])
+            if retrieved_nodes:
+                first_doc_id = retrieved_nodes[0].get("doc_id")
+                if first_doc_id:
+                    fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, first_doc_id)
+                    if fig_tree:
+                        st.pyplot(fig_tree)
+        else:
+            st.info("Run a query to see retrieval diagnostics.")
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+if __name__ == "__main__":
+    # Ensure async loop is available
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    run_streamlit()

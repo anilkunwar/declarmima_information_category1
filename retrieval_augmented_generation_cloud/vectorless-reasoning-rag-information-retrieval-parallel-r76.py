@@ -3850,7 +3850,7 @@ def run_streamlit():
                     with col1:
                         if PYVIS_AVAILABLE:
                             html_graph = viz.plot_query_knowledge_graph_pyvis(query_ctx)
-                            st.components.v1.html(html_graph, height=820, scrolling=True, key="html_html_graph")
+                            st.components.v1.html(html_graph, height=820, scrolling=True)
 
                             st.download_button(
                                 "Download Interactive Graph HTML", 
@@ -4043,7 +4043,7 @@ def run_streamlit():
                     with net_subtabs[1]:
                         if PYVIS_AVAILABLE and selected_qty != "All":
                             html_kg = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_kg, height=750, scrolling=True, key="html_html_kg")
+                            st.components.v1.html(html_kg, height=750, scrolling=True)
 
                             st.download_button("Download PyVis KG HTML", html_kg.encode('utf-8'), f"{selected_qty}_kg_pyvis.html", mime="text/html", key="dl_Download_PyVis_KG_HTML")
 
@@ -4062,7 +4062,7 @@ def run_streamlit():
                     with net_subtabs[3]:
                         if PYVIS_AVAILABLE:
                             html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_full, height=750, scrolling=True, key="html_html_full")
+                            st.components.v1.html(html_full, height=750, scrolling=True)
 
                             st.download_button("Download PyVis Network HTML", html_full.encode('utf-8'), "knowledge_network_pyvis.html", mime="text/html", key="dl_Download_PyVis_Network_HTML")
 
@@ -4081,7 +4081,7 @@ def run_streamlit():
                     with net_subtabs[5]:
                         if PYVIS_AVAILABLE:
                             html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_salience, height=750, scrolling=True, key="html_html_salience")
+                            st.components.v1.html(html_salience, height=750, scrolling=True)
 
                             st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html", key="dl_Download_PyVis_Salience_HTML")
 

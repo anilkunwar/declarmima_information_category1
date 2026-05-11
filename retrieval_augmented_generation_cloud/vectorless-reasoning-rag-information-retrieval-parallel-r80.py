@@ -2831,3 +2831,576 @@ Include up to {self.max_results} selections."""
             res = self._search_node_recursive(child, target_id)
             if res: return res
         return None
+
+# ============================================================================
+# HYBRID LLM BACKEND WITH ROBUST INITIALIZATION & ERROR ISOLATION
+# ============================================================================
+class HybridLLM:
+    """
+    Unified LLM interface supporting Ollama (local API) and HuggingFace Transformers.
+    Features automatic backend detection, JSON formatting enforcement, and thread-safe generation.
+    """
+    def __init__(self, model_key: str, use_4bit: bool = True, device: Optional[str] = None):
+        self.model_key = model_key
+        self.use_4bit = use_4bit
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.backend = None
+        self.model_name = None
+        self.client = None
+        self.tokenizer = None
+        self.model = None
+        
+        # Parse model name from key
+        if model_key.startswith("[Ollama]"):
+            self.model_name = model_key.split("] ")[1].strip()
+        elif model_key.startswith("ollama:"):
+            self.model_name = model_key.replace("ollama:", "", 1)
+        else:
+            self.model_name = model_key
+            
+        self.template = get_model_template(self.model_name)
+        self._init_backend()
+        logger.info(f"HybridLLM initialized: {self.model_name} on {self.device} via {self.backend}")
+    
+    def _init_backend(self):
+        """Detect and initialize available LLM backend."""
+        if GLOBAL_DEPS.get('ollama', False):
+            try:
+                requests.get("http://localhost:11434/api/tags", timeout=5)
+                self.backend = "ollama"
+                self.client = ollama.Client(host="http://localhost:11434")
+                logger.info("Ollama backend connected successfully")
+                return
+            except Exception as e:
+                logger.debug(f"Ollama not reachable: {e}")
+                
+        if GLOBAL_DEPS.get('transformers', False):
+            self.backend = "transformers"
+            logger.info("Falling back to HuggingFace Transformers backend")
+            return
+            
+        raise RuntimeError("No LLM backend available. Install Ollama or transformers.")
+    
+    def generate(self, prompt: str, max_new_tokens: int = 1024, temperature: float = 0.1, 
+                 fast_json: bool = False, system_prompt: Optional[str] = None) -> str:
+        """Generate text using the initialized backend."""
+        if self.backend == "ollama":
+            return self._ollama_generate(prompt, max_new_tokens, temperature, fast_json, system_prompt)
+        else:
+            return self._transformers_generate(prompt, max_new_tokens, temperature, system_prompt)
+    
+    def _ollama_generate(self, prompt: str, max_tokens: int, temp: float, 
+                         fast_json: bool, system_prompt: Optional[str]) -> str:
+        """Generate via Ollama API."""
+        try:
+            options = {"temperature": temp, "num_predict": max_tokens, "top_p": 0.95}
+            if fast_json:
+                options["format"] = "json"
+                
+            messages = []
+            sys_prompt = system_prompt or self.template.get("system", "You are a precise scientific assistant.")
+            if sys_prompt:
+                messages.append({"role": "system", "content": sys_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            resp = self.client.chat(model=self.model_name, messages=messages, options=options, stream=False)
+            content = resp.get("message", {}).get("content", "").strip()
+            
+            if fast_json:
+                return self._extract_json_safe(content) or content
+            return content
+        except Exception as e:
+            logger.error(f"Ollama generation error: {e}")
+            return f"Error: {str(e)[:150]}"
+    
+    def _transformers_generate(self, prompt: str, max_tokens: int, temp: float, 
+                               system_prompt: Optional[str]) -> str:
+        """Generate via HuggingFace Transformers."""
+        if self.tokenizer is None:
+            self._load_transformers()
+        if not self.model:
+            return "Error: Model not loaded"
+            
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=8192).to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=temp if temp > 0 else None,
+                    do_sample=temp > 0,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    repetition_penalty=1.1
+                )
+            
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            if "assistant" in response:
+                response = response.split("assistant")[-1].strip()
+            return response
+        except Exception as e:
+            logger.error(f"Transformers generation error: {e}")
+            return f"Error: {str(e)[:150]}"
+    
+    def _load_transformers(self):
+        """Load model and tokenizer."""
+        logger.info(f"Loading {self.model_name} on {self.device}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+        model_kwargs = {
+            "trust_remote_code": True,
+            "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+            "device_map": "auto" if self.device == "cuda" else None
+        }
+        
+        if self.use_4bit and self.device == "cuda":
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+        if self.device == "cuda":
+            self.model.to(self.device)
+        self.model.eval()
+        logger.info("Transformers model loaded successfully.")
+    
+    def _extract_json_safe(self, text: str) -> Optional[Any]:
+        """Extract JSON from text with robust pattern matching."""
+        if not text:
+            return None
+        patterns = [
+            r'\{.*\}', r'\[.*\]', 
+            r'```json\s*(\{.*?\})\s*```', r'```json\s*(\[.*?\])\s*```',
+            r'```json\s*(\[.*\])\s*```'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                json_str = match.group(1) if match.groups() else match.group(0)
+                try:
+                    return json.loads(json_str)
+                except Exception:
+                    continue
+        return None
+
+
+# ============================================================================
+# UNIVERSAL LLM EXTRACTOR WITH DOMAIN-AWARE PROMPTS
+# ============================================================================
+class UniversalLLMExtractor:
+    """
+    Advanced extraction engine tuned for scientific literature.
+    Captures quantitative parameters, material names, methods, and contextual metadata.
+    """
+    
+    EXTRACTION_PROMPT = """Extract ALL quantitative information relevant to the query from these document sections.
+QUERY: {query}
+QUERY TYPE: {query_type}
+SECTIONS:
+{sections_text}
+Return JSON array of extracted items with fields:
+{{
+"item_type": "quantitative|qualitative|definition|comparison|relationship|process|material|method",
+"content": "exact phrase with full numerical value (never truncate numbers)",
+"confidence": 0.0-1.0,
+"context": "exact sentence from text",
+"doc_source": "{doc_id}",
+"page": page_number,
+"parameter_name": "...",
+"value": number,
+"unit": "e.g., W, kW, mm/s, MPa, GPa, HV, mV, V, µA/cm², A/cm², J/mm³, J/mm², J/m, mJ/m², nm, µm, mm, K, °C, wt%, at%, vol%, g/cm³, kg/m³, W/m·K, Pa·s, mPa·s, kΩ·cm², ppm",
+"physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, feed_rate, irradiance, temperature, melting_temperature, energy_density, areal_energy_density, linear_energy_density, layer_thickness, spot_size, exposure_time, enthalpy, viscosity, thermal_conductivity, density, yield_strength, tensile_strength, ultimate_tensile_strength, hardness, elongation, modulus, stacking_fault_energy, unstable_stacking_fault_energy, ideal_shear_strength, corrosion_potential, pitting_potential, breakdown_potential, repassivation_potential, open_circuit_potential, corrosion_current_density, polarization_resistance, apparent_polarization_resistance, current_density, PREN, phase_fraction, austenite_fraction, ferrite_fraction, grain_size, cell_size, porosity, relative_density, surface_roughness, sauter_mean_diameter, spray_penetration, plume_height, film_thickness, absorption_coefficient, youngs_modulus, poisson_ratio, coefficient_thermal_expansion, unknown, hollomon_strength_coeff, hollomon_exponent",
+"material": "alloy or material name if mentioned (e.g., Ti3Au, CP Ti, Grade II Ti, SDSS 2507, UNS S32750, AlSiMgZr, Al-Si-Mg-Zr, TiB2/Al-Si-Mg-Zr, Fe-based metallic glass, Au-Ti, 316L, 2205, Inconel 718, Ti6Al4V)",
+"method": "e.g., LPBF, L-PBF, DED, SLM, PFI, GDI, FEM, MD, nanoindentation, EIS, CPP, XRD, SEM, TEM, EBSD, EDS, DTA"
+}}
+CRITICAL RULES:
+1. Capture ALL numbers with units, even if they describe corrosion, electrochemistry, thermal properties, mechanical properties, microstructural features, or spray dynamics.
+2. For electrochemical  map Ecorr/Erp/Epit/Ebr to corrosion_potential/pitting_potential/etc., NOT just generic potential.
+3. For LPBF/DED: capture VED, AED, LED, hatch distance, layer thickness, laser power, scan speed.
+4. For nanoindentation: capture indentation force, hardness, modulus, SFE, USFE.
+5. NEVER truncate numbers.
+6. If an alloy or material name appears, create an item with item_type="material", content=the name, material=the name.
+7. Return ONLY valid JSON, no extra text.
+8. Set confidence based on clarity.
+9. Capture computational & multiphysics methods: Phase Field (Cahn-Hilliard/Allen-Cahn), CALPHAD (.TDB, pycalphad), Molecular Dynamics (LAMMPS, EAM, Morse, GSFE), DFT/VASP, FEM (COMSOL, Abaqus, Ansys), Navier-Stokes, Boussinesq approximation, Marangoni convection, enthalpy method for phase change, eigenstrain/Khachaturyan scheme.
+10. Capture AI/ML spatio-temporal models: Physics-Informed Neural Networks (PINNs), U-Net, ConvLSTM, Fourier Neural Operator (FNO), Variational Autoencoder (VAE), Digital Twin, Explainable AI (XAI), Uncertainty Quantification (UQ).
+11. Capture advanced alloy descriptors & thermodynamics: VEC, ΔH_mix, ΔS_mix, Ω (omega parameter), λ (lambda), δ (atomic size difference), Jackson parameter (αJ), Lewis number (Le), PREN, apparent polarization resistance (Rp,app).
+12. Capture microstructural phenomena: Bimodal microstructure, nanotwinned structures (nt-Cu), SRO/MRO clusters, martensitic transformation, Bain strain, habit plane, scalloped vs prismatic/rooftop IMC, lead-lag dynamics, coherent/incoherent interfaces, 9R phase, stacking faults.
+13. Capture nanoindentation metrics: Indentation force, penetration depth, Oliver-Pharr hardness/modulus, continuous stiffness measurement (CSM), dislocation nucleation, dislocation exhaustion.
+14. Capture melt-pool & process metrics: Melt pool depth/width/length, hatch distance, build platform temperature, keyhole mode, conduction mode, layer thickness, spot size.
+Return [] if no relevant information found."""
+    
+    def __init__(self, llm: HybridLLM):
+        self.llm = llm
+        self.phys_classifier = PhysicalQuantityClassifier(llm_callback=lambda p: llm.generate(p, max_new_tokens=50))
+        self.concept_normalizer = ConceptNormalizer()
+        
+    def extract_from_chunks(self, chunks: List[Dict], query: str, query_analysis: Optional[Dict] = None) -> List[UniversalExtractionItem]:
+        """Extract quantitative items from document chunks."""
+        if not chunks:
+            return []
+        qa = query_analysis or {"query_type": "mixed", "keywords": []}
+        items = []
+        
+        for chunk in chunks:
+            text = chunk.get("full_text", "")
+            doc = chunk.get("doc_id", "unknown")
+            page = chunk.get("page_start", 1)
+            
+            if qa.get("query_type") == "quantitative" and not re.search(r'\d+', text):
+                continue
+                
+            prompt = self.EXTRACTION_PROMPT.format(
+                query=query, 
+                query_type=qa.get("query_type","mixed"), 
+                sections_text=text[:4000], 
+                doc_id=doc
+            )
+            try:
+                response = self.llm.generate(prompt, max_new_tokens=1500, fast_json=True, temperature=0.1)
+                json_str = self._extract_json(response)
+                if json_str:
+                    data = json.loads(json_str)
+                    raw_items = data if isinstance(data, list) else data.get("items", [])
+                    
+                    for item_data in raw_items:
+                        if "physical_quantity" not in item_data or not item_data["physical_quantity"]:
+                            item_data["physical_quantity"] = self.phys_classifier.classify_with_llm_fallback(
+                                item_data.get("parameter_name"), 
+                                item_data.get("unit"), 
+                                item_data.get("context", ""), 
+                                llm=self.llm
+                            )
+                        item_data.setdefault("material", None)
+                        if item_data.get("physical_quantity"):
+                            item_data["physical_quantity"] = self.concept_normalizer.normalize(item_data["physical_quantity"])
+                        if item_data.get("material"):
+                            item_data["material"] = self.concept_normalizer.normalize(item_data["material"])
+                        try:
+                            item = UniversalExtractionItem(**item_data)
+                            if doc not in item.context:
+                                item.context = f"[{doc}] {item.context}"
+                            if item.page == 0:
+                                item.page = page
+                            items.append(item)
+                        except Exception as e:
+                            logger.debug(f"Item parse error: {e}")
+            except Exception as e:
+                logger.error(f"Extraction error: {e}")
+                
+        # Deduplicate and filter by confidence
+        unique = {}
+        for i in items:
+            key = (i.content, i.doc_source, i.page, i.material)
+            if key not in unique or i.confidence > unique[key].confidence:
+                unique[key] = i
+                
+        min_conf = UNIVERSAL_CONFIG.get("min_confidence_threshold", 0.55)
+        return [i for i in unique.values() if i.confidence >= min_conf]
+        
+    def _extract_json(self, text: str) -> Optional[str]:
+        """Extract JSON string from response."""
+        patterns = [r'\[.*\]', r'```json\s*(\[.*?\])\s*```', r'(\[.*\])']
+        for pattern in patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                json_str = match.group(1) if match.groups() else match.group(0)
+                try:
+                    json.loads(json_str)
+                    return json_str
+                except Exception:
+                    continue
+        return None
+
+
+# ============================================================================
+# LLM REASONING SYNTHESIZER WITH CONSENSUS & CONTRADICTION TRACKING
+# ============================================================================
+class LLMReasoningSynthesizer:
+    """
+    Synthesizes extracted items into human-readable, evidence-backed answers.
+    Implements consensus averaging, contradiction flagging, and structured reporting.
+    """
+    def __init__(self, llm: HybridLLM):
+        self.llm = llm
+        self.phys_classifier = PhysicalQuantityClassifier()
+        
+    def synthesize(self, query: str, items: List[UniversalExtractionItem]) -> str:
+        """Generate synthesized answer from extracted items."""
+        if not items:
+            return f"No relevant information found for query: '{query}'. Try rephrasing or check the documents."
+            
+        extracted_lines = []
+        for item in items:
+            pq = item.physical_quantity or "unknown"
+            pq_readable = self.phys_classifier.get_human_readable(pq)
+            mat = f" [{item.material}]" if item.material else ""
+            line = f"- {pq_readable}{mat}: {item.content} ({item.confidence:.2f}) context: {item.context[:200]} {item.citation()}"
+            extracted_lines.append(line)
+            
+        extracted_text = "\n".join(extracted_lines[:25])
+        
+        prompt = f"""You are an expert scientific analyst. Given extracted values and the user query, produce a comprehensive answer.
+QUERY: {query}
+EXTRACTED VALUES (with citations):
+{extracted_text}
+TASK: Synthesize the extracted information into a structured answer using the following format:
+**Direct Answer**
+(Concise answer to the query, citing sources)
+**Evidence by Physical Quantity**
+(Group findings by physical quantity: e.g., Laser Power, Scan Speed, Yield Strength, etc.)
+**Evidence by Material/Alloy**
+(If materials are mentioned, group findings by alloy name)
+**Consensus & Variability**
+(For each physical quantity or material, report range/mean if multiple values exist)
+**Contradictions & Limitations**
+(If contradictory values exist, highlight them)
+**Confidence Assessment**
+(High/Medium/Low)
+Do NOT invent information. Only use the extracted values above. Use citations with <cite doc="..." page="X"/>.
+Return ONLY the answer text."""
+        try:
+            answer = self.llm.generate(prompt, max_new_tokens=1500, temperature=0.2)
+            return answer.strip()
+        except Exception as e:
+            logger.error(f"Reasoning synthesis error: {e}")
+            lines = [f"Query: {query}\nFound {len(items)} relevant items:\n"] + [f"- {item.content} {item.citation()}" for item in items[:5]]
+            return "\n".join(lines)
+            
+    def generate_human_conclusion(self, query: str, report: QueryReport) -> str:
+        """Generate markdown-formatted conclusion report."""
+        values = report.all_values
+        if not values:
+            return f"No quantitative data found for '{query}' across the analyzed documents."
+            
+        by_phys = defaultdict(list)
+        by_material = defaultdict(list)
+        for v in values:
+            by_phys[v.physical_quantity].append(v)
+            if v.material:
+                by_material[v.material].append(v)
+                
+        lines = [f"## Summary: {query.title()}", f"Across **{report.total_docs}** documents analyzed, **{report.docs_with_results}** contained relevant quantitative data.", f"Total extracted values: **{len(values)}**.", ""]
+        lines.append("### By Physical Quantity")
+        
+        for pq, vals in sorted(by_phys.items()):
+            readable = self.phys_classifier.get_human_readable(pq)
+            lines.append(f"#### {readable} ({len(vals)} values)")
+            nums = [v.value for v in vals]
+            units = list(set(v.unit for v in vals))
+            docs = list(set(v.doc_name for v in vals))
+            if nums:
+                lines.append(f"- **Range**: {min(nums):.2f} to {max(nums):.2f} {units[0] if units else ''}")
+                lines.append(f"- **Average**: {np.mean(nums):.2f}")
+                if len(nums) > 1:
+                    lines.append(f"- **Std Dev**: {np.std(nums):.2f}")
+                lines.append(f"- **Found in**: {', '.join(docs[:3])}{'...' if len(docs) > 3 else ''}")
+            lines.append("")
+            
+        if by_material:
+            lines.append("### By Material/Alloy")
+            for mat, vals in sorted(by_material.items()):
+                lines.append(f"#### {mat} ({len(vals)} values)")
+                inner_pq = defaultdict(list)
+                for v in vals:
+                    inner_pq[v.physical_quantity].append(v.value)
+                for pq, nums in inner_pq.items():
+                    readable = self.phys_classifier.get_human_readable(pq)
+                    lines.append(f"- {readable}: min={min(nums):.2f}, max={max(nums):.2f}, mean={np.mean(nums):.2f}")
+                docs = list(set(v.doc_name for v in vals))
+                lines.append(f"- **Documents**: {', '.join(docs)}")
+                lines.append("")
+                
+        lines.append("### Key Values by Document and Physical Quantity")
+        for v in sorted(values, key=lambda x: x.confidence, reverse=True)[:12]:
+            readable = self.phys_classifier.get_human_readable(v.physical_quantity)
+            mat_str = f" ({v.material})" if v.material else ""
+            lines.append(f"| {v.doc_name} | p.{v.page} | {v.value:.2f} {v.unit} | {readable}{mat_str} |")
+        return "\n".join(lines)
+
+
+# ============================================================================
+# ENHANCED HIERARCHICAL TREE RETRIEVER (OPTIMIZED FOR 2-CALL ARCHITECTURE)
+# ============================================================================
+class HierarchicalTreeRetriever:
+    """
+    Retrieves relevant nodes from annotated document trees using LLM navigation.
+    Optimized for the strict 2-call query pipeline.
+    """
+    def __init__(self, llm: HybridLLM, max_results: int = 30, max_text_chars: int = 20000):
+        self.llm = llm
+        self.max_results = max_results
+        self.max_text_chars = max_text_chars
+        self._condensed_cache: Dict[str, Dict] = {}
+        self.template = llm.template if hasattr(llm, 'template') else MODEL_PROMPT_TEMPLATES["default"]
+        
+    async def retrieve_quantitative(self, query: str, annotated_trees: List[Dict]) -> List[Dict]:
+        """Retrieve nodes using condensed tree analysis."""
+        trees_json = []
+        for tree in annotated_trees:
+            doc_id = tree.get("doc_id", "unknown")
+            if doc_id not in self._condensed_cache:
+                self._condensed_cache[doc_id] = self._condense_tree(tree)
+            trees_json.append(self._condensed_cache[doc_id])
+            
+        batches = self._batch_trees(trees_json, max_tokens=6000)
+        all_selections = []
+        
+        for batch in batches:
+            prompt = self._build_tree_search_prompt(query, batch)
+            response = await asyncio.to_thread(
+                self.llm.generate, 
+                prompt, 
+                max_new_tokens=2048, 
+                fast_json=True, 
+                system_prompt=self.template.get("system")
+            )
+            selections = self._parse_node_selections(response)
+            all_selections.extend(selections)
+            
+        results = []
+        for sel in sorted(all_selections, key=lambda x: x.get('confidence', 0), reverse=True):
+            doc_id = sel.get('doc_id')
+            node_id = sel.get('node_id')
+            node = self._find_node_by_id(annotated_trees, doc_id, node_id)
+            if node:
+                full_text = node.get('text', '')
+                if len(full_text) > self.max_text_chars:
+                    full_text = full_text[:self.max_text_chars] + "..."
+                results.append({
+                    "full_text": full_text,
+                    "page_start": node.get('start_index'),
+                    "doc_id": doc_id,
+                    "section_title": node.get('title'),
+                    "quantitative_items": node.get('quantitative_items', []),
+                    "citation": f'<cite doc="{doc_id}" page="{node.get("start_index")}"/>',
+                    "selection_reasoning": sel.get('reasoning', ''),
+                    "confidence": sel.get('confidence', 0)
+                })
+        return results[:self.max_results]
+        
+    def _condense_tree(self, tree: Dict, max_depth: int = 3) -> Dict[str, Any]:
+        """Condense tree for efficient navigation."""
+        def condense(node: Dict, depth: int = 0) -> Dict[str, Any]:
+            if depth > max_depth:
+                return {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "leaf": True}
+            result = {
+                "node_id": node.get("node_id", ""), 
+                "title": node.get("title", ""), 
+                "summary": (node.get("summary", "") or "")[:150]
+            }
+            if node.get("metadata"):
+                meta = node["metadata"]
+                if meta.get("alloys"): result["alloys"] = meta["alloys"][:3]
+                if meta.get("laser_power_values"): result["power_hint"] = f"{min(meta['laser_power_values'])}-{max(meta['laser_power_values'])} W"
+                if meta.get("scan_speed_values"): result["speed_hint"] = f"{min(meta['scan_speed_values'])}-{max(meta['scan_speed_values'])} mm/s"
+                
+            q_items = node.get("quantitative_items", [])
+            if q_items:
+                params = list(set(item.get("parameter_name", "") for item in q_items if item.get("parameter_name")))
+                if params: result["has_quantitative"] = params[:5]
+            else:
+                text = node.get("text", "")
+                if text:
+                    candidates = re.findall(r'(\d+(?:\.\d+)?)\s*(W|kW|mW|J|mm/s|C|K|MPa|GPa|nm|um|mm|s|m/s|W/cm2|kW/cm2)', text, re.IGNORECASE)
+                    if candidates: result["candidate_values"] = [f"{v}{u}" for v, u in candidates[:3]]
+                    
+            children = node.get("nodes", [])
+            if children and depth < max_depth:
+                result["nodes"] = [condense(c, depth+1) for c in children[:5]]
+            return result
+            
+        return {
+            "doc_id": tree.get("doc_id", tree.get("doc_name", "unknown")), 
+            "doc_name": tree.get("doc_name", ""), 
+            "structure": [condense(tree)] if not isinstance(tree, list) else [condense(t) for t in tree]
+        }
+        
+    def _batch_trees(self, trees: List[Dict], max_tokens: int = 6000) -> List[List[Dict]]:
+        """Split trees into batches respecting token limits."""
+        batches = []
+        current = []
+        current_len = 0
+        for t in trees:
+            t_len = len(json.dumps(t))
+            if current_len + t_len > max_tokens and current:
+                batches.append(current)
+                current = [t]
+                current_len = t_len
+            else:
+                current.append(t)
+                current_len += t_len
+        if current: batches.append(current)
+        return batches
+        
+    def _build_tree_search_prompt(self, query: str, trees: List[Dict]) -> str:
+        """Build navigation prompt."""
+        trees_json = json.dumps(trees, ensure_ascii=False, indent=2)
+        return f"""You are an expert scientific document navigator.
+Given a query about quantitative parameters, identify which document nodes are MOST likely to contain the answer.
+QUERY: {query}
+INSTRUCTIONS:
+1. Analyze each document's tree structure (titles, summaries, quantitative hints, candidate values, alloys, power hints, speed hints)
+2. Select nodes that likely contain specific numerical values, parameters, or measurements
+3. For cross-document queries like "laser power across all papers", select nodes from MULTIPLE documents
+4. Prefer nodes with "has_quantitative" or "candidate_values" hints matching the query topic
+5. Return selections sorted by confidence (highest first)
+DOCUMENT TREES:
+{trees_json}
+Return JSON:
+{{
+  "thinking": "Brief reasoning...",
+  "selections": [
+    {{"doc_id": "...", "node_id": "...", "reasoning": "...", "confidence": 0.95}}
+  ]
+}}
+{self.template.get('json_reminder', 'Return ONLY valid JSON.')}
+Include up to {self.max_results} selections."""
+        
+    def _parse_node_selections(self, response: str) -> List[Dict]:
+        """Parse LLM response for selections."""
+        try:
+            data = self._extract_json_safe(response)
+            if data and isinstance(data, dict):
+                selections = data.get("selections", [])
+                return [s for s in selections if isinstance(s, dict) and "doc_id" in s and "node_id" in s]
+        except Exception as e:
+            logger.warning(f"Failed to parse selections: {e}")
+        return []
+        
+    def _extract_json_safe(self, text: str) -> Optional[Any]:
+        """Extract JSON safely."""
+        patterns = [r'\{.*\}', r'\[.*\]', r'```json\s*(\{.*?\})\s*```']
+        for pattern in patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                json_str = match.group(1) if match.groups() else match.group(0)
+                try: return json.loads(json_str)
+                except Exception: continue
+        return None
+        
+    def _find_node_by_id(self, trees: List[Dict], doc_id: str, node_id: str) -> Optional[Dict]:
+        """Find node in tree by ID."""
+        for tree in trees:
+            if tree.get("doc_id") == doc_id or tree.get("doc_name") == doc_id:
+                return self._search_node_recursive(tree, node_id)
+        return None
+        
+    def _search_node_recursive(self, node: Dict, target_id: str) -> Optional[Dict]:
+        """Recursively search for node."""
+        if node.get("node_id") == target_id: return node
+        for child in node.get("nodes", []):
+            res = self._search_node_recursive(child, target_id)
+            if res: return res
+        return None

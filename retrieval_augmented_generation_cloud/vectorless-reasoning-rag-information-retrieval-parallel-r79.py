@@ -893,7 +893,7 @@ def get_citation_label(doc_id: str, aliases: Optional[Dict[str, str]] = None, in
     if style == "number":
         return f"[{index}]"
     if style == "short":
-        return Path(doc_id).stem[:20]
+        return normalize_doi_display(Path(doc_id).stem)[:20]
     return normalize_doi_display(Path(doc_id).stem)
 
 class PaginationAwareReader:
@@ -3557,7 +3557,7 @@ class PublicationVisualizationEngine:
                 start = r.get("page_start", 1) - 1
                 for p in range(max(0, start - 1), min(max_pages, start + 3)):
                     coverage[doc_idx, p] = 1
-        doc_labels = [Path(d).stem for d in doc_names]
+        doc_labels = [normalize_doi_display(Path(d).stem) for d in doc_names]
         fig = go.Figure(data=go.Heatmap(z=coverage, x=list(range(1, max_pages + 1)), y=doc_labels, colorscale=[[0, "#f3f4f6"], [1, "#059669"]], showscale=False, hovertemplate="Doc: %{y}<br>Page: %{x}<br>Retrieved: %{z}<extra></extra>"))
         fig.update_layout(title="Page Coverage Heatmap (Retrieved Pages per Document)", xaxis_title="Page Number", yaxis_title="Document", font=dict(family=self.font_family, size=self.font_size), height=max(400, len(doc_names) * 40))
         return fig

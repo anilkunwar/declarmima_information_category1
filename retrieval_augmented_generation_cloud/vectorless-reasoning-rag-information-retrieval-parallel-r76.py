@@ -208,6 +208,8 @@ class CrossDocumentQueryReport(BaseModel):
         return json.dumps(self.model_dump(), indent=indent, ensure_ascii=False, default=str)
 
 class DocumentMetadata(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
     doc_name: str
     alloys: List[str] = Field(default_factory=list)
     laser_power_values: List[float] = Field(default_factory=list)
@@ -254,6 +256,24 @@ class DocumentMetadata(BaseModel):
     youngs_modulus_values: List[float] = Field(default_factory=list)
     poisson_ratio_values: List[float] = Field(default_factory=list)
     cte_values: List[float] = Field(default_factory=list)
+    hollomon_strength_coeff_values: List[float] = Field(default_factory=list)
+    hollomon_exponent_values: List[float] = Field(default_factory=list)
+    indentation_force_values: List[float] = Field(default_factory=list)
+    indentation_depth_values: List[float] = Field(default_factory=list)
+    dislocation_density_values: List[float] = Field(default_factory=list)
+    hatch_distance_values: List[float] = Field(default_factory=list)
+    build_platform_temperature_values: List[float] = Field(default_factory=list)
+    melt_pool_depth_values: List[float] = Field(default_factory=list)
+    melt_pool_width_values: List[float] = Field(default_factory=list)
+    melt_pool_length_values: List[float] = Field(default_factory=list)
+    vec_values: List[float] = Field(default_factory=list)
+    lewis_number_values: List[float] = Field(default_factory=list)
+    omega_parameter_values: List[float] = Field(default_factory=list)
+    delta_h_mix_values: List[float] = Field(default_factory=list)
+    delta_s_mix_values: List[float] = Field(default_factory=list)
+    atomic_size_difference_values: List[float] = Field(default_factory=list)
+    lambda_parameter_values: List[float] = Field(default_factory=list)
+    jackson_parameter_values: List[float] = Field(default_factory=list)
     other_parameters: Dict[str, List[float]] = {}
 
 

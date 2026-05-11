@@ -3206,6 +3206,7 @@ response_cache = LRUCache(max_size=2000, ttl=7200)
 # MAIN STREAMLIT APP
 # =============================================================================
 #
+#
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v18.0 - Universal Scientific Discovery Engine", layout="wide")
     st.markdown("# DECLARMIMA v18.0 - Universal Query-Aware Scientific Discovery Engine")
@@ -3238,19 +3239,17 @@ def run_streamlit():
         if schema_path.exists():
             try:
                 st.session_state.quantity_schema = DynamicQuantitySchema(schema_path)
-                # Verify that the loaded data is usable
                 if not st.session_state.quantity_schema.schema["quantities"]:
                     st.warning("Loaded schema has no quantities. Rebuilding defaults.")
                     raise ValueError("Empty schema")
             except Exception as e:
                 st.error(f"Error loading schema: {e}. Creating fresh schema.")
-                # Backup corrupted file
                 backup = schema_path.with_suffix(".yaml.bak")
                 import shutil
                 shutil.copy(schema_path, backup)
                 st.info(f"Corrupted schema backed up to {backup}")
-                st.session_state.quantity_schema = DynamicQuantitySchema()  # empty
-                # Populate with defaults
+                st.session_state.quantity_schema = DynamicQuantitySchema()
+                # Populate defaults (same as before)
                 st.session_state.quantity_schema.add_quantity("laser_power", ["laser power", "power", "laser beam power"], ["W", "kW", "mW"])
                 st.session_state.quantity_schema.add_quantity("scan_speed", ["scan speed", "scanning speed", "scan velocity"], ["mm/s", "cm/s", "m/s", "mm/min"])
                 st.session_state.quantity_schema.add_quantity("yield_strength", ["yield strength", "ys", "0.2% proof", "yield stress"], ["MPa", "GPa", "psi"])
@@ -3267,7 +3266,7 @@ def run_streamlit():
                 st.session_state.quantity_schema.save(schema_path)
         else:
             st.session_state.quantity_schema = DynamicQuantitySchema()
-            # Populate defaults and save
+            # Populate defaults and save (same as above)
             st.session_state.quantity_schema.add_quantity("laser_power", ["laser power", "power", "laser beam power"], ["W", "kW", "mW"])
             st.session_state.quantity_schema.add_quantity("scan_speed", ["scan speed", "scanning speed", "scan velocity"], ["mm/s", "cm/s", "m/s", "mm/min"])
             st.session_state.quantity_schema.add_quantity("yield_strength", ["yield strength", "ys", "0.2% proof", "yield stress"], ["MPa", "GPa", "psi"])
@@ -3492,16 +3491,16 @@ def run_streamlit():
                 with viz_tabs[0]:
                     if PYVIS_AVAILABLE:
                         html_graph = viz.plot_query_knowledge_graph_pyvis(query_ctx)
-                        st.components.v1.html(html_graph, height=820, scrolling=True)
+                        st.components.v1.html(html_graph, height=820, scrolling=True, key="query_kg_pyvis")
                     else:
                         fig_kg = viz.plot_query_knowledge_graph(query_ctx)
-                        st.pyplot(fig_kg)
+                        st.pyplot(fig_kg, key="query_kg_matplotlib")
                 with viz_tabs[1]:
                     fig_sun = viz.plot_query_sunburst(query_ctx)
-                    st.plotly_chart(fig_sun, use_container_width=True)
+                    st.plotly_chart(fig_sun, use_container_width=True, key="query_sunburst")
                 with viz_tabs[2]:
                     fig_sankey = viz.plot_retrieval_sankey(active_prompt, st.session_state.cached_query_result.get("relevant_docs", []), st.session_state.cached_query_result.get("retrieved", []), st.session_state.cached_query_result.get("items", []))
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    st.plotly_chart(fig_sankey, use_container_width=True, key="query_sankey")
                 with viz_tabs[3]:
                     st.info("Quick charts available (see full dashboard).")
                 with viz_tabs[4]:
@@ -3559,72 +3558,72 @@ def run_streamlit():
                 with tabs[0]:
                     if selected_qty != "All":
                         fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                        st.plotly_chart(fig_hist, use_container_width=True, key=f"hist_{selected_qty}_{group_by}")
                     fig_bar = viz.plot_quantities_bar(df_all, colormap)
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    st.plotly_chart(fig_bar, use_container_width=True, key="bar_quantities")
                     fig_mat = viz.plot_material_counts(df_all, colormap)
-                    st.plotly_chart(fig_mat, use_container_width=True)
+                    st.plotly_chart(fig_mat, use_container_width=True, key="bar_materials")
                 with tabs[1]:
                     fig_pie = viz.plot_quantity_distribution_pie(colormap)
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                    st.plotly_chart(fig_pie, use_container_width=True, key="pie_quantities")
                     fig_donut = viz.plot_material_distribution_donut(colormap)
-                    st.plotly_chart(fig_donut, use_container_width=True)
+                    st.plotly_chart(fig_donut, use_container_width=True, key="donut_materials")
                 with tabs[2]:
                     if selected_qty != "All":
                         fig_sun = viz.plot_quantitative_sunburst(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_sun, use_container_width=True)
+                        st.plotly_chart(fig_sun, use_container_width=True, key=f"sunburst_{selected_qty}")
                     fig_sun_all = viz.plot_sunburst_hierarchy(df_all, colormap)
-                    st.plotly_chart(fig_sun_all, use_container_width=True)
+                    st.plotly_chart(fig_sun_all, use_container_width=True, key="sunburst_all")
                     fig_treemap = viz.plot_treemap(colormap)
-                    st.plotly_chart(fig_treemap, use_container_width=True)
+                    st.plotly_chart(fig_treemap, use_container_width=True, key="treemap_quantities")
                     fig_treemap_mat = viz.plot_treemap_materials(df_all, colormap)
-                    st.plotly_chart(fig_treemap_mat, use_container_width=True)
+                    st.plotly_chart(fig_treemap_mat, use_container_width=True, key="treemap_materials")
                 with tabs[3]:
                     if selected_qty != "All":
                         fig_radar_qty = viz.plot_quantitative_radar(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_radar_qty, use_container_width=True)
+                        st.plotly_chart(fig_radar_qty, use_container_width=True, key=f"radar_qty_{selected_qty}")
                     fig_radar_mat = viz.plot_radar_by_material(colormap)
-                    st.plotly_chart(fig_radar_mat, use_container_width=True)
+                    st.plotly_chart(fig_radar_mat, use_container_width=True, key="radar_materials")
                     fig_radar_doc = viz.plot_document_radar(colormap)
-                    st.plotly_chart(fig_radar_doc, use_container_width=True)
+                    st.plotly_chart(fig_radar_doc, use_container_width=True, key="radar_documents")
                     fig_chord = viz.plot_chord_cooccurrence(None, st.session_state.get("viz_top_n", 25), colormap)
-                    st.plotly_chart(fig_chord, use_container_width=True)
+                    st.plotly_chart(fig_chord, use_container_width=True, key="chord_cooccurrence")
                 with tabs[4]:
                     fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_contra, use_container_width=True)
+                    st.plotly_chart(fig_contra, use_container_width=True, key=f"contradiction_{selected_qty}")
                     fig_cons = viz.plot_consensus_waterfall(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_cons, use_container_width=True)
+                    st.plotly_chart(fig_cons, use_container_width=True, key=f"consensus_{selected_qty}")
                 with tabs[5]:
                     st.markdown("### Network Visualizations")
                     net_subtabs = st.tabs(["Quantitative KG (NetworkX)", "Quantitative KG (PyVis)", "Full Network (NetworkX)", "Full Network (PyVis)", "Salience Network (NetworkX)", "Salience Network (PyVis)"])
                     with net_subtabs[0]:
                         if selected_qty != "All":
                             fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.pyplot(fig_kg)
+                            st.pyplot(fig_kg, key=f"kg_nx_{selected_qty}")
                         else:
                             st.info("Select a specific quantity to see its knowledge graph.")
                     with net_subtabs[1]:
                         if PYVIS_AVAILABLE and selected_qty != "All":
                             html_kg = viz.plot_quantitative_knowledge_graph_pyvis(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_kg, height=750, scrolling=True)
+                            st.components.v1.html(html_kg, height=750, scrolling=True, key=f"kg_pyvis_{selected_qty}")
                         else:
                             st.info("Select a specific quantity and install pyvis for interactive graph.")
                     with net_subtabs[2]:
                         fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_net)
+                        st.pyplot(fig_net, key="full_network_nx")
                     with net_subtabs[3]:
                         if PYVIS_AVAILABLE:
                             html_full = viz.plot_knowledge_network_pyvis(df_all, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_full, height=750, scrolling=True)
+                            st.components.v1.html(html_full, height=750, scrolling=True, key="full_network_pyvis")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
                     with net_subtabs[4]:
                         fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_static)
+                        st.pyplot(fig_static, key="salience_nx")
                     with net_subtabs[5]:
                         if PYVIS_AVAILABLE:
                             html_salience = viz.render_pyvis_salience(None, st.session_state.get("viz_top_n", 25), True, colormap, aliases=aliases, label_style=label_style)
-                            st.components.v1.html(html_salience, height=750, scrolling=True)
+                            st.components.v1.html(html_salience, height=750, scrolling=True, key="salience_pyvis")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
                 with tabs[6]:
@@ -3633,25 +3632,25 @@ def run_streamlit():
                         if SKLEARN_AVAILABLE:
                             fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_tsne:
-                                st.pyplot(fig_tsne)
+                                st.pyplot(fig_tsne, key=f"tsne_{selected_qty}")
                             fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_pca:
-                                st.pyplot(fig_pca)
+                                st.pyplot(fig_pca, key=f"pca_{selected_qty}")
                         if UMAP_AVAILABLE:
                             fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_umap:
-                                st.pyplot(fig_umap)
+                                st.pyplot(fig_umap, key=f"umap_{selected_qty}")
                     else:
                         st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
                 with tabs[7]:
                     fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
-                    st.plotly_chart(fig_scatter, use_container_width=True)
+                    st.plotly_chart(fig_scatter, use_container_width=True, key="scatter_power_speed")
                     fig_parallel = viz.plot_parallel_categories(df_all, colormap)
-                    st.plotly_chart(fig_parallel, use_container_width=True)
+                    st.plotly_chart(fig_parallel, use_container_width=True, key="parallel_categories")
                     fig_violin = viz.plot_violin(df_all, colormap)
-                    st.plotly_chart(fig_violin, use_container_width=True)
+                    st.plotly_chart(fig_violin, use_container_width=True, key="violin")
                     fig_timeline = viz.plot_timeline(colormap)
-                    st.plotly_chart(fig_timeline, use_container_width=True)
+                    st.plotly_chart(fig_timeline, use_container_width=True, key="timeline")
                 with tabs[8]:
                     st.markdown("### Interactive Knowledge Graph Explorer")
                     entities = st.session_state.knowledge_graph.get_all_entity_names()
@@ -3708,23 +3707,23 @@ def run_streamlit():
                     st.caption(f"Current config: window={window_size}, max_chars={max_chars_viz}, max_results={max_results_viz}, conf>={conf_thresh_viz}")
                     st.markdown("#### Retrieval Provenance Flow")
                     fig_sankey = viz.plot_retrieval_sankey(active_prompt, rel_docs, retrieved_nodes, raw_items)
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    st.plotly_chart(fig_sankey, use_container_width=True, key="diag_sankey")
                     st.markdown("#### Document Filter Scores")
                     fig_doc_scores = viz.plot_doc_filter_scores(rel_docs, len(st.session_state.annotated_trees))
-                    st.plotly_chart(fig_doc_scores, use_container_width=True)
+                    st.plotly_chart(fig_doc_scores, use_container_width=True, key="doc_filter_scores")
                     st.markdown("#### Page Coverage Heatmap")
                     fig_coverage = viz.plot_page_coverage_heatmap(st.session_state.annotated_trees, retrieved_nodes)
-                    st.plotly_chart(fig_coverage, use_container_width=True)
+                    st.plotly_chart(fig_coverage, use_container_width=True, key="page_coverage")
                     st.markdown("#### Node Selection Confidence")
                     fig_conf = viz.plot_node_confidence_distribution(retrieved_nodes)
-                    st.plotly_chart(fig_conf, use_container_width=True)
+                    st.plotly_chart(fig_conf, use_container_width=True, key="node_confidence")
                     st.markdown("#### Hierarchical Tree Explorer")
                     tree_doc_options = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in st.session_state.annotated_trees)))
                     if tree_doc_options:
                         selected_tree_doc = st.selectbox("Select document to visualize", tree_doc_options, key="tree_doc_select")
                         fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
                         if fig_tree:
-                            st.pyplot(fig_tree)
+                            st.pyplot(fig_tree, key=f"tree_highlight_{selected_tree_doc}")
                         else:
                             st.info("No tree data available for this document.")
                     else:
@@ -3734,7 +3733,7 @@ def run_streamlit():
                         emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
                         fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
                         if fig_comp:
-                            st.plotly_chart(fig_comp, use_container_width=True)
+                            st.plotly_chart(fig_comp, use_container_width=True, key="semantic_vs_vectorless")
                         else:
                             st.info("Could not compute semantic scores for comparison.")
                     st.markdown("#### Raw Retrieval Metadata")
@@ -3769,7 +3768,6 @@ def run_streamlit():
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("Upload PDF files to begin.")
-
 
 if __name__ == "__main__":
     run_streamlit()

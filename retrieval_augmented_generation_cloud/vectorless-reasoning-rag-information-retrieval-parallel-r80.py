@@ -8111,3 +8111,120 @@ def render_telemetry_sidebar():
             if st.button("Reset Stats", use_container_width=True):
                 telemetry.reset()
                 st.rerun()
+
+# ============================================================================
+# STREAMLIT UI: REPORTING & TELEMETRY WIDGETS (Integration)
+# ============================================================================
+
+def render_download_buttons(query: str, result: Dict[str, Any]):
+    """
+    Renders download buttons for Markdown, JSON, and HTML reports 
+    using the ReportGenerator class defined in Part 13.
+    """
+    if not query or not result:
+        return
+        
+    # Get the KG from session state
+    kg = st.session_state.get("knowledge_graph")
+    if not kg:
+        kg = QuantitativeKnowledgeGraph()
+        
+    generator = ReportGenerator(kg)
+    
+    st.markdown("---")
+    st.subheader("📥 Export Analysis Reports")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        md_report = generator.generate_markdown_report(query, result)
+        st.download_button(
+            label="📄 Download Markdown Report",
+            data=md_report,
+            file_name="declarmima_report.md",
+            mime="text/markdown",
+            help="Download a readable Markdown summary of findings."
+        )
+        
+    with col2:
+        json_report = generator.generate_json_report(query, result)
+        st.download_button(
+            label="📦 Download JSON Data",
+            data=json_report,
+            file_name="declarmima_data.json",
+            mime="application/json",
+            help="Download raw data for programmatic analysis."
+        )
+        
+    with col3:
+        html_report = generator.export_to_html(query, result)
+        st.download_button(
+            label="🌐 Download Standalone HTML",
+            data=html_report.encode('utf-8'),
+            file_name="declarmima_view.html",
+            mime="text/html",
+            help="Download a standalone HTML file with embedded styles."
+        )
+
+def render_telemetry_widget():
+    """
+    Renders the System Telemetry widget in the sidebar.
+    """
+    with st.sidebar:
+        st.markdown("---")
+        with st.expander("📈 System Telemetry", expanded=False):
+            stats = telemetry.get_summary()
+            
+            c1, c2 = st.columns(2)
+            c1.metric("LLM Calls", stats["llm_calls"])
+            c2.metric("Avg Latency", f"{stats['llm_avg_latency']:.2f}s")
+            
+            c3, c4 = st.columns(2)
+            c3.metric("Cache Hits", stats["cache_hits"])
+            c4.metric("Hit Rate", stats["cache_hit_rate"])
+            
+            st.caption(f"Memory: {stats['memory_usage_mb']:.1f} MB")
+            st.caption(f"Errors: {stats['extraction_errors']}")
+            
+            if st.button("Reset Stats", use_container_width=True):
+                telemetry.reset()
+                st.rerun()
+
+# ============================================================================
+# FINAL ENTRY POINT & ROBUST EXECUTION
+# ============================================================================
+
+def run_app():
+    """
+    Main execution function with global error handling.
+    This function calls the 'run_streamlit' logic defined in Part 9/12.
+    """
+    try:
+        # 1. Initialize Telemetry
+        # (Assuming 'telemetry' instance from Part 13 is available in global scope 
+        # or passed via context. For this script, we use the global instance.)
+        pass 
+        
+        # 2. Run the UI Logic
+        # The 'run_streamlit' function defined in Part 12 contains the core logic.
+        # We simply call it here.
+        run_streamlit()
+        
+        # 3. Render Telemetry Sidebar
+        render_telemetry_widget()
+
+    except Exception as e:
+        st.error(f"⚠️ Critical Application Error: {str(e)}")
+        logger.exception(e)
+        st.stop()
+
+if __name__ == "__main__":
+    # Ensure async loop is compatible with Streamlit
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    # Run the application
+    run_app()

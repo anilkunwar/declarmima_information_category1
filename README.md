@@ -215,7 +215,7 @@ V73-V75 : Chat-driven interactive Visualization, Vectorless Reasoning Based RAG 
 
 V76-v78 : Universal Models that accept Universal Queries as the KnowledgeGraph is Expanded to include all the topica areas.  Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept universal queries.
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v76.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel76.streamlit.app/) (V75 with expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v76.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel76.streamlit.app/) (Successful Code, V75 with expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v77.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel77.streamlit.app/) (V75 with expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 

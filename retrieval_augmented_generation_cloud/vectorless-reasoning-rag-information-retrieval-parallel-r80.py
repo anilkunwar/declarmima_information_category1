@@ -7877,3 +7877,237 @@ if __name__ == "__main__":
         asyncio.set_event_loop(loop)
     
     run_streamlit()
+
+# ============================================================================
+# ADVANCED REPORTING & EXPORT UTILITIES
+# ============================================================================
+class ReportGenerator:
+    """
+    Generates comprehensive reports for query results and corpus analysis.
+    Supports Markdown, JSON, and HTML export formats.
+    """
+    
+    def __init__(self, kg: 'QuantitativeKnowledgeGraph'):
+        self.kg = kg
+        self.classifier = PhysicalQuantityClassifier()
+
+    def generate_markdown_report(self, query: str, result: Dict[str, Any]) -> str:
+        """
+        Generate a Markdown report from a query result.
+        """
+        answer = result.get("answer", "No answer generated.")
+        metrics = result.get("metrics", {})
+        nodes = result.get("nodes", [])
+        
+        report = [
+            f"# DECLARMIMA v18.0 Query Report",
+            f"**Query:** `{query}`",
+            f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "## 📝 AI Synthesis",
+            answer,
+            "",
+            "## 📊 Retrieval Metrics",
+            f"- **Total Time:** {metrics.get('total_time', 0):.2f}s",
+            f"- **Navigation Time:** {metrics.get('call_1_time', 0):.2f}s",
+            f"- **Synthesis Time:** {metrics.get('call_2_time', 0):.2f}s",
+            f"- **Nodes Retrieved:** {len(nodes)}",
+            "",
+            "## 🔍 Retrieved Evidence",
+        ]
+        
+        for i, node in enumerate(nodes[:10]):
+            doc_id = node.get("doc_id", "Unknown")
+            page = node.get("page_start", "?")
+            section = node.get("section_title", "Unknown")
+            confidence = node.get("confidence", 0.0)
+            report.append(f"### {i+1}. {doc_id} (p.{page}) - {section}")
+            report.append(f"- **Confidence:** {confidence:.2f}")
+            report.append(f"- **Reasoning:** {node.get('selection_reasoning', 'N/A')}")
+            report.append(f"- **Content Preview:** `{node.get('full_text', '')[:150]}...`")
+            report.append("")
+            
+        return "\n".join(report)
+
+    def generate_json_report(self, query: str, result: Dict[str, Any]) -> str:
+        """
+        Generate a structured JSON report.
+        """
+        # Clean up result for serialization
+        serializable_nodes = []
+        for n in result.get("nodes", []):
+            serializable_nodes.append({
+                "doc_id": n.get("doc_id"),
+                "page_start": n.get("page_start"),
+                "section_title": n.get("section_title"),
+                "confidence": n.get("confidence"),
+                "selection_reasoning": n.get("selection_reasoning"),
+                # Truncate text to keep JSON small
+                "text_preview": n.get("full_text", "")[:200]
+            })
+            
+        report_data = {
+            "query": query,
+            "timestamp": datetime.now().isoformat(),
+            "version": "v18.0",
+            "metrics": result.get("metrics", {}),
+            "answer": result.get("answer", ""),
+            "retrieved_evidence": serializable_nodes
+        }
+        return json.dumps(report_data, indent=2, ensure_ascii=False)
+
+    def export_to_html(self, query: str, result: Dict[str, Any]) -> str:
+        """
+        Generate a standalone HTML report with embedded styles.
+        """
+        md_content = self.generate_markdown_report(query, result)
+        # Simple Markdown to HTML conversion (basic implementation)
+        html_content = md_content.replace('\n', '<br>')
+        html_content = html_content.replace('# ', '<h1>')
+        html_content = html_content.replace('## ', '<h2>')
+        html_content = html_content.replace('### ', '<h3>')
+        html_content = html_content.replace('**', '<b>').replace('**', '</b>')
+        html_content = html_content.replace('`', '<code>').replace('`', '</code>')
+        
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>DECLARMIMA Report: {query}</title>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 40px auto; line-height: 1.6; color: #333; }}
+                h1 {{ color: #2563eb; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }}
+                h2 {{ color: #475569; }}
+                h3 {{ color: #64748b; }}
+                code {{ background: #f1f5f9; padding: 2px 4px; border-radius: 4px; font-size: 0.9em; }}
+                .metric {{ display: inline-block; background: #eff6ff; padding: 5px 10px; border-radius: 6px; margin: 5px; }}
+            </style>
+        </head>
+        <body>
+            {html_content}
+        </body>
+        </html>
+        """
+
+# ============================================================================
+# SYSTEM TELEMETRY & HEALTH MONITORING
+# ============================================================================
+class SystemTelemetry:
+    """
+    Tracks system performance, LLM latency, cache hit rates, and memory usage.
+    """
+    def __init__(self):
+        self.metrics = {
+            "llm_calls": 0,
+            "llm_total_time": 0.0,
+            "llm_avg_latency": 0.0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "extraction_errors": 0,
+            "memory_usage_mb": 0.0
+        }
+        self._history = defaultdict(list)
+
+    def record_llm_call(self, latency: float, tokens_in: int, tokens_out: int):
+        self.metrics["llm_calls"] += 1
+        self.metrics["llm_total_time"] += latency
+        self.metrics["llm_avg_latency"] = self.metrics["llm_total_time"] / self.metrics["llm_calls"]
+        self._history["latency"].append(latency)
+        self._history["tokens_in"].append(tokens_in)
+        self._history["tokens_out"].append(tokens_out)
+
+    def record_cache_access(self, hit: bool):
+        if hit:
+            self.metrics["cache_hits"] += 1
+        else:
+            self.metrics["cache_misses"] += 1
+
+    def update_memory(self):
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            self.metrics["memory_usage_mb"] = process.memory_info().rss / (1024 * 1024)
+        except ImportError:
+            self.metrics["memory_usage_mb"] = 0.0
+
+    def get_summary(self) -> Dict[str, Any]:
+        self.update_memory()
+        total_accesses = self.metrics["cache_hits"] + self.metrics["cache_misses"]
+        hit_rate = (self.metrics["cache_hits"] / total_accesses * 100) if total_accesses > 0 else 0
+        return {**self.metrics, "cache_hit_rate": f"{hit_rate:.1f}%"}
+
+    def reset(self):
+        self.metrics = {k: 0.0 if isinstance(v, float) else 0 for k, v in self.metrics.items()}
+        self._history.clear()
+
+# Global Telemetry Instance
+telemetry = SystemTelemetry()
+
+# ============================================================================
+# ROBUST ASYNC UTILITIES FOR STREAMLIT
+# ============================================================================
+def run_async_safe(coro):
+    """
+    Safely run an async coroutine in a Streamlit thread environment.
+    Streamlit creates a new thread for each session, so we must ensure
+    we have a running event loop.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is already running (e.g., via nest_asyncio), use it
+            return asyncio.run_coroutine_threadsafe(coro, loop).result()
+    except RuntimeError:
+        pass
+    
+    # If no loop, create one for this call
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+def timer_context(label: str):
+    """
+    Context manager for timing blocks and recording telemetry.
+    """
+    class Timer:
+        def __init__(self, label):
+            self.label = label
+            self.start = 0
+        def __enter__(self):
+            self.start = time.time()
+            return self
+        def __exit__(self, *args):
+            elapsed = time.time() - self.start
+            if "llm" in self.label.lower():
+                telemetry.record_llm_call(elapsed, 0, 0) # Tokens would need LLM wrapper update
+    return Timer(label)
+
+# ============================================================================
+# STREAMLIT SIDEBAR TELEMETRY INTEGRATION
+# ============================================================================
+def render_telemetry_sidebar():
+    """
+    Adds a telemetry section to the Streamlit sidebar for monitoring.
+    """
+    with st.sidebar:
+        st.markdown("---")
+        with st.expander("📈 System Telemetry", expanded=False):
+            stats = telemetry.get_summary()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("LLM Calls", stats["llm_calls"])
+            col2.metric("Avg Latency", f"{stats['llm_avg_latency']:.2f}s")
+            
+            col3, col4 = st.columns(2)
+            col3.metric("Cache Hits", stats["cache_hits"])
+            col4.metric("Hit Rate", stats["cache_hit_rate"])
+            
+            st.caption(f"Memory: {stats['memory_usage_mb']:.1f} MB")
+            st.caption(f"Errors: {stats['extraction_errors']}")
+            
+            if st.button("Reset Stats", use_container_width=True):
+                telemetry.reset()
+                st.rerun()

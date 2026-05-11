@@ -829,8 +829,11 @@ class StructuredMetadataExtractor:
         }
         self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
 
+    #
     def extract_metadata(self, doc_name: str, full_text: str) -> DocumentMetadata:
         meta = DocumentMetadata(doc_name=doc_name)
+        
+        # Extract alloys
         alloys_set = set()
         for regex in self.alloy_regexes:
             for match in regex.finditer(full_text):
@@ -838,7 +841,11 @@ class StructuredMetadataExtractor:
                 if len(candidate) > 2 and candidate.lower() not in ["alloy", "composite", "metal"]:
                     alloys_set.add(candidate)
         meta.alloys = list(alloys_set)
+        
+        # Extract quantitative fields – safe lowercasing of field names
         for field, (pattern, cast_func) in self.compiled_patterns.items():
+            # Normalize field name to lowercase (as defined in DocumentMetadata)
+            field_lower = field.lower()
             matches = pattern.findall(full_text)
             values = []
             for m in matches:
@@ -847,20 +854,44 @@ class StructuredMetadataExtractor:
                     values.append(val)
                 except:
                     continue
-            setattr(meta, f"{field}_values", values)
+            # Only set if the corresponding attribute exists (e.g., pren_values not PREN_values)
+            attr_name = f"{field_lower}_values"
+            if hasattr(meta, attr_name):
+                setattr(meta, attr_name, values)
+            else:
+                # Optional: log warning for unknown field
+                logger.warning(f"DocumentMetadata has no attribute '{attr_name}' (from pattern '{field}')")
+        
+        # Process types (same as before)
         process_keywords = {
             "SLM": ["selective laser melting", "slm"],
-            "LPBF": ["laser powder bed fusion", "l-pbf", "lpbf"],
+            "LPBF": ["laser powder bed fusion", "l-pbf", "lpbf", "pbf-lb"],
             "LSA": ["laser surface alloying", "lsa"],
             "EBM": ["electron beam melting", "ebm"],
-            "DED": ["directed energy deposition", "ded"],
+            "DED": ["directed energy deposition", "ded", "lmd"],
+            "PFI": ["port fuel injection", "pfi"],
+            "GDI": ["gasoline direct injection", "gdi", "disi"],
+            "FEM": ["finite element method", "fem", "fea"],
+            "MD": ["molecular dynamics", "md", "lammps"],
+            "PFM": ["phase field method", "pfm", "cahn-hilliard"],
+            "CALPHAD": ["calphad", "thermocalc", "pycalphad", "tdb"],
+            "PINN": ["physics-informed neural network", "pinn"],
+            "UNET": ["u-net", "unet"],
+            "CONVLSTM": ["convlstm", "conv-lstm"],
+            "DIGITAL_TWIN": ["digital twin", "vdt", "virtual twin"],
+            "XAI": ["explainable ai", "xai", "shap"],
+            "UQ": ["uncertainty quantification", "uq"],
+            "TENSOR_DECOMP": ["tucker decomposition", "cp decomposition", "parafac", "tensorly"],
+            "TFIDF_PMI": ["tf-idf", "pointwise mutual information", "pmi", "ner"]
         }
         processes = []
         for proc, keywords in process_keywords.items():
             if any(kw in full_text.lower() for kw in keywords):
                 processes.append(proc)
         meta.process_types = processes
+        
         return meta
+    
 
 # =============================================================================
 # TwoStageRetriever (enhanced with semantic router)

@@ -4140,7 +4140,7 @@ def run_streamlit():
                     st.markdown("### Quick Relevant Charts")
                     for pq in query_ctx.physical_quantities[:3]:
                         fig = viz.plot_quantitative_histogram(df_all, pq)
-                        st.plotly_chart(fig, use_container_width=True, key="plc_fig")
+                        st.plotly_chart(fig, use_container_width=True, key=f"plc_fig_{pq}")
 
 
                 with viz_tabs[4]:

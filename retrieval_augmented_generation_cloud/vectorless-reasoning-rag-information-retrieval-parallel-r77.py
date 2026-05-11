@@ -42,6 +42,7 @@ import threading
 import queue
 import pandas as pd
 import yaml
+import shutil
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -133,22 +134,71 @@ from pydantic import BaseModel, Field, field_validator
 # =============================================================================
 # NEW: DYNAMIC QUANTITY SCHEMA MANAGER
 # =============================================================================
+#
+# =============================================================================
+# DYNAMIC QUANTITY SCHEMA MANAGER (Robust version)
+# =============================================================================
 class DynamicQuantitySchema:
     def __init__(self, config_path: Optional[Path] = None):
         self.schema = {"quantities": {}, "aliases": {}, "units": {}}
         if config_path and config_path.exists():
             self.load(config_path)
+        else:
+            # If file doesn't exist, do nothing – will be populated later
+            pass
         self._build_indices()
 
     def load(self, path: Path):
-        with open(path) as f:
-            data = yaml.safe_load(f)
-        for k, v in data.get("quantities", {}).items():
-            self.schema["quantities"][k] = v.get("keywords", [])
-        for k, v in data.get("aliases", {}).items():
-            self.schema["aliases"][k] = v.get("synonyms", [])
-        for k, v in data.get("units", {}).items():
-            self.schema["units"][k] = v.get("hints", [])
+        """Load schema from YAML, tolerating malformed entries."""
+        try:
+            with open(path, 'r') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.warning(f"Could not load YAML from {path}: {e}")
+            return
+
+        # ---- Quantities ----
+        raw_q = data.get("quantities", {})
+        if isinstance(raw_q, dict):
+            for k, v in raw_q.items():
+                if isinstance(v, dict):
+                    # Expected format: {keywords: [...]}
+                    self.schema["quantities"][k] = v.get("keywords", [])
+                elif isinstance(v, list):
+                    # Legacy or incorrect: treat list as keywords
+                    self.schema["quantities"][k] = v
+                else:
+                    logger.warning(f"Skipping quantity '{k}': invalid value type {type(v)}")
+        else:
+            logger.warning("'quantities' is not a dict, resetting to empty dict")
+            self.schema["quantities"] = {}
+
+        # ---- Aliases ----
+        raw_a = data.get("aliases", {})
+        if isinstance(raw_a, dict):
+            for k, v in raw_a.items():
+                if isinstance(v, dict):
+                    self.schema["aliases"][k] = v.get("synonyms", [])
+                elif isinstance(v, list):
+                    self.schema["aliases"][k] = v
+                else:
+                    logger.warning(f"Skipping alias '{k}': invalid value type {type(v)}")
+        else:
+            logger.warning("'aliases' is not a dict, resetting")
+
+        # ---- Units ----
+        raw_u = data.get("units", {})
+        if isinstance(raw_u, dict):
+            for k, v in raw_u.items():
+                if isinstance(v, dict):
+                    self.schema["units"][k] = v.get("hints", [])
+                elif isinstance(v, list):
+                    self.schema["units"][k] = v
+                else:
+                    logger.warning(f"Skipping unit entry '{k}': invalid type {type(v)}")
+        else:
+            logger.warning("'units' is not a dict, resetting")
+
         self._build_indices()
 
     def _build_indices(self):
@@ -162,19 +212,28 @@ class DynamicQuantitySchema:
                 self.alias_to_canonical[a.lower()] = canon
 
     def add_quantity(self, canonical: str, keywords: List[str], units: List[str]):
+        """Add or update a physical quantity."""
         self.schema["quantities"][canonical] = keywords
         self.schema["units"].setdefault(canonical, []).extend(units)
         self._build_indices()
 
     def add_alias(self, canonical: str, synonyms: List[str]):
+        """Add aliases for a canonical quantity."""
         self.schema["aliases"].setdefault(canonical, []).extend(synonyms)
         self._build_indices()
 
     def save(self, path: Path):
+        """Save schema in standard format."""
+        out = {
+            "quantities": self.schema["quantities"],
+            "aliases": self.schema["aliases"],
+            "units": self.schema["units"]
+        }
         with open(path, "w") as f:
-            yaml.dump(self.schema, f, default_flow_style=False)
+            yaml.dump(out, f, default_flow_style=False, allow_unicode=True)
 
     def classify(self, param_name: Optional[str], unit: Optional[str], context: str) -> str:
+        """Classify a parameter/unit/context into a canonical quantity."""
         if param_name:
             pname_lower = param_name.lower().strip()
             if pname_lower in self.keyword_to_canonical:
@@ -244,6 +303,7 @@ class DynamicQuantitySchema:
             "unknown": "Other Quantities"
         }
         return mapping.get(canonical, canonical.replace("_", " ").title())
+
 
 # =============================================================================
 # UNIT-AWARE CLASSIFIER (pint wrapper)

@@ -2450,8 +2450,7 @@ class PublicationVisualizationEngine:
         # 1. Central Query Node
         net.add_node(
             "QUERY", 
-            #label="YOUR QUERY",
-            label="USER'S QUERY",
+            label="YOUR QUERY",
             title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
             color="#7c3aed",  # Darker purple for white bg
             size=45,
@@ -3900,9 +3899,9 @@ def run_streamlit():
 
                 with viz_tabs[3]:
                     st.markdown("### Quick Relevant Charts")
-                    for pq in query_ctx.physical_quantities[:3]:
+                    for i, pq in enumerate(query_ctx.physical_quantities[:3]):
                         fig = viz.plot_quantitative_histogram(df_all, pq)
-                        st.plotly_chart(fig, use_container_width=True, key="plc_fig")
+                        st.plotly_chart(fig, use_container_width=True, key=f"plc_fig_{i}")
 
 
                 with viz_tabs[4]:

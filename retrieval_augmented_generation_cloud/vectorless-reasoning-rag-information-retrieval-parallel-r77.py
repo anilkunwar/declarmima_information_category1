@@ -3205,6 +3205,7 @@ response_cache = LRUCache(max_size=2000, ttl=7200)
 # =============================================================================
 # MAIN STREAMLIT APP
 # =============================================================================
+#
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v18.0 - Universal Scientific Discovery Engine", layout="wide")
     st.markdown("# DECLARMIMA v18.0 - Universal Query-Aware Scientific Discovery Engine")
@@ -3228,13 +3229,45 @@ def run_streamlit():
         st.session_state.embedding_model = None
     if "doc_aliases" not in st.session_state:
         st.session_state.doc_aliases = {}
+
+    # =========================================================================
+    # Dynamic Quantity Schema Initialization (Robust version)
+    # =========================================================================
     if "quantity_schema" not in st.session_state:
         schema_path = Path("domain_schema.yaml")
         if schema_path.exists():
-            st.session_state.quantity_schema = DynamicQuantitySchema(schema_path)
+            try:
+                st.session_state.quantity_schema = DynamicQuantitySchema(schema_path)
+                # Verify that the loaded data is usable
+                if not st.session_state.quantity_schema.schema["quantities"]:
+                    st.warning("Loaded schema has no quantities. Rebuilding defaults.")
+                    raise ValueError("Empty schema")
+            except Exception as e:
+                st.error(f"Error loading schema: {e}. Creating fresh schema.")
+                # Backup corrupted file
+                backup = schema_path.with_suffix(".yaml.bak")
+                import shutil
+                shutil.copy(schema_path, backup)
+                st.info(f"Corrupted schema backed up to {backup}")
+                st.session_state.quantity_schema = DynamicQuantitySchema()  # empty
+                # Populate with defaults
+                st.session_state.quantity_schema.add_quantity("laser_power", ["laser power", "power", "laser beam power"], ["W", "kW", "mW"])
+                st.session_state.quantity_schema.add_quantity("scan_speed", ["scan speed", "scanning speed", "scan velocity"], ["mm/s", "cm/s", "m/s", "mm/min"])
+                st.session_state.quantity_schema.add_quantity("yield_strength", ["yield strength", "ys", "0.2% proof", "yield stress"], ["MPa", "GPa", "psi"])
+                st.session_state.quantity_schema.add_quantity("tensile_strength", ["tensile strength", "uts", "ultimate tensile strength"], ["MPa", "GPa"])
+                st.session_state.quantity_schema.add_quantity("hardness", ["hardness", "vickers hardness", "microhardness"], ["HV", "MPa", "GPa"])
+                st.session_state.quantity_schema.add_quantity("corrosion_potential", ["ecorr", "corrosion potential", "open circuit potential"], ["mV", "V", "mV vs SCE"])
+                st.session_state.quantity_schema.add_quantity("corrosion_current_density", ["icorr", "corrosion current density"], ["µA/cm²", "uA/cm2", "mA/cm²"])
+                st.session_state.quantity_schema.add_quantity("pren", ["pren", "pitting resistance equivalent number"], [""])
+                st.session_state.quantity_schema.add_quantity("stacking_fault_energy", ["sfe", "stacking fault energy", "gsfe"], ["mJ/m²", "mj/m2"])
+                st.session_state.quantity_schema.add_quantity("sauter_mean_diameter", ["smd", "sauter mean diameter"], ["µm", "um", "nm"])
+                st.session_state.quantity_schema.add_quantity("thermal_conductivity", ["thermal conductivity", "k", "kth"], ["W/m·K", "W/mK"])
+                st.session_state.quantity_schema.add_quantity("viscosity", ["viscosity", "dynamic viscosity"], ["Pa·s", "mPa·s", "cP"])
+                st.session_state.quantity_schema.add_quantity("density", ["density", "mass density", "ρ"], ["g/cm³", "kg/m³"])
+                st.session_state.quantity_schema.save(schema_path)
         else:
             st.session_state.quantity_schema = DynamicQuantitySchema()
-            # Populate with common scientific quantities
+            # Populate defaults and save
             st.session_state.quantity_schema.add_quantity("laser_power", ["laser power", "power", "laser beam power"], ["W", "kW", "mW"])
             st.session_state.quantity_schema.add_quantity("scan_speed", ["scan speed", "scanning speed", "scan velocity"], ["mm/s", "cm/s", "m/s", "mm/min"])
             st.session_state.quantity_schema.add_quantity("yield_strength", ["yield strength", "ys", "0.2% proof", "yield stress"], ["MPa", "GPa", "psi"])
@@ -3736,6 +3769,7 @@ def run_streamlit():
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("Upload PDF files to begin.")
+
 
 if __name__ == "__main__":
     run_streamlit()

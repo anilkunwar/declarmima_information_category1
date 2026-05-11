@@ -3684,7 +3684,7 @@ def run_streamlit():
                         st.caption("**Tip:** Hover for tooltips • Click pink nodes for context")
                 with viz_tabs[1]:
                     fig_sun = viz.plot_query_sunburst(query_ctx)
-                    st.plotly_chart(fig_sun, use_container_width=True)
+                    st.plotly_chart(fig_sun, use_container_width=True, key="plotly_1")
                     st.caption("This sunburst shows the hierarchy of quantities → materials → documents for your specific query.")
                 with viz_tabs[2]:
                     st.subheader("🔄 Retrieval Provenance Flow")
@@ -3695,12 +3695,12 @@ def run_streamlit():
                         cached.get("retrieved", []),
                         cached.get("items", [])
                     )
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    st.plotly_chart(fig_sankey, use_container_width=True, key="plotly_2")
                 with viz_tabs[3]:
                     st.markdown("### Quick Relevant Charts")
                     for pq in query_ctx.physical_quantities[:3]:
                         fig = viz.plot_quantitative_histogram(df_all, pq)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key="plotly_3")
                 with viz_tabs[4]:
                     st.info("Full corpus visualizations are available in the dashboard below ↓")
             else:
@@ -3761,41 +3761,41 @@ def run_streamlit():
                 with tabs[0]:
                     if selected_qty != "All":
                         fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                        st.plotly_chart(fig_hist, use_container_width=True, key="plotly_4")
                     fig_bar = viz.plot_quantities_bar(df_all, colormap)
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                    st.plotly_chart(fig_bar, use_container_width=True, key="plotly_5")
                     fig_mat = viz.plot_material_counts(df_all, colormap)
-                    st.plotly_chart(fig_mat, use_container_width=True)
+                    st.plotly_chart(fig_mat, use_container_width=True, key="plotly_6")
                 with tabs[1]:
                     fig_pie = viz.plot_quantity_distribution_pie(colormap)
-                    st.plotly_chart(fig_pie, use_container_width=True)
+                    st.plotly_chart(fig_pie, use_container_width=True, key="plotly_7")
                     fig_donut = viz.plot_material_distribution_donut(colormap)
-                    st.plotly_chart(fig_donut, use_container_width=True)
+                    st.plotly_chart(fig_donut, use_container_width=True, key="plotly_8")
                 with tabs[2]:
                     if selected_qty != "All":
                         fig_sun = viz.plot_quantitative_sunburst(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_sun, use_container_width=True)
+                        st.plotly_chart(fig_sun, use_container_width=True, key="plotly_9")
                     fig_sun_all = viz.plot_sunburst_hierarchy(df_all, colormap)
-                    st.plotly_chart(fig_sun_all, use_container_width=True)
+                    st.plotly_chart(fig_sun_all, use_container_width=True, key="plotly_10")
                     fig_treemap = viz.plot_treemap(colormap)
-                    st.plotly_chart(fig_treemap, use_container_width=True)
+                    st.plotly_chart(fig_treemap, use_container_width=True, key="plotly_11")
                     fig_treemap_mat = viz.plot_treemap_materials(df_all, colormap)
-                    st.plotly_chart(fig_treemap_mat, use_container_width=True)
+                    st.plotly_chart(fig_treemap_mat, use_container_width=True, key="plotly_12")
                 with tabs[3]:
                     if selected_qty != "All":
                         fig_radar_qty = viz.plot_quantitative_radar(df_all, selected_qty, colormap)
-                        st.plotly_chart(fig_radar_qty, use_container_width=True)
+                        st.plotly_chart(fig_radar_qty, use_container_width=True, key="plotly_13")
                     fig_radar_mat = viz.plot_radar_by_material(colormap)
-                    st.plotly_chart(fig_radar_mat, use_container_width=True)
+                    st.plotly_chart(fig_radar_mat, use_container_width=True, key="plotly_14")
                     fig_radar_doc = viz.plot_document_radar(colormap)
-                    st.plotly_chart(fig_radar_doc, use_container_width=True)
+                    st.plotly_chart(fig_radar_doc, use_container_width=True, key="plotly_15")
                     fig_chord = viz.plot_chord_cooccurrence(None, st.session_state.get("viz_top_n", 25), colormap)
-                    st.plotly_chart(fig_chord, use_container_width=True)
+                    st.plotly_chart(fig_chord, use_container_width=True, key="plotly_16")
                 with tabs[4]:
                     fig_contra = viz.plot_contradiction_matrix(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_contra, use_container_width=True)
+                    st.plotly_chart(fig_contra, use_container_width=True, key="plotly_17")
                     fig_cons = viz.plot_consensus_waterfall(None if selected_qty=="All" else selected_qty, colormap)
-                    st.plotly_chart(fig_cons, use_container_width=True)
+                    st.plotly_chart(fig_cons, use_container_width=True, key="plotly_18")
                 with tabs[5]:
                     st.markdown("### Network Visualizations")
                     net_subtabs = st.tabs(["Quantitative KG (NetworkX)", "Quantitative KG (PyVis)", "Full Network (NetworkX)", "Full Network (PyVis)", "Salience Network (NetworkX)", "Salience Network (PyVis)"])
@@ -3868,13 +3868,13 @@ def run_streamlit():
                         st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
                 with tabs[7]:
                     fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
-                    st.plotly_chart(fig_scatter, use_container_width=True)
+                    st.plotly_chart(fig_scatter, use_container_width=True, key="plotly_19")
                     fig_parallel = viz.plot_parallel_categories(df_all, colormap)
-                    st.plotly_chart(fig_parallel, use_container_width=True)
+                    st.plotly_chart(fig_parallel, use_container_width=True, key="plotly_20")
                     fig_violin = viz.plot_violin(df_all, colormap)
-                    st.plotly_chart(fig_violin, use_container_width=True)
+                    st.plotly_chart(fig_violin, use_container_width=True, key="plotly_21")
                     fig_timeline = viz.plot_timeline(colormap)
-                    st.plotly_chart(fig_timeline, use_container_width=True)
+                    st.plotly_chart(fig_timeline, use_container_width=True, key="plotly_22")
                 with tabs[8]:
                     st.markdown("### Interactive Knowledge Graph Explorer")
                     entities = st.session_state.knowledge_graph.get_all_entity_names()
@@ -3933,16 +3933,16 @@ def run_streamlit():
                     st.caption(f"Current config: window={window_size}, max_chars={max_chars_viz}, max_results={max_results_viz}, conf>={conf_thresh_viz}")
                     st.markdown("#### Retrieval Provenance Flow")
                     fig_sankey = viz.plot_retrieval_sankey(active_prompt, rel_docs, retrieved_nodes, raw_items)
-                    st.plotly_chart(fig_sankey, use_container_width=True)
+                    st.plotly_chart(fig_sankey, use_container_width=True, key="plotly_23")
                     st.markdown("#### Document Filter Scores")
                     fig_doc_scores = viz.plot_doc_filter_scores(rel_docs, len(st.session_state.annotated_trees))
-                    st.plotly_chart(fig_doc_scores, use_container_width=True)
+                    st.plotly_chart(fig_doc_scores, use_container_width=True, key="plotly_24")
                     st.markdown("#### Page Coverage Heatmap")
                     fig_coverage = viz.plot_page_coverage_heatmap(st.session_state.annotated_trees, retrieved_nodes)
-                    st.plotly_chart(fig_coverage, use_container_width=True)
+                    st.plotly_chart(fig_coverage, use_container_width=True, key="plotly_25")
                     st.markdown("#### Node Selection Confidence")
                     fig_conf = viz.plot_node_confidence_distribution(retrieved_nodes)
-                    st.plotly_chart(fig_conf, use_container_width=True)
+                    st.plotly_chart(fig_conf, use_container_width=True, key="plotly_26")
                     st.markdown("#### Hierarchical Tree Explorer")
                     tree_doc_options = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in st.session_state.annotated_trees)))
                     if tree_doc_options:
@@ -3962,7 +3962,7 @@ def run_streamlit():
                         emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
                         fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
                         if fig_comp:
-                            st.plotly_chart(fig_comp, use_container_width=True)
+                            st.plotly_chart(fig_comp, use_container_width=True, key="plotly_27")
                         else:
                             st.info("Could not compute semantic scores for comparison.")
                     st.markdown("#### Raw Retrieval Metadata")

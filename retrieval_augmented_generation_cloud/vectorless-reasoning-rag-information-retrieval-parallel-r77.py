@@ -3768,3 +3768,6 @@ def run_streamlit():
             st.session_state.query_processor["index"].cleanup()
     else:
         st.info("Upload PDF files to begin.")
+        
+if __name__ == "__main__":
+    run_streamlit()

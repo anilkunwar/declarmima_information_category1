@@ -5757,3 +5757,355 @@ class PublicationVisualizationEngine:
         ax.legend(loc='best', fontsize=self.label_font_size)
         plt.tight_layout()
         return fig
+
+# ============================================================================
+# QUERY ANALYZER: INTENT DETECTION & DECOMPOSITION
+# ============================================================================
+class QueryAnalyzer:
+    """
+    Analyzes user queries to determine intent and decompose complex requests.
+    Enhances retrieval precision by tailoring the strategy to the query type.
+    """
+    
+    INTENT_TYPES = Literal["quantitative_lookup", "comparison", "summary", "list_documents", "process_method"]
+
+    def __init__(self, phys_classifier: Optional['PhysicalQuantityClassifier'] = None):
+        self.phys_classifier = phys_classifier or PhysicalQuantityClassifier()
+        self.compiled_patterns = self._build_patterns()
+
+    def _build_patterns(self) -> Dict[str, re.Pattern]:
+        return {
+            "list_docs": re.compile(r"(?:list|show|find|what are).*(?:papers|documents|articles)", re.IGNORECASE),
+            "compare": re.compile(r"(?:compare|versus|vs|difference between|contrast)", re.IGNORECASE),
+            "process": re.compile(r"(?:method|process|technique|approach|algorithm|fabrication|synthesis)", re.IGNORECASE),
+        }
+
+    def analyze(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze query and return metadata.
+        Returns: {
+            "query_type": str,
+            "entities": List[str],
+            "decomposition": List[str],
+            "canonical_quantities": List[str]
+        }
+        """
+        result = {
+            "query_type": "quantitative_lookup", # Default
+            "entities": [],
+            "decomposition": [query],
+            "canonical_quantities": []
+        }
+
+        # 1. Detect Intent
+        if self.compiled_patterns["list_docs"].search(query):
+            result["query_type"] = "list_documents"
+        elif self.compiled_patterns["compare"].search(query):
+            result["query_type"] = "comparison"
+        elif self.compiled_patterns["process"].search(query):
+            result["query_type"] = "process_method"
+        
+        # 2. Extract Entities & Physical Quantities
+        # Simple heuristic: split by spaces, check against known classifiers
+        lower_q = query.lower()
+        for pq in self.phys_classifier.CANONICAL:
+            for alias in self.phys_classifier.CANONICAL[pq]:
+                if alias.lower() in lower_q:
+                    if pq not in result["canonical_quantities"]:
+                        result["canonical_quantities"].append(pq)
+        
+        # 3. Decomposition (Rule-based for simple conjunctions)
+        if " and " in lower_q and result["query_type"] in ["quantitative_lookup", "comparison"]:
+            parts = [p.strip() for p in query.split(" and ") if len(p.strip()) > 5]
+            if len(parts) > 1:
+                result["decomposition"] = parts
+
+        return result
+
+# ============================================================================
+# RESPONSE CACHE & TIMING UTILITIES
+# ============================================================================
+class ResponseCache:
+    """
+    Cache for query responses to prevent re-processing identical queries.
+    Uses SHA-256 hashing of query + parameters to generate keys.
+    """
+    def __init__(self, max_items: int = 50):
+        self._cache: OrderedDict = OrderedDict()
+        self._max_items = max_items
+
+    def get(self, query: str, params: Dict) -> Optional[Dict]:
+        key = self._hash(query, params)
+        return self._cache.get(key)
+
+    def set(self, query: str, params: Dict, response: Dict):
+        key = self._hash(query, params)
+        self._cache[key] = response
+        self._cache.move_to_end(key)
+        if len(self._cache) > self._max_items:
+            self._cache.popitem(last=False)
+
+    def clear(self):
+        self._cache.clear()
+
+    @staticmethod
+    def _hash(query: str, params: Dict) -> str:
+        content = f"{query}|{json.dumps(params, sort_keys=True)}"
+        return hashlib.sha256(content.encode()).hexdigest()
+
+class TimingMetrics:
+    """
+    Context manager and utility for tracking performance metrics.
+    """
+    def __init__(self):
+        self.metrics: Dict[str, List[float]] = defaultdict(list)
+
+    @contextmanager
+    def measure(self, label: str):
+        start = time.time()
+        try:
+            yield self
+        finally:
+            elapsed = time.time() - start
+            self.metrics[label].append(elapsed)
+            logger.debug(f"[METRIC] {label}: {elapsed:.4f}s")
+
+    def get_summary(self) -> Dict[str, Any]:
+        return {
+            k: {"count": len(v), "avg": float(np.mean(v)) if v else 0, "last": v[-1] if v else 0}
+            for k, v in self.metrics.items()
+        }
+
+# ============================================================================
+# TWO-CALL QUERY PROCESSOR (CORE ARCHITECTURE)
+# ============================================================================
+class TwoCallQueryProcessor:
+    """
+    Implements the strict 2-call query architecture.
+    
+    Call 1: Navigation (LLM selects nodes from annotated trees)
+    Call 2: Synthesis (LLM generates answer from selected text)
+    
+    Benefits:
+    - Predictable token usage
+    - Higher reasoning accuracy via structured navigation
+    - Reduced hallucination by grounding extraction in specific text segments
+    """
+    
+    def __init__(self, 
+                 llm: 'HybridLLM', 
+                 retriever: 'HierarchicalTreeRetriever', 
+                 phys_classifier: 'PhysicalQuantityClassifier',
+                 analyzer: 'QueryAnalyzer',
+                 max_text_chars: int = 15000):
+        self.llm = llm
+        self.retriever = retriever
+        self.phys_classifier = phys_classifier
+        self.analyzer = analyzer
+        self.max_text_chars = max_text_chars
+        self.cache = ResponseCache(max_items=50)
+        self.metrics = TimingMetrics()
+
+    async def process_query(self, query: str, annotated_trees: List[Dict]) -> Dict[str, Any]:
+        """
+        Execute the 2-call query pipeline.
+        """
+        with self.metrics.measure("total_query"):
+            # Step 0: Analyze Query
+            analysis = self.analyzer.analyze(query)
+            
+            # Check cache
+            cached = self.cache.get(query, {"max_chars": self.max_text_chars})
+            if cached:
+                logger.info("Query Cache HIT")
+                return cached
+
+            # Call 1: Navigation
+            logger.info(f"CALL 1: Navigating trees for '{query}'")
+            with self.metrics.measure("call_1_navigation"):
+                selected_nodes = await self._call_1_navigation(query, analysis, annotated_trees)
+            
+            if not selected_nodes:
+                return {
+                    "answer": f"I could not find any relevant sections in the documents to answer: '{query}'.",
+                    "nodes": [],
+                    "metrics": self.metrics.get_summary()
+                }
+
+            # Prepare Context for Call 2
+            # Concatenate text from selected nodes, ensuring we don't exceed context limits
+            context_text = self._build_context(selected_nodes)
+            
+            # Call 2: Synthesis
+            logger.info(f"CALL 2: Synthesizing answer")
+            with self.metrics.measure("call_2_synthesis"):
+                answer = await self._call_2_synthesis(query, analysis, context_text)
+
+            result = {
+                "answer": answer,
+                "nodes": selected_nodes,
+                "analysis": analysis,
+                "metrics": self.metrics.get_summary()
+            }
+            
+            # Cache result
+            self.cache.set(query, {"max_chars": self.max_text_chars}, result)
+            return result
+
+    async def _call_1_navigation(self, query: str, analysis: Dict, trees: List[Dict]) -> List[Dict]:
+        """
+        Call 1: Identify relevant nodes.
+        Uses the retriever which already condenses trees and uses LLM for selection.
+        """
+        return await self.retriever.retrieve_quantitative(query, trees)
+
+    async def _call_2_synthesis(self, query: str, analysis: Dict, context: str) -> str:
+        """
+        Call 2: Generate answer based on context.
+        """
+        prompt_template = """
+You are an expert scientific analyst. 
+Answer the user's query using ONLY the provided text context.
+If the context does not contain the answer, state that clearly.
+
+QUERY: {query}
+INTENT: {intent}
+CONTEXT:
+---
+{context}
+---
+
+INSTRUCTIONS:
+1. Provide a direct answer.
+2. Cite sources using the format [DocID, Page] if available in the context headers.
+3. Be precise with numerical values.
+4. If comparing multiple values, structure the comparison clearly.
+"""
+        
+        prompt = prompt_template.format(
+            query=query,
+            intent=analysis.get("query_type", "lookup"),
+            context=context
+        )
+        
+        return await asyncio.to_thread(
+            self.llm.generate,
+            prompt,
+            max_new_tokens=1024,
+            temperature=0.1
+        )
+
+    def _build_context(self, selected_nodes: List[Dict]) -> str:
+        """Concatenate text from selected nodes."""
+        segments = []
+        for node in selected_nodes:
+            doc_id = node.get("doc_id", "Unknown")
+            page = node.get("page_start", "?")
+            title = node.get("section_title", "Section")
+            text = node.get("full_text", "")
+            
+            # Header for citation
+            header = f"### [{doc_id}, Page {page}] {title}\n"
+            segments.append(header + text)
+        
+        combined = "\n\n".join(segments)
+        # Truncate if too large for LLM context window
+        if len(combined) > self.max_text_chars * 2: # Safety margin
+            combined = combined[:self.max_text_chars * 2] + "\n...[TRUNCATED]"
+        return combined
+
+# ============================================================================
+# STREAMLIT UI: INITIALIZATION & SIDEBAR
+# ============================================================================
+def render_sidebar() -> None:
+    """
+    Renders the application sidebar with configuration options.
+    """
+    with st.sidebar:
+        st.markdown("### Configuration")
+        
+        # Model Selection
+        model_keys = list(LOCAL_LLM_OPTIONS.keys())
+        if "llm_model_choice" not in st.session_state:
+            st.session_state.llm_model_choice = model_keys[2] # Default to 7b
+            
+        selected = st.selectbox(
+            "Select Local LLM", 
+            options=model_keys, 
+            index=model_keys.index(st.session_state.llm_model_choice), 
+            key="llm_model_select"
+        )
+        st.session_state.llm_model_choice = selected
+        
+        st.checkbox("Use 4-bit quantization (if Transformers)", value=True, key="use_4bit")
+        
+        st.markdown("---")
+        st.markdown("### Retrieval Settings")
+        
+        st.slider("Confidence threshold", 0.3, 0.9, 0.55, 0.05, key="min_confidence")
+        max_chars = st.slider(
+            "Max text length per retrieved section", 
+            min_value=1000, max_value=50000, value=20000, step=1000,
+            help="Controls context window size for Call 2.",
+            key="max_retrieval_chars"
+        )
+        st.session_state.max_retrieval_chars = max_chars
+        
+        st.checkbox("Enable Two-Call Architecture", value=True, key="use_two_call", 
+                    help="Uses LLM for navigation first, then answer generation.")
+        st.checkbox("Show reasoning trace", value=True, key="show_trace")
+        
+        st.markdown("---")
+        st.markdown("### Visualization Settings")
+        st.selectbox("Default colormap", list(PublicationVisualizationEngine.COLORMAP_OPTIONS.keys()), index=0, key="viz_colormap")
+        st.selectbox("Document label style", ["doi", "number", "alias", "short"], index=0, key="viz_label_style")
+        st.slider("Top N concepts", 5, 100, 25, key="viz_top_n")
+        
+        with st.expander("Advanced Style Controls", expanded=False):
+            st.slider("Base font size", 6, 20, 10, key="viz_font_size")
+            st.slider("Title font size", 8, 30, 14, key="viz_title_font_size")
+            st.slider("Label font size", 6, 18, 9, key="viz_label_font_size")
+            st.slider("Figure DPI", 100, 600, 300, 50, key="viz_figure_dpi")
+            st.slider("Node size factor", 0.1, 3.0, 1.0, 0.1, key="viz_node_size_factor")
+            st.slider("Edge alpha", 0.05, 1.0, 0.25, 0.05, key="viz_edge_alpha")
+            st.slider("Edge width", 0.1, 5.0, 0.8, 0.1, key="viz_edge_width")
+            st.slider("Line width", 0.5, 5.0, 1.5, 0.5, key="viz_line_width")
+            st.slider("Marker size", 20, 200, 80, 10, key="viz_marker_size")
+            st.checkbox("PyVis physics enabled", value=True, key="viz_pyvis_physics")
+            st.slider("PyVis gravity", -5000, -100, -1800, 100, key="viz_pyvis_gravity")
+            st.slider("PyVis spring length", 50, 300, 140, 10, key="viz_pyvis_spring_length")
+            
+        st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+        
+        if st.button("Clear Cache & Reset", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
+def initialize_session_state():
+    """
+    Initialize persistent session state variables if they don't exist.
+    """
+    defaults = {
+        "messages": [],
+        "query_processor": {},
+        "knowledge_graph": QuantitativeKnowledgeGraph(),
+        "annotated_trees": [],
+        "cached_query_result": None,
+        "active_prompt": "",
+        "two_stage_retriever": None,
+        "embedding_model": None,
+        "doc_aliases": {},
+        "tree_cache": AnnotatedTreeCache()
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+@st.cache_resource(show_spinner="Initializing LLM...")
+def get_cached_llm(model_choice: str, use_4bit: bool) -> 'HybridLLM':
+    """
+    Cached initialization of the LLM backend.
+    """
+    internal = LOCAL_LLM_OPTIONS[model_choice]
+    return HybridLLM(model_key=internal, use_4bit=use_4bit)

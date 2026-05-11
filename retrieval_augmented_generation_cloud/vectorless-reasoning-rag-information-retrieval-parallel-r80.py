@@ -3404,3 +3404,650 @@ Include up to {self.max_results} selections."""
             res = self._search_node_recursive(child, target_id)
             if res: return res
         return None
+
+# ============================================================================
+# VISUALIZATION CONFIGURATION DATACLASS
+# ============================================================================
+@dataclass
+class VisConfig:
+    """
+    Centralized configuration for all visualization styling parameters.
+    Enables consistent, publication-quality output across all chart types.
+    """
+    # Font settings
+    font_family: str = "DejaVu Sans"
+    font_size: int = 10
+    title_font_size: int = 14
+    label_font_size: int = 9
+    
+    # Figure settings
+    figure_dpi: int = 300
+    figsize_network: Tuple[int, int] = (14, 12)
+    figsize_knowledge_graph: Tuple[int, int] = (14, 12)
+    figsize_embedding: Tuple[int, int] = (10, 8)
+    figsize_tree: Tuple[int, int] = (14, 10)
+    
+    # Network/node settings
+    node_size_factor: float = 1.0
+    node_size_base_doc: int = 800
+    node_size_base_entity: int = 500
+    node_size_base_material: int = 600
+    node_size_base_value: int = 300
+    node_size_base_hub: int = 2500
+    
+    # Edge settings
+    edge_alpha: float = 0.25
+    edge_width: float = 0.8
+    edge_width_pyvis: float = 1.0
+    
+    # PyVis settings
+    pyvis_height: str = "700px"
+    pyvis_width: str = "100%"
+    pyvis_physics_enabled: bool = True
+    pyvis_gravity: int = -1800
+    pyvis_spring_length: int = 140
+    pyvis_damping: float = 0.85
+    
+    # Plotly settings
+    plotly_height: int = 500
+    plotly_width: Optional[int] = None
+    
+    # Matplotlib settings
+    marker_size: int = 80
+    line_width: float = 1.5
+    alpha: float = 0.8
+    
+    # Colormap
+    default_colormap: str = "viridis"
+    
+    # Label style
+    label_style: str = "doi"
+    
+    # Aliases
+    aliases: Optional[Dict[str, str]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls,  Dict[str, Any]) -> 'VisConfig':
+        """Create from dictionary."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+# ============================================================================
+# PUBLICATION VISUALIZATION ENGINE
+# ============================================================================
+class PublicationVisualizationEngine:
+    """
+    Comprehensive visualization engine for scientific document analysis.
+    Generates 35+ publication-quality chart types with query-aware filtering.
+    
+    Features:
+    - Query-focused knowledge graphs (NetworkX + PyVis)
+    - Hierarchical sunbursts and treemaps
+    - Contradiction detection matrices
+    - Consensus waterfall plots
+    - Embedding space projections (t-SNE, PCA, UMAP)
+    - Retrieval provenance Sankey diagrams
+    - Interactive PyVis networks with modal popups
+    - Publication-ready matplotlib figures
+    """
+    
+    # Domain-specific color mapping for consistent visual semantics
+    DOMAIN_COLORS = {
+        "laser_power": "#3b82f6",      # Blue
+        "scan_speed": "#8b5cf6",        # Purple
+        "yield_strength": "#f59e0b",    # Amber
+        "tensile_strength": "#10b981",  # Emerald
+        "hardness": "#ec4899",          # Pink
+        "temperature": "#ef4444",       # Red
+        "energy_density": "#06b6d4",    # Cyan
+        "unknown": "#6b7280",           # Gray
+        "material": "#3b82f6",          # Blue
+        "document": "#10b981",          # Emerald
+        "hub": "#dc2626",               # Red
+        "query": "#7c3aed",             # Violet
+        "value": "#ec4899",             # Pink
+        "pq": "#2563eb",                # Blue
+    }
+    
+    # Supported colormaps for continuous data
+    COLORMAP_OPTIONS = {
+        "viridis": "viridis", "plasma": "plasma", "inferno": "inferno", 
+        "magma": "magma", "cividis": "cividis", "Blues": "Blues", 
+        "Greens": "Greens", "Oranges": "Oranges", "Reds": "Reds", 
+        "RdBu": "RdBu", "Spectral": "Spectral", "coolwarm": "coolwarm",
+        "Set1": "Set1", "Set2": "Set2", "Set3": "Set3", 
+        "tab10": "tab10", "tab20": "tab20"
+    }
+    
+    def __init__(self, kgraph: QuantitativeKnowledgeGraph, config: Optional[VisConfig] = None):
+        """
+        Initialize visualization engine.
+        
+        Args:
+            kgraph: QuantitativeKnowledgeGraph instance with extracted data
+            config: Optional VisConfig for styling customization
+        """
+        self.kgraph = kgraph
+        self.cfg = config or VisConfig()
+        
+        # Apply matplotlib rcParams from config for consistent styling
+        plt.rcParams['font.family'] = self.cfg.font_family
+        plt.rcParams['font.size'] = self.cfg.font_size
+        plt.rcParams['axes.titlesize'] = self.cfg.title_font_size
+        plt.rcParams['axes.labelsize'] = self.cfg.label_font_size
+        plt.rcParams['figure.dpi'] = self.cfg.figure_dpi
+        plt.rcParams['savefig.dpi'] = self.cfg.figure_dpi
+        plt.rcParams['lines.linewidth'] = self.cfg.line_width
+        plt.rcParams['patch.linewidth'] = self.cfg.line_width
+        plt.rcParams['xtick.labelsize'] = self.cfg.label_font_size
+        plt.rcParams['ytick.labelsize'] = self.cfg.label_font_size
+        plt.rcParams['legend.fontsize'] = self.cfg.label_font_size
+    
+    # -------------------------------------------------------------------------
+    # Property getters for config access
+    # -------------------------------------------------------------------------
+    @property
+    def font_family(self) -> str:
+        return self.cfg.font_family
+    
+    @property
+    def font_size(self) -> int:
+        return self.cfg.font_size
+    
+    @property
+    def title_font_size(self) -> int:
+        return self.cfg.title_font_size
+    
+    @property
+    def label_font_size(self) -> int:
+        return self.cfg.label_font_size
+    
+    @property
+    def default_colormap(self) -> str:
+        return self.cfg.default_colormap
+    
+    @property
+    def figure_dpi(self) -> int:
+        return self.cfg.figure_dpi
+    
+    @property
+    def aliases(self) -> Optional[Dict[str, str]]:
+        return self.cfg.aliases
+    
+    @property
+    def label_style(self) -> str:
+        return self.cfg.label_style
+    
+    # -------------------------------------------------------------------------
+    # Helper methods for color/colormap handling
+    # -------------------------------------------------------------------------
+    def _get_colormap(self, name: Optional[str] = None) -> str:
+        """Get matplotlib colormap name."""
+        return self.COLORMAP_OPTIONS.get(name or self.default_colormap, "viridis")
+    
+    def _get_plotly_colorscale(self, name: Optional[str] = None) -> str:
+        """Get Plotly-compatible colorscale name."""
+        name = name or self.default_colormap
+        # Map matplotlib colormaps to Plotly equivalents
+        mapping = {
+            "coolwarm": "RdBu", "RdBu": "RdBu", "seismic": "RdBu", "bwr": "RdBu"
+        }
+        plotly_builtins = [
+            'viridis', 'plasma', 'inferno', 'magma', 'cividis',
+            'blues', 'greens', 'oranges', 'reds', 'purples', 'greys'
+        ]
+        lowered = name.lower()
+        if lowered in plotly_builtins:
+            return lowered
+        return mapping.get(lowered, 'viridis')
+    
+    def _get_domain_color(self, domain: str, colormap: Optional[str] = None, 
+                          index: int = 0, total: int = 1) -> str:
+        """Get color for a domain/category."""
+        if colormap and total > 1:
+            cmap = plt.get_cmap(self._get_colormap(colormap))
+            return mcolors.to_hex(cmap(index / max(total - 1, 1)))
+        return self.DOMAIN_COLORS.get(domain, "#6b7280")
+    
+    # -------------------------------------------------------------------------
+    # Data extraction and preparation
+    # -------------------------------------------------------------------------
+    def extract_dataframe(self, aliases: Optional[Dict[str, str]] = None, 
+                          label_style: str = "doi") -> pd.DataFrame:
+        """
+        Extract all quantitative data into a pandas DataFrame for analysis.
+        
+        Args:
+            aliases: Optional document name aliases
+            label_style: Citation label style ('doi', 'number', 'alias', 'short')
+            
+        Returns:
+            DataFrame with columns: doc, doc_stem, doc_citation, physical_quantity,
+            material, value, unit, confidence, page, context
+        """
+        rows = []
+        for doc_id, graph in self.kgraph.doc_graphs.items():
+            display = get_display_name(doc_id, aliases)
+            citation = get_citation_label(doc_id, aliases, style=label_style)
+            
+            for item in graph["all_items"]:
+                phys = item.get("physical_quantity", "unknown")
+                mat = item.get("material", "Unknown")
+                value = item.get("value")
+                unit = item.get("unit", "")
+                
+                if value is not None:
+                    rows.append({
+                        "doc": doc_id,
+                        "doc_stem": display,
+                        "doc_citation": citation,
+                        "physical_quantity": phys,
+                        "material": mat,
+                        "value": value,
+                        "unit": unit,
+                        "confidence": item.get("confidence", 0.5),
+                        "page": item.get("page", 0),
+                        "context": item.get("context", "")[:200]
+                    })
+        
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    
+    # =============================================================================
+    # QUERY-AWARE DATA FILTERING
+    # =============================================================================
+    def get_query_focused_df(self, query_ctx: QueryContext) -> pd.DataFrame:
+        """
+        Return dataframe filtered to current query context.
+        
+        Filters by:
+        - Relevant document IDs
+        - Physical quantities mentioned in query
+        - Materials mentioned in query
+        
+        Args:
+            query_ctx: QueryContext with query-specific filters
+            
+        Returns:
+            Filtered DataFrame
+        """
+        df = self.extract_dataframe(aliases=self.cfg.aliases, label_style=self.cfg.label_style)
+        
+        if df.empty or not query_ctx.has_data():
+            return df
+        
+        # Build filter mask
+        mask = (
+            df["doc"].isin(query_ctx.relevant_doc_ids) |
+            df["physical_quantity"].isin(query_ctx.physical_quantities) |
+            (df["material"].isin(query_ctx.materials) & df["material"].notna())
+        )
+        
+        return df[mask].copy()
+    
+    # =============================================================================
+    # QUERY-AWARE KNOWLEDGE GRAPH (NetworkX)
+    # =============================================================================
+    def plot_query_knowledge_graph(self, query_ctx: QueryContext, 
+                                    figsize: Tuple[int, int] = (14, 11)) -> plt.Figure:
+        """
+        Generate query-focused interactive Knowledge Graph using NetworkX.
+        
+        Node types:
+        - QUERY (purple): Central query node
+        - Documents (green): Relevant papers
+        - Physical Quantities (blue): Parameters like laser_power, yield_strength
+        - Materials (orange): Alloys like Ti3Au, AlSiMgZr
+        - Values (pink): Extracted numerical values (clickable in PyVis version)
+        
+        Edges represent relationships: query→doc, doc→value, material→value, etc.
+        
+        Args:
+            query_ctx: QueryContext with query-specific data
+            figsize: Figure size tuple
+            
+        Returns:
+            matplotlib Figure object
+        """
+        if not query_ctx.has_data():
+            fig, ax = plt.subplots(figsize=figsize)
+            ax.text(0.5, 0.5, "No quantitative data for this query", 
+                   ha='center', va='center', fontsize=14)
+            ax.axis("off")
+            return fig
+        
+        df_focus = self.get_query_focused_df(query_ctx)
+        G = nx.Graph()
+        
+        # Central Query Node
+        G.add_node("QUERY", node_type="query", label=query_ctx.query[:45] + "...",
+                  title=f"Query: {query_ctx.query}")
+        
+        # Add relevant documents
+        for doc_id in query_ctx.relevant_doc_ids:
+            display_name = get_display_name(doc_id, self.cfg.aliases)
+            G.add_node(display_name, node_type="doc", color="#10b981", size=1400,
+                      title=f"Document: {display_name}\n"
+                           f"{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
+        
+        # Add physical quantities
+        for pq in query_ctx.physical_quantities:
+            readable = self.kgraph.phys_classifier.get_human_readable(pq)
+            G.add_node(pq, node_type="pq", label=readable, color="#3b82f6", size=1100)
+        
+        # Add materials
+        for mat in query_ctx.materials:
+            G.add_node(mat, node_type="material", color="#f59e0b", size=1300)
+        
+        # Add extracted values as leaf nodes
+        for val in query_ctx.extracted_values[:20]:
+            label = f"{val.value:.1f} {val.unit or ''}"
+            G.add_node(label, node_type="value", color="#ec4899", size=600,
+                      title=f"{val.value} {val.unit} | {val.material or ''} | p.{val.page}")
+            
+            # Connect value to material if both exist
+            if val.material and val.material in G:
+                G.add_edge(val.material, label, weight=2)
+            # Connect value to document
+            if val.doc_name and get_display_name(val.doc_name, self.cfg.aliases) in G:
+                G.add_edge(get_display_name(val.doc_name, self.cfg.aliases), label, weight=1.5)
+            # Connect value to physical quantity
+            for pq in query_ctx.physical_quantities:
+                if val.physical_quantity == pq and pq in G:
+                    G.add_edge(pq, label, weight=1)
+        
+        # Connect query to everything
+        for node in list(G.nodes()):
+            if node != "QUERY":
+                G.add_edge("QUERY", node, weight=0.8)
+        
+        # Draw the graph
+        pos = nx.spring_layout(G, k=0.65, iterations=80, seed=42)
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Categorize nodes for colored drawing
+        query_nodes = ["QUERY"]
+        doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
+        pq_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "pq"]
+        mat_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "material"]
+        val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
+        
+        # Draw nodes by type with appropriate colors/sizes
+        nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", 
+                              node_size=3200, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", 
+                              node_size=1400, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", 
+                              node_size=1100, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", 
+                              node_size=1300, ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#ec4899", 
+                              node_size=650, ax=ax)
+        
+        # Draw edges and labels
+        nx.draw_networkx_edges(G, pos, alpha=0.35, width=1.2, edge_color="#94a3b8", ax=ax)
+        nx.draw_networkx_labels(G, pos, font_size=9, font_family=self.font_family, ax=ax)
+        
+        # Title and styling
+        ax.set_title(f"Query-Focused Knowledge Graph\n{query_ctx.query[:70]}{'...' if len(query_ctx.query)>70 else ''}",
+                    fontsize=15, fontweight='bold', pad=20)
+        ax.axis("off")
+        plt.tight_layout()
+        
+        return fig
+    
+    # =============================================================================
+    # QUERY-AWARE KNOWLEDGE GRAPH (PyVis with Modal Popup)
+    # =============================================================================
+    def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
+        """
+        Interactive PyVis KG with confidence highlighting + modal-ready JS.
+        
+        Features:
+        - Clickable value nodes show full context in modal popup
+        - Color-coded by confidence (red=high, orange=medium, gray=low)
+        - Edge thickness reflects relationship strength
+        - Physics-based layout for intuitive exploration
+        
+        Returns:
+            HTML string for embedding in Streamlit
+        """
+        if not PYVIS_AVAILABLE:
+            return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
+        
+        if not query_ctx.has_data():
+            return "<p>No quantitative data available for this query.</p>"
+        
+        # Initialize PyVis network with publication styling
+        net = Network(
+            height="780px",
+            width="100%",
+            bgcolor="#ffffff",      # White bright background
+            font_color="#1e293b",   # Dark slate text
+            cdn_resources='remote'
+        )
+        net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
+        
+        # Confidence threshold for strong paths
+        high_conf_threshold = 0.75
+        connected_to_query = set()
+        
+        # ====================== ADD NODES ======================
+        # 1. Central Query Node
+        net.add_node(
+            "QUERY",
+            label="YOUR QUERY",
+            title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>",
+            color="#7c3aed",  # Darker purple for white bg
+            size=45,
+            font={"size": 18, "bold": True, "color": "#1e293b"}
+        )
+        
+        # 2. Documents
+        for doc_id in query_ctx.relevant_doc_ids:
+            display = get_display_name(doc_id, self.cfg.aliases)
+            count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
+            
+            tooltip = f"<b>Document:</b> {display}<br>"
+            tooltip += f"<b>Extracted Values:</b> {count}<br><br>"
+            for item in query_ctx.extracted_values[:5]:
+                if item.doc_name == doc_id:
+                    tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
+            
+            net.add_node(
+                display,
+                label=display[:25],
+                title=tooltip,
+                color="#16a34a",  # Darker green
+                size=32,
+                font={"size": 14, "color": "#1e293b"}
+            )
+            net.add_edge("QUERY", display, value=3)
+            connected_to_query.add(display)
+        
+        # 3. Physical Quantities
+        for pq in query_ctx.physical_quantities:
+            readable = self.kgraph.phys_classifier.get_human_readable(pq)
+            net.add_node(
+                pq,
+                label=readable,
+                title=f"<b>Physical Quantity:</b><br>{readable}",
+                color="#2563eb",  # Darker blue
+                size=28,
+                font={"color": "#1e293b"}
+            )
+            net.add_edge("QUERY", pq, value=2)
+            connected_to_query.add(pq)
+        
+        # 4. Materials
+        for mat in query_ctx.materials:
+            net.add_node(
+                mat,
+                label=mat[:22],
+                title=f"<b>Material/Alloy:</b><br>{mat}",
+                color="#d97706",  # Darker orange
+                size=30,
+                font={"color": "#1e293b"}
+            )
+            net.add_edge("QUERY", mat, value=2)
+            connected_to_query.add(mat)
+        
+        # 5. Extracted Values (Clickable Leaves)
+        for i, val in enumerate(sorted(query_ctx.extracted_values, 
+                                       key=lambda x: x.confidence, 
+                                       reverse=True)[:30]):
+            node_id = f"val_{i}"
+            label = f"{val.value:.1f}{val.unit or ''}"
+            
+            # Color by confidence
+            conf = val.confidence
+            color = "#e11d48" if conf >= high_conf_threshold else "#ea580c" if conf >= 0.6 else "#64748b"
+            
+            excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
+            tooltip = f"""
+<b>{val.value} {val.unit}</b><br>
+<b>Confidence:</b> {conf:.2f}<br>
+<b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br>
+<b>Material:</b> {val.material or '—'}<br>
+<b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br>
+<b>Context:</b><br>{excerpt}
+"""
+            net.add_node(
+                node_id,
+                label=label,
+                title=tooltip,
+                color=color,
+                size=24 + int(conf * 18),
+                font={"size": 11, "color": "#1e293b"}
+            )
+            
+            # Connect with thickness based on confidence
+            edge_width = 3 if conf >= high_conf_threshold else 1.5
+            
+            if val.material and val.material in net.get_nodes():
+                net.add_edge(val.material, node_id, value=edge_width, color="#cbd5e1")
+            if val.physical_quantity in net.get_nodes():
+                net.add_edge(val.physical_quantity, node_id, value=edge_width*0.8)
+            doc_name = get_display_name(val.doc_name, self.cfg.aliases)
+            if doc_name in net.get_nodes():
+                net.add_edge(doc_name, node_id, value=edge_width, color="#86efac")
+        
+        # Connect everything to QUERY
+        for node in net.get_nodes():
+            if node != "QUERY" and node not in connected_to_query:
+                net.add_edge("QUERY", node, value=1, color="#64748b")
+        
+        # Generate base HTML
+        html = net.generate_html()
+        
+        # ====================== ADVANCED JS MODAL ======================
+        modal_js = """
+<script>
+var modal = null;
+network.on("click", function(params) {
+    if (params.nodes.length === 0) return;
+    var nodeId = params.nodes[0];
+    
+    if (nodeId.startsWith("val_")) {
+        var node = network.body.nodes[nodeId];
+        var title = node.options.title || "No details";
+        
+        if (!modal) {
+            modal = document.createElement("div");
+            modal.style.cssText = `
+                position:fixed; top:0; left:0; width:100%; height:100%;
+                background:rgba(0,0,0,0.6); z-index:9999; display:flex;
+                align-items:center; justify-content:center; font-family:system-ui;
+            `;
+            document.body.appendChild(modal);
+        }
+        
+        modal.innerHTML = `
+            <div style="background:#f8fafc; color:#1e293b; padding:25px; border-radius:12px;
+                        max-width:620px; max-height:85vh; overflow:auto; border:1px solid #cbd5e1;">
+                <h3 style="margin-top:0; color:#db2777;">Extracted Value Details</h3>
+                <div style="white-space:pre-wrap; font-size:15px; line-height:1.5;">${title}</div>
+                <br>
+                <button onclick="this.parentElement.parentElement.remove()"
+                        style="padding:10px 20px; background:#e11d48; color:white; border:none;
+                               border-radius:6px; cursor:pointer;">Close</button>
+            </div>
+        `;
+    }
+});
+</script>
+"""
+        
+        # Inject modal script before </body>
+        if "</body>" in html:
+            html = html.replace("</body>", modal_js + "</body>")
+        else:
+            html += modal_js
+        
+        return html
+    
+    # =============================================================================
+    # QUERY-AWARE HIERARCHICAL SUNBURST
+    # =============================================================================
+    def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
+        """
+        Query-focused hierarchical sunburst showing:
+        Physical Quantity → Material → Document → Value Range
+        
+        Args:
+            query_ctx: QueryContext with query-specific data
+            
+        Returns:
+            Plotly Figure object
+        """
+        df_focus = self.get_query_focused_df(query_ctx)
+        
+        if df_focus.empty:
+            return go.Figure().update_layout(title="No data for current query")
+        
+        # Create hierarchy: Physical Quantity → Material → Document → Value Range
+        df_sun = df_focus.copy()
+        df_sun["material"] = df_sun["material"].fillna("Unknown").replace("", "Unknown")
+        df_sun["doc_stem"] = df_sun["doc_stem"].fillna("Unknown").replace("", "Unknown")
+        
+        # Bin values for better hierarchy visualization
+        if not df_sun.empty and len(df_sun) >= 3:
+            try:
+                n_bins = min(5, max(2, len(df_sun)//3))
+                df_sun["value_range"] = pd.cut(df_sun["value"], bins=n_bins, precision=1).astype(str).fillna("unknown")
+                
+                fig = px.sunburst(
+                    df_sun,
+                    path=["physical_quantity", "material", "doc_stem", "value_range"],
+                    values="value",
+                    color="value",
+                    color_continuous_scale=self._get_plotly_colorscale(),
+                    title=f"Query Hierarchy: {query_ctx.query[:60]}{'...' if len(query_ctx.query)>60 else ''}",
+                    maxdepth=4
+                )
+                fig.update_traces(textinfo="label+percent entry")
+                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+                return fig
+                
+            except Exception as e:
+                logger.warning(f"Sunburst binning failed: {e}")
+        
+        # Fallback: simpler hierarchy without value binning
+        try:
+            fig = px.sunburst(
+                df_sun,
+                path=["physical_quantity", "material", "doc_stem"],
+                values="value",
+                color="value",
+                color_continuous_scale=self._get_plotly_colorscale(),
+                title=f"Query Hierarchy: {query_ctx.query[:60]}{'...' if len(query_ctx.query)>60 else ''}"
+            )
+            fig.update_traces(textinfo="label+percent entry")
+            fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+            return fig
+        except Exception as e:
+            logger.error(f"Query sunburst failed: {e}")
+            return go.Figure().update_layout(title="Sunburst unavailable for this query")

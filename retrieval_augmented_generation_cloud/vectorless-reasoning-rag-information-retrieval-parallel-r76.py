@@ -3862,7 +3862,7 @@ def run_streamlit():
 
                         else:
                             fig_kg = viz.plot_query_knowledge_graph(query_ctx)
-                            st.pyplot(fig_kg, key="py_fig_kg")
+                            st.pyplot(fig_kg)
 
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi, bbox_inches='tight')
@@ -4031,7 +4031,7 @@ def run_streamlit():
                     with net_subtabs[0]:
                         if selected_qty != "All":
                             fig_kg = viz.plot_quantitative_knowledge_graph(df_all, selected_qty, colormap, aliases=aliases, label_style=label_style)
-                            st.pyplot(fig_kg, key="py_fig_kg_2")
+                            st.pyplot(fig_kg)
 
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4052,7 +4052,7 @@ def run_streamlit():
 
                     with net_subtabs[2]:
                         fig_net = viz.plot_knowledge_network(df_all, colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_net, key="py_fig_net")
+                        st.pyplot(fig_net)
 
                         buf = BytesIO()
                         fig_net.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4071,7 +4071,7 @@ def run_streamlit():
 
                     with net_subtabs[4]:
                         fig_static = viz.plot_static_knowledge_network(None, st.session_state.get("viz_top_n", 25), colormap=colormap, aliases=aliases, label_style=label_style)
-                        st.pyplot(fig_static, key="py_fig_static")
+                        st.pyplot(fig_static)
 
                         buf = BytesIO()
                         fig_static.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4094,7 +4094,7 @@ def run_streamlit():
                         if SKLEARN_AVAILABLE:
                             fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_tsne:
-                                st.pyplot(fig_tsne, key="py_fig_tsne")
+                                st.pyplot(fig_tsne)
 
                                 buf = BytesIO()
                                 fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4102,7 +4102,7 @@ def run_streamlit():
 
                             fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_pca:
-                                st.pyplot(fig_pca, key="py_fig_pca")
+                                st.pyplot(fig_pca)
 
                                 buf = BytesIO()
                                 fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4111,7 +4111,7 @@ def run_streamlit():
                         if UMAP_AVAILABLE:
                             fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
                             if fig_umap:
-                                st.pyplot(fig_umap, key="py_fig_umap")
+                                st.pyplot(fig_umap)
 
                                 buf = BytesIO()
                                 fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
@@ -4218,7 +4218,7 @@ def run_streamlit():
                         selected_tree_doc = st.selectbox("Select document to visualize", tree_doc_options, key="tree_doc_select")
                         fig_tree = viz.plot_retrieval_tree_highlight(st.session_state.annotated_trees, retrieved_nodes, selected_tree_doc)
                         if fig_tree:
-                            st.pyplot(fig_tree, key="py_fig_tree")
+                            st.pyplot(fig_tree)
 
                             buf = BytesIO()
                             fig_tree.savefig(buf, format="png", dpi=config.figure_dpi)

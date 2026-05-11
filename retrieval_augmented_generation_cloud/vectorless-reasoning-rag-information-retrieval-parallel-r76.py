@@ -589,7 +589,7 @@ class PhysicalQuantityClassifier:
             "absorption_coefficient": "Absorption Coefficient",
             "enthalpy": "Enthalpy", "viscosity": "Viscosity",
             "thermal_conductivity": "Thermal Conductivity", "density": "Density",
-            "unknown": "Other Quantities"
+            "unknown": "Other Quantities",
             "lewis_number": "Lewis Number", "jackson_parameter": "Jackson Parameter",
 
             "hollomon_strength_coeff": "Hollomon Strength Coeff", "hollomon_exponent": "Hollomon Exponent",
@@ -1051,8 +1051,9 @@ class TwoStageRetriever:
                 if meta.areal_energy_density_values:
                     score += 0.5
             if "led" in query_lower or "linear energy density" in query_lower:
+                if meta.linear_energy_density_values:
+                    score += 0.5
             # NEW v17.2 scoring
-
             if any(t in query_lower for t in ["melt pool", "meltpool", "penetration depth"]):
 
                 if meta.melt_pool_depth_values or meta.melt_pool_width_values:
@@ -3280,6 +3281,27 @@ class PublicationVisualizationEngine:
         for tree in doc_trees:
             doc_id = tree.get("doc_id", tree.get("doc_name", "unknown"))
             pages = []
+            def collect_pages(node):
+                pages.append(node.get("start_index", 1))
+                if node.get("end_index"):
+                    pages.append(node["end_index"])
+                for c in node.get("nodes", []):
+                    collect_pages(c)
+            collect_pages(tree)
+            max_p = max(pages) if pages else 1
+            max_pages = max(max_pages, max_p)
+        coverage = np.zeros((len(doc_names), max_pages))
+        for r in retrieved_nodes:
+            doc_id = r.get("doc_id")
+            if doc_id in doc_names:
+                doc_idx = doc_names.index(doc_id)
+                start = r.get("page_start", 1) - 1
+                for p in range(max(0, start - 1), min(max_pages, start + 3)):
+                    coverage[doc_idx, p] = 1
+        doc_labels = [Path(d).stem for d in doc_names]
+        fig = go.Figure(data=go.Heatmap(z=coverage, x=list(range(1, max_pages + 1)), y=doc_labels, colorscale=[[0, "#f3f4f6"], [1, "#059669"]], showscale=False, hovertemplate="Doc: %{y}<br>Page: %{x}<br>Retrieved: %{z}<extra></extra>"))
+        fig.update_layout(title="Page Coverage Heatmap (Retrieved Pages per Document)", xaxis_title="Page Number", yaxis_title="Document", font=dict(family=self.font_family, size=self.font_size), height=max(400, len(doc_names) * 40))
+        return fig
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
         if not relevant_docs and not retrieved_nodes:
             return go.Figure().update_layout(title="No retrieval data available")
@@ -3360,27 +3382,6 @@ class PublicationVisualizationEngine:
             height=650, width=1100,
             margin=dict(l=40, r=40, t=80, b=40)
         )
-        return fig
-            def collect_pages(node):
-                pages.append(node.get("start_index", 1))
-                if node.get("end_index"):
-                    pages.append(node["end_index"])
-                for c in node.get("nodes", []):
-                    collect_pages(c)
-            collect_pages(tree)
-            max_p = max(pages) if pages else 1
-            max_pages = max(max_pages, max_p)
-        coverage = np.zeros((len(doc_names), max_pages))
-        for r in retrieved_nodes:
-            doc_id = r.get("doc_id")
-            if doc_id in doc_names:
-                doc_idx = doc_names.index(doc_id)
-                start = r.get("page_start", 1) - 1
-                for p in range(max(0, start - 1), min(max_pages, start + 3)):
-                    coverage[doc_idx, p] = 1
-        doc_labels = [Path(d).stem for d in doc_names]
-        fig = go.Figure(data=go.Heatmap(z=coverage, x=list(range(1, max_pages + 1)), y=doc_labels, colorscale=[[0, "#f3f4f6"], [1, "#059669"]], showscale=False, hovertemplate="Doc: %{y}<br>Page: %{x}<br>Retrieved: %{z}<extra></extra>"))
-        fig.update_layout(title="Page Coverage Heatmap (Retrieved Pages per Document)", xaxis_title="Page Number", yaxis_title="Document", font=dict(family=self.font_family, size=self.font_size), height=max(400, len(doc_names) * 40))
         return fig
 
     def plot_node_confidence_distribution(self, retrieved_nodes):
@@ -3837,7 +3838,7 @@ def run_streamlit():
                                 "query_knowledge_graph.html", 
                                 mime="text/html",
                                 key="dl_pyvis_query"
-                            , key="dl_dl")
+                            )
 
                         else:
                             fig_kg = viz.plot_query_knowledge_graph(query_ctx)
@@ -3845,7 +3846,7 @@ def run_streamlit():
 
                             buf = BytesIO()
                             fig_kg.savefig(buf, format="png", dpi=config.figure_dpi, bbox_inches='tight')
-                            st.download_button("Download Query KG (PNG)", buf.getvalue() "query_knowledge_graph.png", mime="image/png", key="dl_kg")
+                            st.download_button("Download Query KG (PNG)", buf.getvalue(), "query_knowledge_graph.png", mime="image/png", key="dl_kg")
 
                     with col2:
                         st.markdown("### Legend")

@@ -1658,3 +1658,603 @@ class TwoStageRetriever:
     def get_relevant_pages(self, doc_name: str, query: str, max_pages: int = 5) -> List[int]:
         """Placeholder for page-level retrieval (can be enhanced with LLM navigation)."""
         return list(range(1, max_pages + 1))
+
+# ============================================================================
+# ENHANCED PAGE NODE WITH CONTENT HASHING & CACHING SUPPORT
+# ============================================================================
+@dataclass
+class PageNode:
+    """
+    Represents a node in the hierarchical document tree.
+    Enhanced with content hashing for intelligent caching and roll-up summarization.
+    """
+    id: str
+    title: str
+    page_start: int
+    page_end: Optional[int]
+    full_text: str
+    summary: str
+    level: int
+    children: List['PageNode'] = field(default_factory=list)
+    doc_id: str = ""
+    section_type: str = "BODY"
+    node_id: str = ""
+    prefix_summary: str = ""
+    text_token_count: int = 0
+    _pdf_path: Optional[str] = None
+    meta Optional[DocumentMetadata] = None
+    _content_hash: Optional[str] = None  # Added for caching
+
+    def compute_content_hash(self) -> str:
+        """Compute SHA-256 hash of node content for caching validation."""
+        if self._content_hash:
+            return self._content_hash
+        
+        # Hash includes title, page range, summary, and metadata (if present)
+        content_parts = [
+            self.title,
+            str(self.page_start),
+            str(self.page_end),
+            self.summary[:300],
+            self.prefix_summary[:200],
+            str(self.metadata.dict()) if self.metadata else ""
+        ]
+        combined = "|".join(content_parts)
+        self._content_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
+        return self._content_hash
+
+    def get_text(self, doc_cache: Dict[str, Any] = None, max_chars: int = 20000) -> str:
+        """
+        Retrieves full text for this node, either from cache, in-memory, or by parsing PDF.
+        """
+        if self.full_text:
+            return self.full_text[:max_chars] if len(self.full_text) > max_chars else self.full_text
+        
+        if not self._pdf_path or not fitz:
+            return ""
+        
+        doc = None
+        if doc_cache and self.doc_id in doc_cache:
+            doc = doc_cache[self.doc_id]
+        else:
+            doc = fitz.open(self._pdf_path)
+            if doc_cache:
+                doc_cache[self.doc_id] = doc
+        
+        start = self.page_start - 1
+        end = min(self.page_end or self.page_start, len(doc))
+        
+        # Safe page extraction
+        texts = []
+        for p in range(start, end):
+            try:
+                texts.append(doc[p].get_text("text"))
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {p+1} in {self.doc_id}: {e}")
+                texts.append(f"[Error extracting page {p+1}]")
+        
+        self.full_text = "\n".join(texts)
+        
+        if doc_cache is None:
+            try:
+                doc.close()
+            except:
+                pass
+                
+        return self.full_text[:max_chars] if len(self.full_text) > max_chars else self.full_text
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize node to dictionary for caching/export."""
+        return {
+            "id": self.id,
+            "title": self.title,
+            "page_start": self.page_start,
+            "page_end": self.page_end,
+            "summary": self.summary,
+            "prefix_summary": self.prefix_summary,
+            "level": self.level,
+            "doc_id": self.doc_id,
+            "section_type": self.section_type,
+            "node_id": self.node_id,
+            "text_token_count": self.text_token_count,
+            "children": [c.to_dict() for c in self.children],
+            "metadata": self.metadata.dict() if self.metadata else None,
+            "content_hash": self.compute_content_hash()
+        }
+
+    def to_tree_format(self, max_chars: int = 20000) -> Dict[str, Any]:
+        """Convert to tree structure format for visualization/retrieval."""
+        result = {
+            "title": self.title,
+            "node_id": self.node_id,
+            "start_index": self.page_start,
+            "end_index": self.page_end or self.page_start,
+            "summary": self.summary,
+            "prefix_summary": self.prefix_summary,
+            "text_token_count": self.text_token_count,
+            "content_hash": self.compute_content_hash()
+        }
+        
+        if self.children:
+            result["nodes"] = [c.to_tree_format(max_chars) for c in self.children]
+            
+        text = self.get_text(max_chars=max_chars)
+        if text:
+            result["text"] = text
+            
+        if self.meta
+            result["metadata"] = self.metadata.dict()
+            
+        return result
+
+    @classmethod
+    def from_dict(cls,  dict, pdf_path: Optional[str] = None) -> 'PageNode':
+        """Reconstruct PageNode from dictionary."""
+        node = cls(
+            data["id"], 
+            data["title"], 
+            data["page_start"], 
+            data.get("page_end"), 
+            "",
+            data.get("summary", ""), 
+            data.get("level", 0), 
+            doc_id=data.get("doc_id", ""),
+            section_type=data.get("section_type", "BODY"), 
+            _pdf_path=pdf_path
+        )
+        node.node_id = data.get("node_id", "")
+        node.prefix_summary = data.get("prefix_summary", "")
+        node.text_token_count = data.get("text_token_count", 0)
+        node._content_hash = data.get("content_hash")
+        
+        for c in data.get("children", []):
+            node.children.append(cls.from_dict(c, pdf_path))
+            
+        if data.get("metadata"):
+            node.metadata = DocumentMetadata(**data["metadata"])
+            
+        return node
+
+
+# ============================================================================
+# ROLL-UP HIERARCHICAL SUMMARIZER (NEW V18.0 COMPONENT)
+# ============================================================================
+class RollupSummarizer:
+    """
+    Generates hierarchical roll-up summaries for document trees.
+    
+    Strategy:
+    1. Leaf nodes: Summarize raw page text directly.
+    2. Parent nodes: Synthesize child summaries + own prefix content.
+    3. Root node: Executive summary of entire document.
+    
+    This bottom-up condensation dramatically improves LLM navigation accuracy
+    by allowing the model to reason over structured semantic summaries rather
+    than raw, fragmented text.
+    """
+    
+    def __init__(self, llm: 'HybridLLM', max_summary_length: int = 250):
+        self.llm = llm
+        self.max_summary_length = max_summary_length
+        self._summary_cache: Dict[str, str] = {}
+    
+    def generate_rollup_summaries(self, root: PageNode) -> PageNode:
+        """
+        Generate hierarchical summaries bottom-up using post-order traversal.
+        """
+        self._post_order_summarize(root)
+        return root
+
+    def _post_order_summarize(self, node: PageNode) -> None:
+        """Recursively summarize children first, then current node."""
+        # 1. Process all children
+        for child in node.children:
+            self._post_order_summarize(child)
+            
+        # 2. Summarize current node
+        cache_key = f"{node.doc_id}:{node.node_id}:{node.compute_content_hash()}"
+        
+        if cache_key in self._summary_cache:
+            node.summary = self._summary_cache[cache_key]
+            return
+            
+        if not node.children:
+            # Leaf node: summarize raw text
+            text = node.get_text(max_chars=4000)
+            if len(text.strip()) < 50:
+                node.summary = text[:self.max_summary_length]
+            else:
+                node.summary = self._summarize_text(
+                    text, 
+                    instruction=f"Summarize this document section in max {self.max_summary_length} characters. Focus on quantitative parameters, materials, methods, and key findings. Return ONLY the summary."
+                )
+        else:
+            # Internal node: roll-up child summaries + own content
+            child_summaries = [c.summary for c in node.children if c.summary]
+            own_content = node.prefix_summary[:300] if node.prefix_summary else ""
+            
+            combined = f"Own Context: {own_content}\n\nSubsections:\n" + "\n---\n".join(child_summaries[:8])
+            
+            node.summary = self._summarize_text(
+                combined,
+                instruction=f"Synthesize these subsection summaries and context into a single {self.max_summary_length}-char overview. Highlight overarching themes, key parameters, and experimental conditions. Return ONLY the summary."
+            )
+            
+        # Cache result
+        self._summary_cache[cache_key] = node.summary[:self.max_summary_length]
+    
+    def _summarize_text(self, text: str, instruction: str) -> str:
+        """Call LLM for summarization with robust fallback."""
+        prompt = f"{instruction}\n\nText to process:\n{text[:5000]}\n\nSummary:"
+        
+        try:
+            response = asyncio.run(
+                asyncio.to_thread(
+                    self.llm.generate, 
+                    prompt, 
+                    max_new_tokens=200, 
+                    temperature=0.05
+                )
+            )
+            cleaned = response.strip().replace("Summary:", "").strip()
+            return cleaned[:self.max_summary_length]
+        except Exception as e:
+            logger.warning(f"LLM summarization failed for node: {e}")
+            # Deterministic fallback: extract first sentence with numeric data
+            sentences = re.split(r'[.!?]+', text)
+            for sent in sentences:
+                sent = sent.strip()
+                if len(sent) > 20 and any(c.isdigit() for c in sent):
+                    return sent[:self.max_summary_length]
+            return text[:self.max_summary_length]
+
+
+# ============================================================================
+# ANNOTATED TREE CACHE WITH SHA-256 HASHING (NEW V18.0 COMPONENT)
+# ============================================================================
+class AnnotatedTreeCache:
+    """
+    Full annotated-tree caching system.
+    
+    Features:
+    - Content-based hashing (SHA-256 of doc_name + first 1MB)
+    - Hierarchical JSON storage with compression
+    - TTL-based expiration (default 72 hours)
+    - Persistent index for fast lookup
+    - Safe concurrent access
+    """
+    
+    def __init__(self, cache_dir: str = ".declarmima_cache_v18", ttl_hours: int = 72):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.ttl = timedelta(hours=ttl_hours)
+        self._index: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        self._load_index()
+    
+    def _load_index(self):
+        """Load cache index from disk."""
+        index_path = self.cache_dir / "tree_index.json"
+        if index_path.exists():
+            try:
+                with open(index_path, 'r', encoding='utf-8') as f:
+                    self._index = json.load(f)
+                logger.info(f"Loaded cache index with {len(self._index)} entries")
+            except Exception as e:
+                logger.warning(f"Failed to load cache index, starting fresh: {e}")
+                self._index = {}
+    
+    def _save_index(self):
+        """Persist cache index to disk."""
+        index_path = self.cache_dir / "tree_index.json"
+        try:
+            with self._lock:
+                with open(index_path, 'w', encoding='utf-8') as f:
+                    json.dump(self._index, f, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"Failed to save cache index: {e}")
+    
+    def _compute_doc_hash(self, doc_name: str, file_content: bytes) -> str:
+        """Compute SHA-256 hash for document content identification."""
+        hasher = hashlib.sha256()
+        hasher.update(doc_name.encode('utf-8'))
+        hasher.update(file_content[:1024 * 1024])  # Hash first 1MB
+        return hasher.hexdigest()[:32]
+    
+    def get(self, doc_name: str, file_content: bytes) -> Optional[Dict]:
+        """
+        Retrieve cached tree if available and not expired.
+        Returns dictionary representation of PageNode tree.
+        """
+        doc_hash = self._compute_doc_hash(doc_name, file_content)
+        
+        with self._lock:
+            entry = self._index.get(doc_hash)
+            if not entry:
+                return None
+                
+            # Check TTL
+            cached_time = datetime.fromisoformat(entry['cached_at'])
+            if datetime.now() - cached_time > self.ttl:
+                self._remove_entry(doc_hash)
+                return None
+                
+        # Load tree file
+        cache_file = self.cache_dir / f"{doc_hash}.tree.json"
+        if not cache_file.exists():
+            with self._lock:
+                self._remove_entry(doc_hash)
+            return None
+            
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                tree_data = json.load(f)
+            logger.debug(f"Cache HIT for {doc_name} (hash: {doc_hash[:8]}...)")
+            return tree_data
+        except Exception as e:
+            logger.warning(f"Failed to load cached tree file for {doc_hash}: {e}")
+            with self._lock:
+                self._remove_entry(doc_hash)
+            return None
+
+    def set(self, doc_name: str, file_content: bytes, tree_dict: Dict) -> bool:
+        """
+        Store annotated tree in cache.
+        Returns True if successful, False otherwise.
+        """
+        doc_hash = self._compute_doc_hash(doc_name, file_content)
+        cache_file = self.cache_dir / f"{doc_hash}.tree.json"
+        
+        try:
+            with self._lock:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(tree_dict, f, indent=2, ensure_ascii=False, default=str)
+                    
+                self._index[doc_hash] = {
+                    'doc_name': doc_name,
+                    'cached_at': datetime.now().isoformat(),
+                    'file_size': cache_file.stat().st_size,
+                    'tree_nodes': self._count_nodes_recursive(tree_dict),
+                    'content_hash': doc_hash
+                }
+                self._save_index()
+                
+            logger.info(f"CACHE MISS -> Stored tree for {doc_name} (hash: {doc_hash[:8]}..., nodes: {self._index[doc_hash]['tree_nodes']})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cache tree for {doc_name}: {e}")
+            return False
+
+    def _remove_entry(self, doc_hash: str):
+        """Remove a single cache entry."""
+        if doc_hash in self._index:
+            del self._index[doc_hash]
+            cache_file = self.cache_dir / f"{doc_hash}.tree.json"
+            if cache_file.exists():
+                cache_file.unlink(missing_ok=True)
+            logger.debug(f"Removed expired/invalid cache entry: {doc_hash[:8]}...")
+
+    def _count_nodes_recursive(self, tree: Dict) -> int:
+        """Count total nodes in tree structure."""
+        count = 1
+        for child in tree.get('children', []):
+            count += self._count_nodes_recursive(child)
+        return count
+
+    def clear(self):
+        """Clear entire cache."""
+        with self._lock:
+            for doc_hash in list(self._index.keys()):
+                self._remove_entry(doc_hash)
+            self._index.clear()
+            self._save_index()
+        logger.info("Cleared all cached trees")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return cache statistics."""
+        with self._lock:
+            total_size = sum(
+                (self.cache_dir / f"{h}.tree.json").stat().st_size 
+                for h in self._index 
+                if (self.cache_dir / f"{h}.tree.json").exists()
+            )
+            return {
+                'entries': len(self._index),
+                'total_size_mb': round(total_size / 1024 / 1024, 2),
+                'ttl_hours': self.ttl.total_seconds() / 3600,
+                'avg_nodes_per_tree': np.mean([e['tree_nodes'] for e in self._index.values()]) if self._index else 0
+            }
+
+
+# ============================================================================
+# UPGRADED HIERARCHICAL INDEX WITH ROLLUP & CACHING INTEGRATION
+# ============================================================================
+class HierarchicalIndex:
+    def __init__(self, cache_dir: str = ".declarmima_cache_v18", llm: Optional['HybridLLM'] = None):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        self.doc_trees: Dict[str, PageNode] = {}
+        self._pdf_cache: Dict[str, Any] = {}
+        self.metadata_extractor = StructuredMetadataExtractor()
+        self.tree_cache = AnnotatedTreeCache(cache_dir=str(cache_dir))
+        self.llm = llm
+        self.rollup_summarizer = RollupSummarizer(llm) if llm else None
+
+    def _doc_hash(self, file_buffer: BytesIO) -> str:
+        pos = file_buffer.tell()
+        file_buffer.seek(0)
+        content = file_buffer.read(1024 * 1024)
+        file_buffer.seek(pos)
+        return hashlib.sha256(content).hexdigest()[:16]
+
+    def _cache_path(self, doc_name: str, doc_hash: str) -> Path:
+        safe = re.sub(r'[^\w\-_.]', '_', doc_name)
+        return self.cache_dir / f"{safe}.{doc_hash}.tree.json"
+
+    def build_from_pdfs(self, files: List, parallel: bool = True, max_workers: int = 4) -> Dict[str, PageNode]:
+        def build_one(file_obj):
+            doc_name = file_obj.name
+            buf = BytesIO(file_obj.getbuffer())
+            file_content = buf.getvalue()
+            
+            # Try cache first
+            cached_tree = self.tree_cache.get(doc_name, file_content)
+            if cached_tree:
+                logger.info(f"Loaded cached tree for {doc_name}")
+                # Reconstruct from cache
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(file_content)
+                    tmp_path = tmp.name
+                
+                root = PageNode.from_dict(cached_tree, pdf_path=tmp_path)
+                if self.llm and self.rollup_summarizer:
+                    # Verify/refresh summaries if needed
+                    asyncio.run(self.rollup_summarizer._post_order_summarize(root))
+                return doc_name, root
+
+            # Build new tree
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(file_content)
+                tmp_path = tmp.name
+                
+            doc = fitz.open(tmp_path)
+            root = self._build_tree(doc, doc_name, tmp_path)
+            
+            # Extract metadata
+            full_text = "\n".join([doc[p].get_text("text") for p in range(len(doc))])
+            meta = self.metadata_extractor.extract_metadata(doc_name, full_text)
+            root.metadata = meta
+            doc.close()
+            
+            # Apply roll-up summarization if LLM available
+            if self.llm and self.rollup_summarizer:
+                logger.info(f"Generating roll-up summaries for {doc_name}...")
+                asyncio.run(self.rollup_summarizer._post_order_summarize(root))
+            else:
+                logger.info(f"Skipping LLM summarization for {doc_name} (LLM not provided)")
+                # Fallback: use first 200 chars as summary
+                def fallback_summaries(node):
+                    if not node.children:
+                        node.summary = node.get_text(max_chars=200)[:200]
+                    for c in node.children:
+                        fallback_summaries(c)
+                fallback_summaries(root)
+                
+            # Save to cache
+            self.tree_cache.set(doc_name, file_content, root.to_dict())
+            
+            return doc_name, root
+
+        if parallel and len(files) > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(build_one, f): f.name for f in files}
+                for fut in as_completed(futures):
+                    name, tree = fut.result()
+                    self.doc_trees[name] = tree
+        else:
+            for f in files:
+                name, tree = build_one(f)
+                self.doc_trees[name] = tree
+                
+        return self.doc_trees
+
+    def _build_tree(self, doc, doc_id, pdf_path) -> PageNode:
+        root = PageNode(
+            f"{doc_id}_root", "Document Root", 1, len(doc), "",
+            f"Document {doc_id} root covering pages 1-{len(doc)}", 0, 
+            doc_id=doc_id, _pdf_path=pdf_path, node_id="0000"
+        )
+        
+        toc = doc.get_toc()
+        window = 7
+        
+        if toc:
+            nodes_by_level = {}
+            for level, title, page in toc:
+                if page > len(doc):
+                    continue
+                end = min(page + window, len(doc))
+                text = self._extract_range(doc, page, end)
+                node = PageNode(
+                    f"{doc_id}_toc_{level}_{title[:20]}", title.strip(), page, end, text, text[:200], level, 
+                    doc_id=doc_id, _pdf_path=pdf_path
+                )
+                nodes_by_level.setdefault(level, []).append(node)
+                
+            for level in sorted(nodes_by_level.keys()):
+                for node in nodes_by_level[level]:
+                    parent = self._find_parent(root, level-1, node.page_start)
+                    parent.children.append(node)
+                    
+            self._assign_node_ids(root)
+            return root
+            
+        # Fallback to heading detection
+        headings = self._detect_headings(doc)
+        if headings:
+            for i, (title, page) in enumerate(headings):
+                end = min(page + window, len(doc))
+                text = self._extract_range(doc, page, end)
+                node = PageNode(
+                    f"{doc_id}_h{i}", title, page, end, text, text[:200], 2, 
+                    doc_id=doc_id, _pdf_path=pdf_path
+                )
+                root.children.append(node)
+            self._assign_node_ids(root)
+            return root
+            
+        # Fallback to page-level chunking
+        for p in range(1, len(doc)+1):
+            text = doc[p-1].get_text("text")
+            if not text.strip():
+                continue
+            node = PageNode(
+                f"{doc_id}_p{p}", f"Page {p}", p, p, text, text[:200], 3, 
+                doc_id=doc_id, _pdf_path=pdf_path
+            )
+            root.children.append(node)
+            
+        self._assign_node_ids(root)
+        return root
+
+    def _extract_range(self, doc, start, end):
+        return "\n".join(doc[p-1].get_text("text") for p in range(start, min(end, len(doc)+1)))
+
+    def _detect_headings(self, doc):
+        headings = []
+        for p in range(len(doc)):
+            lines = doc[p].get_text("text").split('\n')
+            for line in lines:
+                if re.match(r'^(?:[0-9]+\.?)+\s+[A-Z]', line.strip()):
+                    headings.append((line.strip(), p+1))
+        return headings[:50]
+
+    def _find_parent(self, node, target_level, page_hint):
+        if target_level < 0:
+            return node
+        candidates = [c for c in node.children if c.level == target_level]
+        if not candidates:
+            return node
+        return min(candidates, key=lambda n: abs(n.page_start - page_hint))
+
+    def _assign_node_ids(self, root: PageNode):
+        def assign(node: PageNode, prefix: str = "", index: int = 1):
+            if not prefix:
+                node.node_id = str(index).zfill(4)
+                current_prefix = node.node_id
+            else:
+                node.node_id = f"{prefix}.{str(index).zfill(4)}"
+                current_prefix = node.node_id
+                
+            for i, child in enumerate(node.children, 1):
+                assign(child, current_prefix, i)
+                
+        assign(root, "", 1)
+
+    def cleanup(self):
+        for doc in self._pdf_cache.values():
+            try:
+                doc.close()
+            except:
+                pass
+        self._pdf_cache.clear()

@@ -1772,7 +1772,8 @@ class PageNode:
             str(self.page_end),
             self.summary[:300],
             self.prefix_summary[:200],
-            str(self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict()) if self.metadata else ""
+            #str(self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict()) if self.metadata else ""
+            str(self.metadata.model_dump() if hasattr(self.metadata, "model_dump") else self.metadata.dict()) if self.metadata else ""
         ]
         combined = "|".join(content_parts)
         self._content_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
@@ -1833,7 +1834,8 @@ class PageNode:
             "node_id": self.node_id,
             "text_token_count": self.text_token_count,
             "children": [c.to_dict() for c in self.children],
-            "metadata": self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict() if self.metadata else None,
+            #"metadata": self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict() if self.metadata else None,
+            "metadata": self.metadata.model_dump() if hasattr(self.metadata, "model_dump") else self.metadata.dict() if self.metadata else None,
             "content_hash": self.compute_content_hash()
         }
 
@@ -1858,7 +1860,8 @@ class PageNode:
             result["text"] = text
             
         if self.metadata:
-            result["metadata"] = self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict()
+            #result["metadata"] = self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict()
+            result["metadata"] = self.metadata.model_dump() if hasattr(self.metadata, "model_dump") else self.metadata.dict()
             
         return result
 
@@ -5803,7 +5806,8 @@ async def run_streamlit():
             ann = kg.to_tree_annotation(root, max_chars=st.session_state.max_retrieval_chars)
             ann["doc_id"] = doc_name
             ann["doc_name"] = doc_name
-            ann["metadata"] = root.metadata.model_dump() if hasattr(self, "model_dump") else self.dict() if root.metadata else {}
+            #ann["metadata"] = root.metadata.model_dump() if hasattr(self, "model_dump") else self.dict() if root.metadata else {}
+            ann["metadata"] = root.metadata.model_dump() if hasattr(root.metadata, "model_dump") else root.metadata.dict() if root.metadata else {}
             annotated_trees.append(ann)
             
         st.session_state.annotated_trees = annotated_trees

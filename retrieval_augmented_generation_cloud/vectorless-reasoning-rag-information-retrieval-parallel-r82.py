@@ -140,6 +140,14 @@ try:
 except ImportError:
     TENSORLY_AVAILABLE = False
 
+# ============================================================================
+# UNIFIED PDF IMPORT (handles both old and new PyMuPDF)
+# ============================================================================
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # Legacy fallback
+
 # =============================================================================
 # PYDANTIC MODELS & SCHEMAS (EXPANDED)
 # =============================================================================

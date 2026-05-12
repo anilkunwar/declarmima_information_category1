@@ -2482,6 +2482,10 @@ class AnnotatedTreeCache:
 # ============================================================================
 # UPGRADED HIERARCHICAL INDEX WITH ROLLUP & CACHING INTEGRATION
 # ============================================================================
+#
+# ============================================================================
+# UPGRADED HIERARCHICAL INDEX WITH ROLLUP & CACHING INTEGRATION
+# ============================================================================
 class HierarchicalIndex:
     def __init__(self, cache_dir: str = ".declarmima_cache_v18", llm: Optional['HybridLLM'] = None):
         self.cache_dir = Path(cache_dir)
@@ -2522,7 +2526,7 @@ class HierarchicalIndex:
                 root = PageNode.from_dict(cached_tree, pdf_path=tmp_path)
                 if self.llm and self.rollup_summarizer:
                     # Verify/refresh summaries if needed
-                    asyncio.run(self.rollup_summarizer._post_order_summarize(root))
+                    self.rollup_summarizer.generate_rollup_summaries(root)
                 return doc_name, root
 
             # Build new tree
@@ -2542,7 +2546,7 @@ class HierarchicalIndex:
             # Apply roll-up summarization if LLM available
             if self.llm and self.rollup_summarizer:
                 logger.info(f"Generating roll-up summaries for {doc_name}...")
-                asyncio.run(self.rollup_summarizer._post_order_summarize(root))
+                self.rollup_summarizer.generate_rollup_summaries(root)
             else:
                 logger.info(f"Skipping LLM summarization for {doc_name} (LLM not provided)")
                 # Fallback: use first 200 chars as summary

@@ -232,7 +232,7 @@ def check_optional_dependencies() -> Dict[str, bool]:
 # Check dependencies at module load time
 GLOBAL_DEPS = check_optional_dependencies()
 
-============================================================================
+# ============================================================================
 # UNIFIED PDF IMPORT (handles both old and new PyMuPDF)
 # ============================================================================
 try:

@@ -557,6 +557,7 @@ class DocumentMetadata(BaseModel):
     melt_pool_depth_values: List[float] = Field(default_factory=list)
     melt_pool_width_values: List[float] = Field(default_factory=list)
     melt_pool_length_values: List[float] = Field(default_factory=list)
+    build_platform_temperature_values: List[float] = Field(default_factory=list)  # <-- ADD THIS
     
     # Hollomon parameters (elastoplasticity)
     hollomon_strength_coeff_values: List[float] = Field(default_factory=list)

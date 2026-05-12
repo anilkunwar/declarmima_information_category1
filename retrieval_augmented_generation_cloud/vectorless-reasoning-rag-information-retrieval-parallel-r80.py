@@ -85,21 +85,26 @@ logger = logging.getLogger("DECLARMIMA")
 # DEPENDENCY CHECKS WITH GRACEFUL DEGRADATION
 # ============================================================================
 def check_optional_dependencies() -> Dict[str, bool]:
-    """
-    Check availability of optional dependencies and log their status.
-    Returns a dictionary of dependency availability flags.
-    """
-    deps = {}
-    
+    ...
     # PyMuPDF (required)
     try:
-        import fitz
-        deps['pymupdf'] = True
-        logger.info("✓ PyMuPDF (fitz) available")
+        # Try modern import first (PyMuPDF >= 1.23)
+        try:
+            import pymupdf
+            deps['pymupdf'] = True
+            # Make fitz available as alias
+            import sys
+            if 'fitz' not in sys.modules:
+                sys.modules['fitz'] = pymupdf
+        except ImportError:
+            # Fallback to legacy import (PyMuPDF < 1.23)
+            import fitz
+            deps['pymupdf'] = True
+        logger.info("✓ PyMuPDF available")
     except ImportError:
         deps['pymupdf'] = False
-        logger.error("✗ PyMuPDF (fitz) required: pip install pymupdf")
-        raise ImportError("PyMuPDF (fitz) is required for DECLARMIMA to function")
+        logger.error("✗ PyMuPDF required: pip install pymupdf")
+        raise ImportError("PyMuPDF is required for DECLARMIMA to function. Run: pip install pymupdf")
     
     # Ollama (recommended)
     try:
@@ -227,10 +232,13 @@ def check_optional_dependencies() -> Dict[str, bool]:
 # Check dependencies at module load time
 GLOBAL_DEPS = check_optional_dependencies()
 
-# === FIX: Import fitz at module level since it's REQUIRED ===
-#import fitz
-# === FIX: Import pymupdf as fitz for backward compatibility ===
-import pymupdf as fitz
+============================================================================
+# UNIFIED PDF IMPORT (handles both old and new PyMuPDF)
+# ============================================================================
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # Legacy fallback
 
 # Availability flags used throughout the code
 PYVIS_AVAILABLE = GLOBAL_DEPS.get('pyvis', False)

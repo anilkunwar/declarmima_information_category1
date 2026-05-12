@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 DECLARMIMA v17.1+ EXTENDED - UNIFIED MULTI-PHYSICS RAG WITH AI/ML, ELECTROCHEMISTRY, & MICROSTRUCTURAL TRACKING
 ================================================================================
@@ -1729,6 +1730,127 @@ JSON Output:"""
             "recent_errors": self._error_log[-5:],
         }
 
+# =============================================================================
+# ANNOTATED TREE CACHE (SHA-256 Content Hashing + TTL)
+# =============================================================================
+class AnnotatedTreeCache:
+    """Full annotated-tree caching system with content-based hashing."""
+    def __init__(self, cache_dir: str = ".declarmima_cache_v18", ttl_hours: int = 72):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.ttl = timedelta(hours=ttl_hours)
+        self._index: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        self._load_index()
+
+    def _load_index(self):
+        index_path = self.cache_dir / "tree_index.json"
+        if index_path.exists():
+            try:
+                with open(index_path, 'rb') as f:
+                    self._index = fast_json_loads(f.read())
+                logger.info(f"Loaded cache index with {len(self._index)} entries")
+            except Exception as e:
+                logger.warning(f"Failed to load cache index, starting fresh: {e}")
+                self._index = {}
+
+    def _save_index(self):
+        index_path = self.cache_dir / "tree_index.json"
+        try:
+            with self._lock:
+                with open(index_path, 'wb') as f:
+                    f.write(fast_json_dumps(self._index, indent=True))
+        except Exception as e:
+            logger.error(f"Failed to save cache index: {e}")
+
+    def _compute_doc_hash(self, doc_name: str, file_content: bytes) -> str:
+        hasher = hashlib.sha256()
+        hasher.update(doc_name.encode('utf-8'))
+        hasher.update(file_content[:1024 * 1024])
+        return hasher.hexdigest()[:32]
+
+    def get(self, doc_name: str, file_content: bytes) -> Optional[Dict]:
+        doc_hash = self._compute_doc_hash(doc_name, file_content)
+        with self._lock:
+            entry = self._index.get(doc_hash)
+            if not entry:
+                return None
+            cached_time = datetime.fromisoformat(entry['cached_at'])
+            if datetime.now() - cached_time > self.ttl:
+                self._remove_entry(doc_hash)
+                return None
+        cache_file = self.cache_dir / f"{doc_hash}.tree.json"
+        if not cache_file.exists():
+            with self._lock:
+                self._remove_entry(doc_hash)
+            return None
+        try:
+            with open(cache_file, 'rb') as f:
+                tree_data = fast_json_loads(f.read())
+            logger.debug(f"Cache HIT for {doc_name} (hash: {doc_hash[:8]}...)")
+            return tree_data
+        except Exception as e:
+            logger.warning(f"Failed to load cached tree file for {doc_hash}: {e}")
+            with self._lock:
+                self._remove_entry(doc_hash)
+            return None
+
+    def set(self, doc_name: str, file_content: bytes, tree_dict: Dict) -> bool:
+        doc_hash = self._compute_doc_hash(doc_name, file_content)
+        cache_file = self.cache_dir / f"{doc_hash}.tree.json"
+        try:
+            with self._lock:
+                with open(cache_file, 'wb') as f:
+                    f.write(fast_json_dumps(tree_dict, indent=True))
+                self._index[doc_hash] = {
+                    'doc_name': doc_name,
+                    'cached_at': datetime.now().isoformat(),
+                    'file_size': cache_file.stat().st_size,
+                    'tree_nodes': self._count_nodes_recursive(tree_dict),
+                    'content_hash': doc_hash
+                }
+                self._save_index()
+            logger.info(f"CACHE MISS -> Stored tree for {doc_name} (hash: {doc_hash[:8]}..., nodes: {self._index[doc_hash]['tree_nodes']})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to cache tree for {doc_name}: {e}")
+            return False
+
+    def _remove_entry(self, doc_hash: str):
+        if doc_hash in self._index:
+            del self._index[doc_hash]
+            cache_file = self.cache_dir / f"{doc_hash}.tree.json"
+            if cache_file.exists():
+                cache_file.unlink(missing_ok=True)
+
+    def _count_nodes_recursive(self, tree: Dict) -> int:
+        count = 1
+        for child in tree.get('children', []):
+            count += self._count_nodes_recursive(child)
+        return count
+
+    def clear(self):
+        with self._lock:
+            for doc_hash in list(self._index.keys()):
+                self._remove_entry(doc_hash)
+            self._index.clear()
+            self._save_index()
+        logger.info("Cleared all cached trees")
+
+    def get_stats(self) -> Dict[str, Any]:
+        with self._lock:
+            total_size = sum(
+                (self.cache_dir / f"{h}.tree.json").stat().st_size
+                for h in self._index
+                if (self.cache_dir / f"{h}.tree.json").exists()
+            )
+            return {
+                'entries': len(self._index),
+                'total_size_mb': round(total_size / 1024 / 1024, 2),
+                'ttl_hours': self.ttl.total_seconds() / 3600,
+                'avg_nodes_per_tree': np.mean([e['tree_nodes'] for e in self._index.values()]) if self._index else 0
+            }
+
 class HierarchicalIndex:
     def __init__(self, cache_dir=".declarmima_cache"):
         self.cache_dir = Path(cache_dir)
@@ -2850,6 +2972,96 @@ class VisConfig:
 # =============================================================================
 # TWO-CALL ARCHITECTURE ENGINE (Call 2: Extract + Synthesize in one LLM call)
 # =============================================================================
+# =============================================================================
+# QUERY ANALYZER: INTENT DETECTION & DECOMPOSITION
+# =============================================================================
+class QueryAnalyzer:
+    """Analyzes user queries to determine intent and decompose complex requests."""
+    def __init__(self, phys_classifier: Optional[PhysicalQuantityClassifier] = None):
+        self.phys_classifier = phys_classifier or PhysicalQuantityClassifier()
+        self.compiled_patterns = self._build_patterns()
+
+    def _build_patterns(self) -> Dict[str, re.Pattern]:
+        return {
+            "list_docs": re.compile(r"(?:list|show|find|what are).*(?:papers|documents|articles)", re.IGNORECASE),
+            "compare": re.compile(r"(?:compare|versus|vs|difference between|contrast)", re.IGNORECASE),
+            "process": re.compile(r"(?:method|process|technique|approach|algorithm|fabrication|synthesis)", re.IGNORECASE),
+        }
+
+    def analyze(self, query: str) -> Dict[str, Any]:
+        result = {
+            "query_type": "quantitative_lookup",
+            "entities": [],
+            "decomposition": [query],
+            "canonical_quantities": []
+        }
+        if self.compiled_patterns["list_docs"].search(query):
+            result["query_type"] = "list_documents"
+        elif self.compiled_patterns["compare"].search(query):
+            result["query_type"] = "comparison"
+        elif self.compiled_patterns["process"].search(query):
+            result["query_type"] = "process_method"
+        lower_q = query.lower()
+        for pq in self.phys_classifier.CANONICAL:
+            for alias in self.phys_classifier.CANONICAL[pq]:
+                if alias.lower() in lower_q:
+                    if pq not in result["canonical_quantities"]:
+                        result["canonical_quantities"].append(pq)
+        if " and " in lower_q and result["query_type"] in ["quantitative_lookup", "comparison"]:
+            parts = [p.strip() for p in query.split(" and ") if len(p.strip()) > 5]
+            if len(parts) > 1:
+                result["decomposition"] = parts
+        return result
+
+# =============================================================================
+# RESPONSE CACHE & TIMING UTILITIES
+# =============================================================================
+class ResponseCache:
+    """Cache for query responses to prevent re-processing identical queries."""
+    def __init__(self, max_items: int = 50):
+        self._cache: OrderedDict = OrderedDict()
+        self._max_items = max_items
+
+    def get(self, query: str, params: Dict) -> Optional[Dict]:
+        key = self._hash(query, params)
+        return self._cache.get(key)
+
+    def set(self, query: str, params: Dict, response: Dict):
+        key = self._hash(query, params)
+        self._cache[key] = response
+        self._cache.move_to_end(key)
+        if len(self._cache) > self._max_items:
+            self._cache.popitem(last=False)
+
+    def clear(self):
+        self._cache.clear()
+
+    @staticmethod
+    def _hash(query: str, params: Dict) -> str:
+        content = f"{query}|{json.dumps(params, sort_keys=True)}"
+        return hashlib.sha256(content.encode()).hexdigest()
+
+class TimingMetrics:
+    """Context manager and utility for tracking performance metrics."""
+    def __init__(self):
+        self.metrics: Dict[str, List[float]] = defaultdict(list)
+
+    @contextmanager
+    def measure(self, label: str):
+        start = time.time()
+        try:
+            yield self
+        finally:
+            elapsed = time.time() - start
+            self.metrics[label].append(elapsed)
+            logger.debug(f"[METRIC] {label}: {elapsed:.4f}s")
+
+    def get_summary(self) -> Dict[str, Any]:
+        return {
+            k: {"count": len(v), "avg": float(np.mean(v)) if v else 0, "last": v[-1] if v else 0}
+            for k, v in self.metrics.items()
+        }
+
 class TwoCallEngine:
     """
     Strict 2-call query architecture:
@@ -2970,6 +3182,105 @@ Return JSON:"""
                 except:
                     continue
         return None
+
+
+# =============================================================================
+# TWO-CALL QUERY PROCESSOR (CORE ARCHITECTURE)
+# =============================================================================
+class TwoCallQueryProcessor:
+    """
+    Implements the strict 2-call query architecture.
+    Call 1: Navigation (LLM selects nodes from annotated trees)
+    Call 2: Synthesis (LLM generates answer from selected text)
+    """
+    def __init__(self,
+                 llm: HybridLLM,
+                 retriever: HierarchicalTreeRetriever,
+                 phys_classifier: PhysicalQuantityClassifier,
+                 analyzer: QueryAnalyzer,
+                 max_text_chars: int = 15000):
+        self.llm = llm
+        self.retriever = retriever
+        self.phys_classifier = phys_classifier
+        self.analyzer = analyzer
+        self.max_text_chars = max_text_chars
+        self.cache = ResponseCache(max_items=50)
+        self.metrics = TimingMetrics()
+
+    async def process_query(self, query: str, annotated_trees: List[Dict]) -> Dict[str, Any]:
+        with self.metrics.measure("total_query"):
+            analysis = self.analyzer.analyze(query)
+            cached = self.cache.get(query, {"max_chars": self.max_text_chars})
+            if cached:
+                logger.info("Query Cache HIT")
+                return cached
+            logger.info(f"CALL 1: Navigating trees for '{query}'")
+            with self.metrics.measure("call_1_navigation"):
+                selected_nodes = await self._call_1_navigation(query, analysis, annotated_trees)
+            if not selected_nodes:
+                return {
+                    "answer": f"I could not find any relevant sections in the documents to answer: '{query}'.",
+                    "nodes": [],
+                    "metrics": self.metrics.get_summary()
+                }
+            context_text = self._build_context(selected_nodes)
+            logger.info(f"CALL 2: Synthesizing answer")
+            with self.metrics.measure("call_2_synthesis"):
+                answer = await self._call_2_synthesis(query, analysis, context_text)
+            result = {
+                "answer": answer,
+                "nodes": selected_nodes,
+                "analysis": analysis,
+                "metrics": self.metrics.get_summary()
+            }
+            self.cache.set(query, {"max_chars": self.max_text_chars}, result)
+            return result
+
+    async def _call_1_navigation(self, query: str, analysis: Dict, trees: List[Dict]) -> List[Dict]:
+        return await self.retriever.retrieve_quantitative(query, trees)
+
+    async def _call_2_synthesis(self, query: str, analysis: Dict, context: str) -> str:
+        prompt_template = """You are an expert scientific analyst.
+Answer the user's query using ONLY the provided text context.
+If the context does not contain the answer, state that clearly.
+
+QUERY: {query}
+INTENT: {intent}
+CONTEXT:
+---
+{context}
+---
+
+INSTRUCTIONS:
+1. Provide a direct answer.
+2. Cite sources using the format [DocID, Page] if available in the context headers.
+3. Be precise with numerical values.
+4. If comparing multiple values, structure the comparison clearly."""
+        prompt = prompt_template.format(
+            query=query,
+            intent=analysis.get("query_type", "lookup"),
+            context=context
+        )
+        return await asyncio.to_thread(
+            self.llm.generate,
+            prompt,
+            max_new_tokens=1024,
+            temperature=0.1
+        )
+
+    def _build_context(self, selected_nodes: List[Dict]) -> str:
+        segments = []
+        for node in selected_nodes:
+            doc_id = node.get("doc_id", "Unknown")
+            page = node.get("page_start", "?")
+            title = node.get("section_title", "Section")
+            text = node.get("full_text", "")
+            header = f"### [{doc_id}, Page {page}] {title}\n"
+            segments.append(header + text)
+        combined = "\n\n".join(segments)
+        if len(combined) > self.max_text_chars * 2:
+            combined = combined[:self.max_text_chars * 2] + "\n...[TRUNCATED]"
+        return combined
 
 class PublicationVisualizationEngine:
     DOMAIN_COLORS = {
@@ -4040,10 +4351,182 @@ def render_sidebar():
                     del st.session_state[key]
                 st.rerun()
 
+        # --- System Telemetry ---
+        st.markdown("---")
+        with st.expander("📈 System Telemetry", expanded=False):
+            stats = telemetry.get_summary()
+            c1, c2 = st.columns(2)
+            c1.metric("LLM Calls", stats["llm_calls"])
+            c2.metric("Avg Latency", f"{stats['llm_avg_latency']:.2f}s")
+            c3, c4 = st.columns(2)
+            c3.metric("Cache Hits", stats["cache_hits"])
+            c4.metric("Hit Rate", stats["cache_hit_rate"])
+            st.caption(f"Memory: {stats['memory_usage_mb']:.1f} MB")
+            st.caption(f"Errors: {stats['extraction_errors']}")
+            if st.button("Reset Stats", use_container_width=True):
+                telemetry.reset()
+                st.rerun()
+
 @st.cache_resource(show_spinner="Initializing LLM...")
 def get_cached_llm(model_choice: str, use_4bit: bool):
     internal = LOCAL_LLM_OPTIONS[model_choice]
     return HybridLLM(model_key=internal, use_4bit=use_4bit)
+
+# =============================================================================
+# ADVANCED REPORTING & EXPORT UTILITIES
+# =============================================================================
+class ReportGenerator:
+    """Generates comprehensive reports for query results and corpus analysis."""
+    def __init__(self, kg: QuantitativeKnowledgeGraph):
+        self.kg = kg
+        self.classifier = PhysicalQuantityClassifier()
+
+    def generate_markdown_report(self, query: str, result: Dict[str, Any]) -> str:
+        answer = result.get("answer", "No answer generated.")
+        metrics = result.get("metrics", {})
+        nodes = result.get("nodes", [])
+        report = [
+            f"# DECLARMIMA Query Report",
+            f"**Query:** `{query}`",
+            f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "## 📝 AI Synthesis",
+            answer,
+            "",
+            "## 📊 Retrieval Metrics",
+            f"- **Total Time:** {metrics.get('total_time', 0):.2f}s",
+            f"- **Navigation Time:** {metrics.get('call_1_time', 0):.2f}s",
+            f"- **Synthesis Time:** {metrics.get('call_2_time', 0):.2f}s",
+            f"- **Nodes Retrieved:** {len(nodes)}",
+            "",
+            "## 🔍 Retrieved Evidence",
+        ]
+        for i, node in enumerate(nodes[:10]):
+            doc_id = node.get("doc_id", "Unknown")
+            page = node.get("page_start", "?")
+            section = node.get("section_title", "Unknown")
+            confidence = node.get("confidence", 0.0)
+            report.append(f"### {i+1}. {doc_id} (p.{page}) - {section}")
+            report.append(f"- **Confidence:** {confidence:.2f}")
+            report.append(f"- **Reasoning:** {node.get('selection_reasoning', 'N/A')}")
+            report.append(f"- **Content Preview:** `{node.get('full_text', '')[:150]}...`")
+            report.append("")
+        return "\n".join(report)
+
+    def generate_json_report(self, query: str, result: Dict[str, Any]) -> str:
+        serializable_nodes = []
+        for n in result.get("nodes", []):
+            serializable_nodes.append({
+                "doc_id": n.get("doc_id"),
+                "page_start": n.get("page_start"),
+                "section_title": n.get("section_title"),
+                "confidence": n.get("confidence"),
+                "selection_reasoning": n.get("selection_reasoning"),
+                "text_preview": n.get("full_text", "")[:200]
+            })
+        report_data = {
+            "query": query,
+            "timestamp": datetime.now().isoformat(),
+            "version": "v18.0",
+            "metrics": result.get("metrics", {}),
+            "answer": result.get("answer", ""),
+            "retrieved_evidence": serializable_nodes
+        }
+        return json.dumps(report_data, indent=2, ensure_ascii=False)
+
+    def export_to_html(self, query: str, result: Dict[str, Any]) -> str:
+        md_content = self.generate_markdown_report(query, result)
+        html_content = md_content.replace('\n', '<br>')
+        html_content = html_content.replace('# ', '<h1>').replace('## ', '<h2>').replace('### ', '<h3>')
+        html_content = html_content.replace('**', '<b>').replace('**', '</b>')
+        html_content = html_content.replace('`', '<code>').replace('`', '</code>')
+        return f"""<!DOCTYPE html><html><head><title>DECLARMIMA Report: {query}</title>
+<style>body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;max-width:800px;margin:40px auto;line-height:1.6;color:#333;}}
+h1{{color:#2563eb;border-bottom:2px solid #e5e7eb;padding-bottom:10px;}}
+h2{{color:#475569;}}h3{{color:#64748b;}}
+code{{background:#f1f5f9;padding:2px 4px;border-radius:4px;font-size:0.9em;}}
+.metric{{display:inline-block;background:#eff6ff;padding:5px 10px;border-radius:6px;margin:5px;}}
+</style></head><body>{html_content}</body></html>"""
+
+# =============================================================================
+# SYSTEM TELEMETRY & HEALTH MONITORING
+# =============================================================================
+class SystemTelemetry:
+    """Tracks system performance, LLM latency, cache hit rates, and memory usage."""
+    def __init__(self):
+        self.metrics = {
+            "llm_calls": 0, "llm_total_time": 0.0, "llm_avg_latency": 0.0,
+            "cache_hits": 0, "cache_misses": 0, "extraction_errors": 0, "memory_usage_mb": 0.0
+        }
+        self._history = defaultdict(list)
+
+    def record_llm_call(self, latency: float, tokens_in: int, tokens_out: int):
+        self.metrics["llm_calls"] += 1
+        self.metrics["llm_total_time"] += latency
+        self.metrics["llm_avg_latency"] = self.metrics["llm_total_time"] / self.metrics["llm_calls"]
+        self._history["latency"].append(latency)
+        self._history["tokens_in"].append(tokens_in)
+        self._history["tokens_out"].append(tokens_out)
+
+    def record_cache_access(self, hit: bool):
+        if hit:
+            self.metrics["cache_hits"] += 1
+        else:
+            self.metrics["cache_misses"] += 1
+
+    def update_memory(self):
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            self.metrics["memory_usage_mb"] = process.memory_info().rss / (1024 * 1024)
+        except ImportError:
+            self.metrics["memory_usage_mb"] = 0.0
+
+    def get_summary(self) -> Dict[str, Any]:
+        self.update_memory()
+        total = self.metrics["cache_hits"] + self.metrics["cache_misses"]
+        hit_rate = (self.metrics["cache_hits"] / total * 100) if total > 0 else 0
+        return {**self.metrics, "cache_hit_rate": f"{hit_rate:.1f}%"}
+
+    def reset(self):
+        self.metrics = {k: 0.0 if isinstance(v, float) else 0 for k, v in self.metrics.items()}
+        self._history.clear()
+
+telemetry = SystemTelemetry()
+
+# =============================================================================
+# ROBUST ASYNC UTILITIES FOR STREAMLIT
+# =============================================================================
+def run_async_safe(coro):
+    """Safely run an async coroutine in a Streamlit thread environment."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            return asyncio.run_coroutine_threadsafe(coro, loop).result()
+    except RuntimeError:
+        pass
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+@contextmanager
+def timer_context(label: str):
+    """Context manager for timing blocks and recording telemetry."""
+    class Timer:
+        def __init__(self, label):
+            self.label = label
+            self.start = 0
+        def __enter__(self):
+            self.start = time.time()
+            return self
+        def __exit__(self, *args):
+            elapsed = time.time() - self.start
+            if "llm" in self.label.lower():
+                telemetry.record_llm_call(elapsed, 0, 0)
+    return Timer(label)
 
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v17.1+ Extended - Unified Multi-Physics RAG", layout="wide")
@@ -4099,7 +4582,7 @@ def run_streamlit():
             idx = FastHierarchicalIndex(llm=llm)
             async def build_index():
                 return await idx.build_from_pdfs_fast(st.session_state.query_processor["files"], max_workers=4)
-            trees = asyncio.run(build_index())
+            trees = run_async_safe(build_index())
             st.session_state.query_processor["index"] = idx
             st.session_state.query_processor["doc_trees"] = trees
             progress.progress(0.5)
@@ -4230,7 +4713,7 @@ def run_streamlit():
                     relevant_docs = [(t.get("doc_id", t.get("doc_name", "unknown")), 1.0) for t in filtered_trees]
 
                 retriever = HierarchicalTreeRetriever(llm, max_results=30, max_text_chars=max_retrieval_chars)
-                selections, _ = asyncio.run(retriever.call1_tree_navigation(active_prompt, filtered_trees))
+                selections, _ = run_async_safe(retriever.call1_tree_navigation(active_prompt, filtered_trees))
 
                 # Resolve selections to full node texts
                 retrieved = []
@@ -4280,6 +4763,10 @@ def run_streamlit():
                 except Exception:
                     st.session_state.query_ctx_cache = None
                 st.session_state.messages.append({"role": "assistant", "content": answer})
+
+                # Render download buttons for reports
+                if st.session_state.cached_query_result:
+                    render_download_buttons(active_prompt, st.session_state.cached_query_result)
         else:
             if active_prompt and st.session_state.cached_query_result and "answer" in st.session_state.cached_query_result:
                 cached = st.session_state.cached_query_result
@@ -4806,5 +5293,79 @@ class LRUCache:
 
 response_cache = LRUCache(max_size=2000, ttl=7200)
 
+
+# =============================================================================
+# STREAMLIT UI: REPORTING & TELEMETRY WIDGETS
+# =============================================================================
+def render_download_buttons(query: str, result: Dict[str, Any]):
+    """Renders download buttons for Markdown, JSON, and HTML reports."""
+    if not query or not result:
+        return
+    kg = st.session_state.get("knowledge_graph")
+    if not kg:
+        kg = QuantitativeKnowledgeGraph()
+    generator = ReportGenerator(kg)
+    st.markdown("---")
+    st.subheader("📥 Export Analysis Reports")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        md_report = generator.generate_markdown_report(query, result)
+        st.download_button(
+            label="📄 Download Markdown Report",
+            data=md_report,
+            file_name="declarmima_report.md",
+            mime="text/markdown",
+            help="Download a readable Markdown summary of findings."
+        )
+    with col2:
+        json_report = generator.generate_json_report(query, result)
+        st.download_button(
+            label="📦 Download JSON Data",
+            data=json_report,
+            file_name="declarmima_data.json",
+            mime="application/json",
+            help="Download raw data for programmatic analysis."
+        )
+    with col3:
+        html_report = generator.export_to_html(query, result)
+        st.download_button(
+            label="🌐 Download Standalone HTML",
+            data=html_report.encode('utf-8'),
+            file_name="declarmima_view.html",
+            mime="text/html",
+            help="Download a standalone HTML file with embedded styles."
+        )
+
+def render_telemetry_widget():
+    """Renders the System Telemetry widget in the sidebar."""
+    with st.sidebar:
+        st.markdown("---")
+        with st.expander("📈 System Telemetry", expanded=False):
+            stats = telemetry.get_summary()
+            c1, c2 = st.columns(2)
+            c1.metric("LLM Calls", stats["llm_calls"])
+            c2.metric("Avg Latency", f"{stats['llm_avg_latency']:.2f}s")
+            c3, c4 = st.columns(2)
+            c3.metric("Cache Hits", stats["cache_hits"])
+            c4.metric("Hit Rate", stats["cache_hit_rate"])
+            st.caption(f"Memory: {stats['memory_usage_mb']:.1f} MB")
+            st.caption(f"Errors: {stats['extraction_errors']}")
+            if st.button("Reset Stats", use_container_width=True):
+                telemetry.reset()
+                st.rerun()
+
+# =============================================================================
+# FINAL ENTRY POINT & ROBUST EXECUTION
+# =============================================================================
+def run_app():
+    """Main execution function with global error handling."""
+    try:
+        run_streamlit()
+        render_telemetry_widget()
+    except Exception as e:
+        st.error(f"⚠️ Critical Application Error: {str(e)}")
+        logger.exception(e)
+        st.stop()
+
 if __name__ == "__main__":
-    run_streamlit()
+    run_app()

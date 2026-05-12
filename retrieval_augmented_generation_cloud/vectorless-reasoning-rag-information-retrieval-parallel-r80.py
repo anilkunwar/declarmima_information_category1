@@ -227,6 +227,9 @@ def check_optional_dependencies() -> Dict[str, bool]:
 # Check dependencies at module load time
 GLOBAL_DEPS = check_optional_dependencies()
 
+# === FIX: Import fitz at module level since it's REQUIRED ===
+import fitz
+
 # Availability flags used throughout the code
 PYVIS_AVAILABLE = GLOBAL_DEPS.get('pyvis', False)
 SKLEARN_AVAILABLE = GLOBAL_DEPS.get('sklearn', False)

@@ -5455,6 +5455,7 @@ INSTRUCTIONS:
 # ============================================================================
 # STREAMLIT UI: INITIALIZATION & SIDEBAR
 # ============================================================================
+#
 def render_sidebar() -> None:
     """
     Renders the application sidebar with configuration options.
@@ -5481,13 +5482,15 @@ def render_sidebar() -> None:
         st.markdown("### Retrieval Settings")
         
         st.slider("Confidence threshold", 0.3, 0.9, 0.55, 0.05, key="min_confidence")
-        max_chars = st.slider(
+        
+        # FIXED: Removed manual assignment to st.session_state.max_retrieval_chars
+        # The slider with key="max_retrieval_chars" automatically stores its value.
+        st.slider(
             "Max text length per retrieved section", 
             min_value=1000, max_value=50000, value=20000, step=1000,
             help="Controls context window size for Call 2.",
             key="max_retrieval_chars"
         )
-        st.session_state.max_retrieval_chars = max_chars
         
         st.checkbox("Enable Two-Call Architecture", value=True, key="use_two_call", 
                     help="Uses LLM for navigation first, then answer generation.")
@@ -5519,6 +5522,7 @@ def render_sidebar() -> None:
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
+
 
 def initialize_session_state():
     """

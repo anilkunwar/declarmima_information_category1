@@ -228,10 +228,14 @@ V76-v78 : Universal Models that accept Universal Queries as the KnowledgeGraph i
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v78.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel78.streamlit.app/) (V75 with expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v78.a-green)](https://vectorless-reasoning-rag-information-retrieval-parallel78a.streamlit.app/) (V75 with expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, The Interactive QueryKnowledgeGraph that disappears in V78 after few attempts is stable here)
+
 
 V79- : 2 call architecture,  Universal Models that accept Universal Queries as the KnowledgeGraph is Expanded to include all the topica areas.  Chat-driven interactive Visualization, Vectorless Reasoning Based RAG and Parallelization (No Series) Two Stages Semantic Filtering (  CPU used, GPU features not yet implemented) + Tree Navigation Retrieval Strategy (GPU). V62 and V63 accept universal queries. Two call architecture -   Call 1: Tree navigation:  node id(s),    Call 2: Answer generation from raw text + query
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v79.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel79.streamlit.app/) (V76 with Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v80.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel80.streamlit.app/) (More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
 
 

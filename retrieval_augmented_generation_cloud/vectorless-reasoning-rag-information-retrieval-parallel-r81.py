@@ -17,9 +17,9 @@ Complete implementation with:
 9. Retrieval diagnostics dashboard
 10. Concept normalization & synonym resolution
 
-Author: DECLARMIMA Development Team
+Author: Anil Kunwar
 Version: 18.1
-License: MIT
+License: 
 """
 
 # ============================================================================

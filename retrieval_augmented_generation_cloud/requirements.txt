@@ -21,3 +21,4 @@ pyvis
 litellm
 umap-learn 
 bokeh
+orjson

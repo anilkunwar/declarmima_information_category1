@@ -1708,7 +1708,7 @@ class PageNode:
             str(self.page_end),
             self.summary[:300],
             self.prefix_summary[:200],
-            str(self.metadata.dict()) if self.metadata else ""
+            str(self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict()) if self.metadata else ""
         ]
         combined = "|".join(content_parts)
         self._content_hash = hashlib.sha256(combined.encode()).hexdigest()[:16]
@@ -1769,7 +1769,7 @@ class PageNode:
             "node_id": self.node_id,
             "text_token_count": self.text_token_count,
             "children": [c.to_dict() for c in self.children],
-            "metadata": self.metadata.dict() if self.metadata else None,
+            "metadata": self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict() if self.metadata else None,
             "content_hash": self.compute_content_hash()
         }
 
@@ -1794,7 +1794,7 @@ class PageNode:
             result["text"] = text
             
         if self.metadata:
-            result["metadata"] = self.metadata.dict()
+            result["metadata"] = self.metadata.model_dump() if hasattr(self, "model_dump") else self.dict()
             
         return result
 
@@ -1875,7 +1875,7 @@ class RollupSummarizer:
             if len(text.strip()) < 50:
                 node.summary = text[:self.max_summary_length]
             else:
-                node.summary = self._summarize_text(
+                node.summary = await self._summarize_text(
                     text, 
                     instruction=f"Summarize this document section in max {self.max_summary_length} characters. Focus on quantitative parameters, materials, methods, and key findings. Return ONLY the summary."
                 )
@@ -1886,7 +1886,7 @@ class RollupSummarizer:
             
             combined = f"Own Context: {own_content}\n\nSubsections:\n" + "\n---\n".join(child_summaries[:8])
             
-            node.summary = self._summarize_text(
+            node.summary = await self._summarize_text(
                 combined,
                 instruction=f"Synthesize these subsection summaries and context into a single {self.max_summary_length}-char overview. Highlight overarching themes, key parameters, and experimental conditions. Return ONLY the summary."
             )
@@ -1894,18 +1894,16 @@ class RollupSummarizer:
         # Cache result
         self._summary_cache[cache_key] = node.summary[:self.max_summary_length]
     
-    def _summarize_text(self, text: str, instruction: str) -> str:
+    async def _summarize_text(self, text: str, instruction: str) -> str:
         """Call LLM for summarization with robust fallback."""
         prompt = f"{instruction}\n\nText to process:\n{text[:5000]}\n\nSummary:"
         
         try:
-            response = asyncio.run(
-                asyncio.to_thread(
+            response = await asyncio.to_thread(
                     self.llm.generate, 
                     prompt, 
                     max_new_tokens=200, 
                     temperature=0.05
-                )
             )
             cleaned = response.strip().replace("Summary:", "").strip()
             return cleaned[:self.max_summary_length]
@@ -2917,6 +2915,26 @@ class VisConfig:
 # ============================================================================
 # PUBLICATION VISUALIZATION ENGINE
 # ============================================================================
+
+# ============================================================================
+# QUERY CONTEXT DATACLASS (MISSING IN ORIGINAL)
+# ============================================================================
+@dataclass
+class QueryContext:
+    """
+    Holds query-specific context for visualization filtering.
+    Maps extracted data to the current user query for focused visualizations.
+    """
+    query: str = ""
+    relevant_doc_ids: List[str] = field(default_factory=list)
+    physical_quantities: List[str] = field(default_factory=list)
+    materials: List[str] = field(default_factory=list)
+    extracted_values: List[Any] = field(default_factory=list)
+
+    def has_data(self) -> bool:
+        """Check if context has any data to visualize."""
+        return bool(self.relevant_doc_ids or self.physical_quantities or self.extracted_values)
+
 class PublicationVisualizationEngine:
     """
     Comprehensive visualization engine for scientific document analysis.
@@ -3491,11 +3509,7 @@ network.on("click", function(params) {
             return go.Figure().update_layout(title="Sunburst unavailable for this query")
 
 # =============================================================================
-# PUBLICATION VISUALIZATION ENGINE - CONTINUED
-# =============================================================================
-class PublicationVisualizationEngine:
-    # ... [Previous class definition, __init__, properties, helpers from Part 5] ...
-    
+
     # -------------------------------------------------------------------------
     # HISTOGRAM & BAR CHART METHODS
     # -------------------------------------------------------------------------
@@ -5455,7 +5469,6 @@ INSTRUCTIONS:
 # ============================================================================
 # STREAMLIT UI: INITIALIZATION & SIDEBAR
 # ============================================================================
-#
 def render_sidebar() -> None:
     """
     Renders the application sidebar with configuration options.
@@ -5482,10 +5495,7 @@ def render_sidebar() -> None:
         st.markdown("### Retrieval Settings")
         
         st.slider("Confidence threshold", 0.3, 0.9, 0.55, 0.05, key="min_confidence")
-        
-        # FIXED: Removed manual assignment to st.session_state.max_retrieval_chars
-        # The slider with key="max_retrieval_chars" automatically stores its value.
-        st.slider(
+        max_chars = st.slider(
             "Max text length per retrieved section", 
             min_value=1000, max_value=50000, value=20000, step=1000,
             help="Controls context window size for Call 2.",
@@ -5522,7 +5532,6 @@ def render_sidebar() -> None:
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
-
 
 def initialize_session_state():
     """
@@ -5730,7 +5739,7 @@ async def run_streamlit():
             ann = kg.to_tree_annotation(root, max_chars=st.session_state.max_retrieval_chars)
             ann["doc_id"] = doc_name
             ann["doc_name"] = doc_name
-            ann["metadata"] = root.metadata.dict() if root.metadata else {}
+            ann["metadata"] = root.metadata.model_dump() if hasattr(self, "model_dump") else self.dict() if root.metadata else {}
             annotated_trees.append(ann)
             
         st.session_state.annotated_trees = annotated_trees
@@ -6070,7 +6079,7 @@ Return ONLY valid JSON."""
                 fast_json=True, 
                 temperature=0.0
             )
-            result = self._extract_json_safe(response)
+            result = self.llm._extract_json_safe(response)
             if result and isinstance(result, dict):
                 return result
         except Exception as e:
@@ -6160,7 +6169,7 @@ Return ONLY valid JSON."""
                     node.summary = node.full_text[:200]
             if tasks:
                 # Run in thread pool to avoid blocking event loop if LLM is sync
-                await asyncio.gather(*(asyncio.to_thread(lambda n: self.summarizer._post_order_summarize(n)) for n in batch if len(n.full_text) > 200))
+                await asyncio.gather(*[self.summarizer._post_order_summarize(node) for node in batch if len(node.full_text) > 200])
 
     def _save_tree_fast(self, doc_name: str, tree: PageNode):
         """Persist tree to disk cache."""
@@ -6177,6 +6186,31 @@ Return ONLY valid JSON."""
 # ============================================================================
 # ENHANCED QUANTITATIVE KNOWLEDGE GRAPH
 # ============================================================================
+
+    # -------------------------------------------------------------------------
+    # STUB METHODS FOR DASHBOARD COMPATIBILITY
+    # -------------------------------------------------------------------------
+    def plot_knowledge_network_pyvis(self, df: pd.DataFrame, colormap: Optional[str] = None, aliases: Optional[Dict[str, str]] = None) -> str:
+        """Stub: redirects to query-focused PyVis network."""
+        # Build a minimal QueryContext from df
+        ctx = QueryContext(
+            query="Corpus Overview",
+            relevant_doc_ids=df["doc"].unique().tolist() if not df.empty else [],
+            physical_quantities=df["physical_quantity"].unique().tolist() if not df.empty else [],
+            materials=df["material"].unique().tolist() if not df.empty else []
+        )
+        return self.plot_query_knowledge_graph_pyvis(ctx)
+
+    def plot_knowledge_network(self, df: pd.DataFrame, colormap: Optional[str] = None, figsize: Tuple[int, int] = (14, 12)) -> plt.Figure:
+        """Stub: redirects to query-focused static network."""
+        ctx = QueryContext(
+            query="Corpus Overview",
+            relevant_doc_ids=df["doc"].unique().tolist() if not df.empty else [],
+            physical_quantities=df["physical_quantity"].unique().tolist() if not df.empty else [],
+            materials=df["material"].unique().tolist() if not df.empty else []
+        )
+        return self.plot_query_knowledge_graph(ctx, figsize=figsize)
+
 class QuantitativeKnowledgeGraph:
     """
     Manages extracted entities, computes consensus/contradictions, 

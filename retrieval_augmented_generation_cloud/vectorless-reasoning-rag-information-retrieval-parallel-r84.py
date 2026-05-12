@@ -4346,7 +4346,7 @@ def render_sidebar():
             st.slider("PyVis gravity", -5000, -100, -1800, 100, key="viz_pyvis_gravity")
             st.slider("PyVis spring length", 50, 300, 140, 10, key="viz_pyvis_spring_length")
             st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
-            if st.button("Clear Cache & Reset", use_container_width=True):
+            if st.button("Clear Cache & Reset", use_container_width=True, key="clear_cache_reset"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
@@ -4363,7 +4363,7 @@ def render_sidebar():
             c4.metric("Hit Rate", stats["cache_hit_rate"])
             st.caption(f"Memory: {stats['memory_usage_mb']:.1f} MB")
             st.caption(f"Errors: {stats['extraction_errors']}")
-            if st.button("Reset Stats", use_container_width=True):
+            if st.button("Reset Stats", use_container_width=True, key="reset_stats_sidebar"):
                 telemetry.reset()
                 st.rerun()
 
@@ -4559,7 +4559,7 @@ def run_streamlit():
     render_sidebar()
     max_retrieval_chars = st.session_state.get("max_retrieval_chars", 20000)
     uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
-    if uploaded_files and st.button("Build Index", type="primary"):
+    if uploaded_files and st.button("Build Index", type="primary", key="build_index_btn"):
         st.session_state.query_processor["files"] = uploaded_files
         st.success(f"{len(uploaded_files)} files registered.")
         st.rerun()
@@ -4932,7 +4932,7 @@ def run_streamlit():
                     with cols[2]:
                         preview = get_display_name(doc_id, st.session_state.doc_aliases)
                         st.caption(f"Preview: {preview}")
-                if st.button("Reset all aliases"):
+                if st.button("Reset all aliases", key="reset_all_aliases"):
                     st.session_state.doc_aliases = {}
                     st.rerun()
             st.markdown("---")
@@ -5350,7 +5350,7 @@ def render_telemetry_widget():
             c4.metric("Hit Rate", stats["cache_hit_rate"])
             st.caption(f"Memory: {stats['memory_usage_mb']:.1f} MB")
             st.caption(f"Errors: {stats['extraction_errors']}")
-            if st.button("Reset Stats", use_container_width=True):
+            if st.button("Reset Stats", use_container_width=True, key="reset_stats_telemetry"):
                 telemetry.reset()
                 st.rerun()
 

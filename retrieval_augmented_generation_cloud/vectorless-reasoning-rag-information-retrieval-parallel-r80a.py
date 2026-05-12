@@ -2482,10 +2482,6 @@ class AnnotatedTreeCache:
 # ============================================================================
 # UPGRADED HIERARCHICAL INDEX WITH ROLLUP & CACHING INTEGRATION
 # ============================================================================
-#
-# ============================================================================
-# UPGRADED HIERARCHICAL INDEX WITH ROLLUP & CACHING INTEGRATION
-# ============================================================================
 class HierarchicalIndex:
     def __init__(self, cache_dir: str = ".declarmima_cache_v18", llm: Optional['HybridLLM'] = None):
         self.cache_dir = Path(cache_dir)
@@ -6083,7 +6079,7 @@ async def run_streamlit():
                         text=f"Summarizing {doc_name}..."
                     )
                     # Generate summaries (async compatible)
-                    await summarizer._post_order_summarize(root)
+                    await summarizer.batch_summarize_tree(root)
                     
                     # Save to AnnotatedTreeCache with content hash
                     buf = BytesIO(st.session_state.uploaded_files[i].getbuffer())
@@ -6557,7 +6553,7 @@ Return ONLY valid JSON."""
 
         self._assign_node_ids(root)
         return root
-    #
+
     async def _generate_summaries_async(self, trees: Dict[str, PageNode]):
         """Batched async summarization for all trees with adaptive sizing."""
         # Use adaptive batch sizing: starts at 8, shrinks on context errors
@@ -6570,11 +6566,11 @@ Return ONLY valid JSON."""
             min_node_chars=800,
             recovery_threshold=3,
         )
-    
+
         for doc_name, tree in trees.items():
             logger.info(f"Adaptive batch summarizing {doc_name}...")
             await self.summarizer.batch_summarize_tree(tree)
-    
+
             # Log adaptive stats for monitoring
             stats = self.summarizer.get_adaptive_stats()
             logger.info(
@@ -6582,7 +6578,6 @@ Return ONLY valid JSON."""
                 f"max_chars={stats['current_max_node_chars']}, "
                 f"errors={stats['error_count']}"
             )
-    
 
     def _save_tree_fast(self, doc_name: str, tree: PageNode):
         """Persist tree to disk cache."""

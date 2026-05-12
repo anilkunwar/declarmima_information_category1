@@ -228,7 +228,9 @@ def check_optional_dependencies() -> Dict[str, bool]:
 GLOBAL_DEPS = check_optional_dependencies()
 
 # === FIX: Import fitz at module level since it's REQUIRED ===
-import fitz
+#import fitz
+# === FIX: Import pymupdf as fitz for backward compatibility ===
+import pymupdf as fitz
 
 # Availability flags used throughout the code
 PYVIS_AVAILABLE = GLOBAL_DEPS.get('pyvis', False)

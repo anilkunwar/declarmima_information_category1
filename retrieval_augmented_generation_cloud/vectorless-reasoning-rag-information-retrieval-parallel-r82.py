@@ -56,11 +56,30 @@ logger = logging.getLogger("DECLARMIMA_EXTENDED")
 # =============================================================================
 # DEPENDENCY IMPORTS WITH FALLBACKS
 # =============================================================================
+# PyMuPDF (required)
 try:
-    import fitz
-    PYMUPDF_AVAILABLE = True
+    # Try modern import first (PyMuPDF >= 1.23)
+    try:
+        import pymupdf
+        deps['pymupdf'] = True
+        # Make fitz available as alias
+        import sys
+        if 'fitz' not in sys.modules:
+            sys.modules['fitz'] = pymupdf
+    except ImportError:
+        # Fallback to legacy import (PyMuPDF < 1.23)
+        import fitz
+        deps['pymupdf'] = True
+    logger.info("✓ PyMuPDF available")
 except ImportError:
-    raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
+    deps['pymupdf'] = False
+    logger.error("✗ PyMuPDF required: pip install pymupdf")
+    raise ImportError("PyMuPDF is required for DECLARMIMA to function. Run: pip install pymupdf")
+#try:
+#    import fitz
+#    PYMUPDF_AVAILABLE = True
+#except ImportError:
+#    raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
 
 try:
     import ollama

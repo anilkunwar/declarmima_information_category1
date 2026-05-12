@@ -3,7 +3,7 @@ from __future__ import annotations
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v18.1 - ENHANCED VECTORLESS RAG WITH PAGEINDEX-STYLE INTELLIGENCE
+DECLARMIMA v18.1 - ENHANCED VECTORLESS RAG WITH NEURALINDEX-STYLE INTELLIGENCE
 ============================================================================
 Complete implementation with:
 1. Strict 2-call query architecture (navigation → answer)
@@ -6899,7 +6899,7 @@ async def run_streamlit():
 
     # --- Header & Introduction ---
     st.markdown("# DECLARMIMA v18.1")
-    st.caption("Vectorless RAG with PageIndex-Style Intelligence • 2-Call Architecture • Roll-Up Summarization • Full-Tree Caching")
+    st.caption("Vectorless RAG with NeuralIndex-Style Intelligence • 2-Call Architecture • Roll-Up Summarization • Full-Tree Caching")
 
     # --- Initialize Session State ---
     initialize_session_state()

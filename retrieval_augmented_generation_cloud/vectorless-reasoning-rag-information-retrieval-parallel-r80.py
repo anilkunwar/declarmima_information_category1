@@ -85,7 +85,7 @@ logger = logging.getLogger("DECLARMIMA")
 # DEPENDENCY CHECKS WITH GRACEFUL DEGRADATION
 # ============================================================================
 def check_optional_dependencies() -> Dict[str, bool]:
-    ...
+    deps: Dict[str, bool] = {}
     # PyMuPDF (required)
     try:
         # Try modern import first (PyMuPDF >= 1.23)

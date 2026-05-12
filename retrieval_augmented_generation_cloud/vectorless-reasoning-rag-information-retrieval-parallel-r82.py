@@ -56,6 +56,8 @@ logger = logging.getLogger("DECLARMIMA_EXTENDED")
 # =============================================================================
 # DEPENDENCY IMPORTS WITH FALLBACKS
 # =============================================================================
+deps = {}  # ← ADD THIS LINE
+
 # PyMuPDF (required)
 try:
     # Try modern import first (PyMuPDF >= 1.23)

@@ -249,6 +249,8 @@ V83- : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v84.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel84.streamlit.app/) (Improvement on V82, More features and Restructured Pipeline, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress, Shorter than previous codes)
 
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v85.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel85.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress)
+
 
 
 

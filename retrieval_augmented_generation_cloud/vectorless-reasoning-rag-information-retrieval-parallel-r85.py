@@ -6745,17 +6745,20 @@ class FastHierarchicalIndex(HierarchicalIndex):
         # Phase 2: Parallel LLM TOC/Heading Extraction (native TOC fast-path)
         if self.llm:
             logger.info("Extracting TOCs/Headings (native PDF fallback enabled)...")
+            async def _native_toc_result(native_toc, doc_name):
+                """Async helper that returns a pre-computed TOC dict (zero LLM latency)."""
+                return {
+                    "has_toc": True,
+                    "toc_entries": [{"title": t, "level": l, "page": p} for l, t, p in native_toc],
+                    "headings_detected": [],
+                    "doc_type": "research_paper",
+                    "suggested_root_title": doc_name
+                }
+
             toc_tasks = []
             for doc_name, pages, native_toc in raw_docs:
                 if native_toc and len(native_toc) > 0:
-                    # Zero-LLM fast path
-                    toc_tasks.append(asyncio.coroutine(lambda nt=native_toc, dn=doc_name: {
-                        "has_toc": True,
-                        "toc_entries": [{"title": t, "level": l, "page": p} for l, t, p in nt],
-                        "headings_detected": [],
-                        "doc_type": "research_paper",
-                        "suggested_root_title": dn
-                    })())
+                    toc_tasks.append(_native_toc_result(native_toc, doc_name))
                 else:
                     toc_tasks.append(self._llm_extract_toc(doc_name, pages))
             toc_results = await asyncio.gather(*toc_tasks)

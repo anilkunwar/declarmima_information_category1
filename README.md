@@ -4,7 +4,7 @@
 
 [![meaningtowords](https://img.shields.io/badge/onestagelmvr-v0.0-green)](https://laser-microstructure-vectorless-rag1s.streamlit.app/) (stable model, As indicated by the name 1s single call or 1 stage, No LLM fallback when the exact term of query is not found during the interactive chat, corresponding version-v76)
 
-[![meaningtowords](https://img.shields.io/badge/twostagelmvr-v0.0-green)](https://laser-microstructure-vectorless-rag2s.streamlit.app/) (stable model, As indicated by the name 2s double call or 2 stage, No LLM fallback when the exact term of query is not found during the interactive chat, corresponding version-v79 or v80, To be continued... )
+[![meaningtowords](https://img.shields.io/badge/twostagelmvr-v0.0-green)](https://laser-microstructure-vectorless-rag2s.streamlit.app/) (stable model, As indicated by the name 2s double call or 2 stage, LLM fallback when the exact term of query is not found during the interactive chat, corresponding version-v79 or v80, To slow )
 
 
 # Materials
@@ -252,7 +252,7 @@ V83-V85 : Ramping up the Indexing by using DualLLM Faster for Indexing amd Power
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v85.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel85.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress)
 
 
-V86-V : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture, Hybrid Architecture. Constructed upon faster v78a
+V86-V88: Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture, Hybrid Architecture. Constructed upon faster v78a
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v86.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel86.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
@@ -261,6 +261,8 @@ V86-V : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerfu
 
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.a-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88a.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities)
 
 
 

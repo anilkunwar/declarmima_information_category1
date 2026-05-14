@@ -243,7 +243,7 @@ V79-V82 : 2 call architecture,  Universal Models that accept Universal Queries a
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v82.0-green)](https://vectorless-reasoning-rag-information-retrieval-parallel82.streamlit.app/) (More features and Restructured Pipeline, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress, Shorter than previous codes)
 
-V83- : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture
+V83-V85 : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture. Too Slow
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v83.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel83.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress)
 
@@ -252,7 +252,7 @@ V83- : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v85.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel85.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress)
 
 
-V86-V : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture, Hybrid Architecture
+V86-V : Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture, Hybrid Architecture. Constructed upon faster v78a
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v86.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel86.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 

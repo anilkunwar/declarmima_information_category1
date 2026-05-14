@@ -53,14 +53,153 @@ console_handler.setFormatter(log_formatter)
 logging.basicConfig(level=logging.INFO, handlers=[console_handler], force=True)
 logger = logging.getLogger("DECLARMIMA_EXTENDED")
 
+
+# ============================================================================
+# DEPENDENCY CHECKS WITH GRACEFUL DEGRADATION
+# ============================================================================
+def check_optional_dependencies() -> Dict[str, bool]:
+    deps: Dict[str, bool] = {}
+
+    # PyMuPDF (required)
+    try:
+        try:
+            import pymupdf
+            deps['pymupdf'] = True
+            import sys
+            if 'fitz' not in sys.modules:
+                sys.modules['fitz'] = pymupdf
+        except ImportError:
+            import fitz
+            deps['pymupdf'] = True
+        logger.info("✓ PyMuPDF available")
+    except ImportError:
+        deps['pymupdf'] = False
+        logger.error("✗ PyMuPDF required: pip install pymupdf")
+        raise ImportError("PyMuPDF is required for DECLARMIMA to function")
+
+    # Ollama (recommended)
+    try:
+        import ollama
+        deps['ollama'] = True
+        logger.info("✓ Ollama client available")
+    except ImportError:
+        deps['ollama'] = False
+        logger.warning("✗ Ollama not installed. Ollama backend unavailable.")
+
+    # HuggingFace Transformers (recommended)
+    try:
+        from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+        deps['transformers'] = True
+        logger.info("✓ HuggingFace transformers available")
+    except ImportError:
+        deps['transformers'] = False
+        logger.warning("✗ transformers not installed. Local HF models unavailable.")
+
+    # sentence-transformers (optional)
+    try:
+        from sentence_transformers import SentenceTransformer, util
+        deps['sentence_transformers'] = True
+        logger.info("✓ sentence-transformers available")
+    except ImportError:
+        deps['sentence_transformers'] = False
+        logger.warning("✗ sentence-transformers not installed. Using vectorless keyword retrieval.")
+
+    # rapidfuzz (optional)
+    try:
+        from rapidfuzz import fuzz, process
+        deps['rapidfuzz'] = True
+        logger.info("✓ rapidfuzz available")
+    except ImportError:
+        deps['rapidfuzz'] = False
+        logger.warning("✗ rapidfuzz not installed. Fuzzy matching disabled.")
+
+    # orjson (optional, faster JSON)
+    try:
+        import orjson
+        deps['orjson'] = True
+        logger.info("✓ orjson available (fast JSON)")
+    except ImportError:
+        deps['orjson'] = False
+        logger.warning("✗ orjson not installed. Using standard json (slower).")
+
+    # umap-learn (optional)
+    try:
+        import umap
+        deps['umap'] = True
+        logger.info("✓ umap-learn available")
+    except ImportError:
+        deps['umap'] = False
+        logger.warning("✗ umap-learn not installed. UMAP embeddings disabled.")
+
+    # pyvis (optional)
+    try:
+        from pyvis.network import Network
+        deps['pyvis'] = True
+        logger.info("✓ pyvis available")
+    except ImportError:
+        deps['pyvis'] = False
+        logger.warning("✗ pyvis not installed. Interactive networks disabled.")
+
+    # scikit-learn (optional)
+    try:
+        from sklearn.manifold import TSNE
+        from sklearn.decomposition import PCA
+        deps['sklearn'] = True
+        logger.info("✓ scikit-learn available")
+    except ImportError:
+        deps['sklearn'] = False
+        logger.warning("✗ scikit-learn not installed. t-SNE/PCA disabled.")
+
+    # pycalphad (optional)
+    try:
+        import pycalphad
+        deps['pycalphad'] = True
+        logger.info("✓ pycalphad available")
+    except ImportError:
+        deps['pycalphad'] = False
+        logger.warning("✗ pycalphad not installed. CALPHAD integration disabled.")
+
+    # tensorly (optional)
+    try:
+        from tensorly.decomposition import tucker, parafac
+        deps['tensorly'] = True
+        logger.info("✓ tensorly available")
+    except ImportError:
+        deps['tensorly'] = False
+        logger.warning("✗ tensorly not installed. Tensor decomposition disabled.")
+
+    logger.info(f"Dependency check complete: {sum(deps.values())}/{len(deps)} available")
+    return deps
+
+# Check dependencies at module load time
+GLOBAL_DEPS = check_optional_dependencies()
+
 # =============================================================================
 # DEPENDENCY IMPORTS WITH FALLBACKS
 # =============================================================================
+# ============================================================================
+# UNIFIED PDF IMPORT (handles both old and new PyMuPDF)
+# ============================================================================
 try:
-    import fitz
-    PYMUPDF_AVAILABLE = True
+    # Try modern import first (PyMuPDF >= 1.23)
+    try:
+        import pymupdf
+        PYMUPDF_AVAILABLE = True
+        # Make fitz available as alias for backward compatibility
+        import sys
+        if 'fitz' not in sys.modules:
+            sys.modules['fitz'] = pymupdf
+        import fitz  # Now available as alias
+        logger.info("✓ PyMuPDF (modern) loaded via pymupdf")
+    except ImportError:
+        # Fallback to legacy import (PyMuPDF < 1.23)
+        import fitz
+        PYMUPDF_AVAILABLE = True
+        logger.info("✓ PyMuPDF (legacy) loaded via fitz")
 except ImportError:
-    raise ImportError("PyMuPDF (fitz) required: pip install pymupdf")
+    PYMUPDF_AVAILABLE = False
+    logger.error("✗ PyMuPDF required: pip install pymupdf")
+    raise ImportError("PyMuPDF is required for DECLARMIMA. Run: pip install pymupdf")
 
 try:
     import ollama

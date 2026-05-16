@@ -3887,7 +3887,7 @@ class PublicationVisualizationEngine:
         nx.draw_networkx_edges(G, pos, alpha=0.3, arrows=True, arrowsize=10, ax=ax)
         labels = {n: d["label"] for n, d in G.nodes(data=True)}
         nx.draw_networkx_labels(G, pos, labels, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-        legend_elements = [mpatches.Patch(facecolor="#ef4444", label="Retrieved Node"), Patch(facecolor="#93c5fd", label="Has Quantitative Data"), Patch(facecolor="#e5e7eb", label="Other Node")]
+        legend_elements = [mpatches.Patch(facecolor="#ef4444", label="Retrieved Node"), mpatches.Patch(facecolor="#93c5fd", label="Has Quantitative Data"), mpatches.Patch(facecolor="#e5e7eb", label="Other Node")]
         ax.legend(handles=legend_elements, loc='upper right')
         ax.set_title(f"Retrieval Tree: {Path(doc_id).stem if doc_id else 'Document'}", fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")

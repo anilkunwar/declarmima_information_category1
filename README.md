@@ -265,9 +265,12 @@ Working Versions (v89 is stable version)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.a-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88a.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph doesn't work and is fixed in V88b)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.a-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel88a.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph doesn't work and is fixed in V88b)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.b-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88b.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.b-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel88b.streamlit.app/) (V88b is V88a fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.c-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88c.streamlit.app/) (V88c is V88 fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
 
 

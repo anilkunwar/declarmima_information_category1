@@ -1320,7 +1320,7 @@ class StructuredMetadataExtractor:
             "jackson_parameter": (re.compile(self.JACKSON_PARAMETER_PATTERN, re.IGNORECASE), float),
             "meltpool_depth": (re.compile(self.MELTPOOL_DEPTH_PATTERN, re.IGNORECASE), float),
             # === NEW: Plasticity / Work Hardening ===
-            "work_hardening_rate": (re.compile(r"(?:work hardening rate|strain hardening rate|hardening rate|d\sigma/d\epsilon|theta)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(MPa|GPa|1/s|s-1|MPa/|GPa/)", re.IGNORECASE), float),
+            "work_hardening_rate": (re.compile(r"(?:work hardening rate|strain hardening rate|hardening rate|theta)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(MPa|GPa|1/s|s-1|MPa/|GPa/)", re.IGNORECASE), float),
             "hollomon_strength": (re.compile(r"(?:hollomon strength coefficient|strength coefficient|sigma_0|K_hollomon)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(MPa|GPa)", re.IGNORECASE), float),
             "hollomon_exponent": (re.compile(r"(?:strain hardening exponent|hollomon exponent|hollomon n|n\s*[=:])\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE), float),
             "ramberg_osgood_k": (re.compile(r"(?:ramberg osgood k|ramberg-osgood k|k_h|K_RG)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)", re.IGNORECASE), float),

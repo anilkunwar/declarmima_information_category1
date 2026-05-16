@@ -254,17 +254,20 @@ V83-V85 : Ramping up the Indexing by using DualLLM Faster for Indexing amd Power
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v85.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel85.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization, Working but Too Slow in the Indexing Pipeline Progress)
 
 
-V86-V88: Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture, Hybrid Architecture. Constructed upon faster v78a
+V86-V90: Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerful for Query,  Adaptive Roll-Up Summarizer in Two-call Architecture, Hybrid Architecture. Constructed upon faster v78a
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v86.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel86.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v87.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel87.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
 
+Working Versions (v89 is stable version)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.a-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88a.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.a-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88a.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph doesn't work and is fixed in V88b)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.b-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88b.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
 
 

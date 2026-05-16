@@ -1434,6 +1434,8 @@ class StructuredMetadataExtractor:
         
         return meta
 
+class TwoStageRetriever:
+    """Two-stage document retriever with keyword-based filtering and optional semantic blending."""
     def __init__(self, llm=None, embedding_model: str = "all-MiniLM-L6-v2"):
         self.llm = llm
         self.embedding_model = None
@@ -1453,14 +1455,14 @@ class StructuredMetadataExtractor:
     def retrieve_relevant_docs(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
         scores = []
         query_lower = query.lower()
-        
+
         # Helper: safely check if a metadata attribute has values
         def _has(meta, attr):
             return bool(getattr(meta, attr, None))
-        
+
         for name, meta in self.doc_metadata.items():
             score = 0.0
-            
+
             # === Manufacturing / Process Parameters ===
             if "laser power" in query_lower and _has(meta, "laser_power_values"): score += 0.5
             if "scan speed" in query_lower and _has(meta, "scan_speed_values"): score += 0.5
@@ -1472,12 +1474,12 @@ class StructuredMetadataExtractor:
             if any(t in query_lower for t in ["exposure time", "dwell time"]) and _has(meta, "exposure_time_values"): score += 0.4
             if "hatch distance" in query_lower and _has(meta, "hatch_distance_values"): score += 0.4
             if "rotation angle" in query_lower and _has(meta, "rotation_angle_values"): score += 0.3
-            
+
             # === Energy Densities ===
             if any(t in query_lower for t in ["ved", "volumetric energy density", "energy density"]) and _has(meta, "energy_density_values"): score += 0.5
             if any(t in query_lower for t in ["aed", "areal energy density"]) and _has(meta, "areal_energy_density_values"): score += 0.5
             if any(t in query_lower for t in ["led", "linear energy density"]) and _has(meta, "linear_energy_density_values"): score += 0.5
-            
+
             # === Mechanical Properties ===
             if "yield" in query_lower and _has(meta, "yield_strength_values"): score += 0.4
             if "tensile" in query_lower and _has(meta, "tensile_strength_values"): score += 0.4
@@ -1487,8 +1489,8 @@ class StructuredMetadataExtractor:
             if any(t in query_lower for t in ["modulus", "young", "stiffness", "e-modulus"]) and (_has(meta, "modulus_values") or _has(meta, "youngs_modulus_values")): score += 0.4
             if "poisson" in query_lower and _has(meta, "poisson_ratio_values"): score += 0.4
             if "thermal expansion" in query_lower and _has(meta, "cte_values"): score += 0.4
-            
-            # === PLASTICITY / WORK HARDENING (FIXED: was causing AttributeError) ===
+
+            # === PLASTICITY / WORK HARDENING ===
             if any(t in query_lower for t in ["plasticity", "ramberg", "hollomon", "work hardening", "strain hardening", "flow stress"]):
                 if any([
                     _has(meta, "work_hardening_rate_values"),
@@ -1497,13 +1499,13 @@ class StructuredMetadataExtractor:
                     _has(meta, "ramberg_osgood_k_values"),
                     _has(meta, "ramberg_osgood_n_values")
                 ]): score += 0.5
-            
+
             # === Stacking Fault / Shear ===
             if any(t in query_lower for t in ["stacking fault", "sfe", "gsfe"]) and _has(meta, "stacking_fault_energy_values"): score += 0.5
             if "usfe" in query_lower and _has(meta, "unstable_stacking_fault_energy_values"): score += 0.5
             if "shear strength" in query_lower and _has(meta, "ideal_shear_strength_values"): score += 0.5
             if "eigenstrain" in query_lower and _has(meta, "eigenstrain_values"): score += 0.4
-            
+
             # === Thermal Properties ===
             if "temperature" in query_lower and _has(meta, "temperature_values"): score += 0.4
             if "melting" in query_lower and _has(meta, "melting_temperature_values"): score += 0.4
@@ -1518,7 +1520,7 @@ class StructuredMetadataExtractor:
             if "surface tension" in query_lower and _has(meta, "surface_tension_values"): score += 0.4
             if "lewis" in query_lower and _has(meta, "lewis_number_values"): score += 0.6
             if "jackson" in query_lower and _has(meta, "jackson_parameter_values"): score += 0.6
-            
+
             # === Electrochemical ===
             if any(t in query_lower for t in ["corrosion", "pitting", "repassivation", "polarization", "eis", "cpp"]):
                 if any([
@@ -1530,7 +1532,7 @@ class StructuredMetadataExtractor:
             if "exchange current" in query_lower and _has(meta, "exchange_current_density_values"): score += 0.5
             if "tafel" in query_lower and _has(meta, "tafel_slope_values"): score += 0.5
             if "pren" in query_lower and _has(meta, "pren_values"): score += 0.5
-            
+
             # === Microstructural ===
             if any(t in query_lower for t in ["austenite", "ferrite", "phase fraction", "martensite"]):
                 if any([
@@ -1553,7 +1555,7 @@ class StructuredMetadataExtractor:
             if "common tangent" in query_lower and _has(meta, "common_tangent_composition_values"): score += 0.5
             if "phase stability" in query_lower and _has(meta, "phase_stability_driving_force_values"): score += 0.5
             if "solute cluster" in query_lower and _has(meta, "solute_cluster_size_values"): score += 0.5
-            
+
             # === Spray / Fluid Dynamics ===
             if any(t in query_lower for t in ["smd", "sauter", "droplet", "spray"]):
                 if _has(meta, "sauter_mean_diameter_values"): score += 0.5
@@ -1561,7 +1563,7 @@ class StructuredMetadataExtractor:
             if "plume" in query_lower and _has(meta, "plume_height_values"): score += 0.5
             if "film thickness" in query_lower and _has(meta, "film_thickness_values"): score += 0.4
             if "absorption" in query_lower and _has(meta, "absorption_coefficient_values"): score += 0.4
-            
+
             # === Meltpool / Fluid Dynamics ===
             if "meltpool" in query_lower:
                 if any([
@@ -1572,7 +1574,7 @@ class StructuredMetadataExtractor:
             if "boussinesq" in query_lower and _has(meta, "boussinesq_density_variation_values"): score += 0.4
             if any(t in query_lower for t in ["lead-lag", "time lag", "thermal diffusion lag"]):
                 if _has(meta, "lead_lag_time_values") or _has(meta, "positional_time_lag_values"): score += 0.5
-            
+
             # === Multi-physics Simulation ===
             if any(t in query_lower for t in ["phase field", "cahn", "allen-cahn", "pfm"]):
                 if _has(meta, "phase_field_iterations"): score += 0.5
@@ -1580,7 +1582,7 @@ class StructuredMetadataExtractor:
                 if _has(meta, "md_steps"): score += 0.5
             if "fem" in query_lower and _has(meta, "fem_elements_values"): score += 0.4
             if "calphad" in query_lower and (meta.calphad_database or _has(meta, "other_parameters")): score += 0.5
-            
+
             # === AI/ML ===
             if any(t in query_lower for t in ["digital twin", "vdt", "virtual twin"]):
                 if meta.digital_twin_active or _has(meta, "other_parameters"): score += 0.5
@@ -1592,21 +1594,21 @@ class StructuredMetadataExtractor:
                 if meta.xai_explained: score += 0.4
             if any(t in query_lower for t in ["uq", "uncertainty quantification", "confidence interval"]):
                 if meta.uq_confidence_interval: score += 0.4
-            
+
             # === Materials matching ===
             for alloy in meta.alloys:
                 if alloy.lower() in query_lower: score += 0.3
             if any(t in query_lower for t in ["material", "alloy", "compound", "intermetallic"]):
                 if meta.alloys: score += 0.4
                 else: score += 0.1
-            
+
             # === Process type matching ===
             for proc in meta.process_types:
                 if proc.lower() in query_lower: score += 0.2
-            
+
             scores.append((name, min(score, 1.0)))
-        
-        # Semantic blending (unchanged)
+
+        # Semantic blending
         try:
             doc_texts = [f"{meta.alloys} {meta.process_types} {self.doc_summaries.get(name, '')}" for name, meta in self.doc_metadata.items()]
             if doc_texts and self.embedding_model:
@@ -1618,13 +1620,13 @@ class StructuredMetadataExtractor:
                     scores[i] = (name, min(kw_score * 0.6 + sem_score * 0.4, 1.0))
         except Exception as e:
             logger.warning(f"Semantic blending failed: {e}")
-        
+
         scores.sort(key=lambda x: x[1], reverse=True)
         if not any(s[1] > 0 for s in scores):
             return [(name, 0.2) for name in self.doc_metadata.keys()][:top_k]
         return scores[:top_k]
 
-        return list(range(1, max_pages+1))
+
 
 # =============================================================================
 # HIERARCHICAL INDEX & FAST HIERARCHICAL INDEX (EXPANDED)

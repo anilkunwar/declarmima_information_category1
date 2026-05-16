@@ -463,6 +463,7 @@ class QueryContext:
     materials: List[str]
     extracted_values: List[ExtractedValue]
     retrieved_nodes: List[Dict]
+    all_items: List[Dict] = field(default_factory=list)  # ALL extracted items (not just quantitative)
     multiphysics_flags: List[str] = field(default_factory=list)
     electrochemical_flags: List[str] = field(default_factory=list)
     ai_ml_flags: List[str] = field(default_factory=list)
@@ -473,13 +474,35 @@ class QueryContext:
     def from_cache(cls, cache: Dict) -> 'QueryContext':
         raw_vals = cache.get("extracted_values", [])
         extracted_vals = [ExtractedValue(**v) for v in raw_vals] if raw_vals and isinstance(raw_vals[0], dict) else []
+
+        # ALSO use ALL items (not just quantitative) to build context
+        raw_items = cache.get("items", [])
+        all_items = [UniversalExtractionItem(**v) for v in raw_items] if raw_items and isinstance(raw_items[0], dict) else []
+
+        # Build doc_ids from both extracted values AND all items
+        doc_ids_from_vals = {v.doc_name for v in extracted_vals}
+        doc_ids_from_items = {item.doc_source for item in all_items if hasattr(item, 'doc_source')}
+        doc_ids_from_retrieved = {r.get("doc_id", "") for r in cache.get("retrieved", []) if isinstance(r, dict)}
+        all_doc_ids = doc_ids_from_vals | doc_ids_from_items | doc_ids_from_retrieved
+
+        # Build physical quantities from both sources
+        pqs_from_vals = {v.physical_quantity for v in extracted_vals if v.physical_quantity}
+        pqs_from_items = {item.physical_quantity for item in all_items if hasattr(item, 'physical_quantity') and item.physical_quantity}
+        all_pqs = pqs_from_vals | pqs_from_items
+
+        # Build materials from both sources
+        mats_from_vals = {v.material for v in extracted_vals if v.material}
+        mats_from_items = {item.material for item in all_items if hasattr(item, 'material') and item.material}
+        all_mats = mats_from_vals | mats_from_items
+
         return cls(
             query=cache.get("prompt", ""),
-            relevant_doc_ids={v.doc_name for v in extracted_vals},
-            physical_quantities=list({v.physical_quantity for v in extracted_vals if v.physical_quantity}),
-            materials=list({v.material for v in extracted_vals if v.material}),
+            relevant_doc_ids=all_doc_ids,
+            physical_quantities=list(all_pqs),
+            materials=list(all_mats),
             extracted_values=extracted_vals,
             retrieved_nodes=cache.get("retrieved", []),
+            all_items=[i.model_dump() if hasattr(i, 'model_dump') else i for i in all_items],
             multiphysics_flags=cache.get("multiphysics_flags", []),
             electrochemical_flags=cache.get("electrochemical_flags", []),
             ai_ml_flags=cache.get("ai_ml_flags", []),
@@ -487,7 +510,9 @@ class QueryContext:
         )
 
     def has_data(self) -> bool:
-        return len(self.extracted_values) > 0
+        # Consider data present if we have ANY extracted items (quantitative or not)
+        # OR if we have retrieved nodes from relevant documents
+        return len(self.extracted_values) > 0 or len(self.all_items) > 0 or len(self.relevant_doc_ids) > 0 or len(self.retrieved_nodes) > 0
 
     def get_multiphysics_summary(self) -> Dict[str, Any]:
         return {
@@ -3761,18 +3786,18 @@ def render_sidebar():
         st.slider("Top N concepts", 5, 100, 25, key="viz_top_n")
         st.multiselect("Filter domains", options=["laser_power","scan_speed","yield_strength","tensile_strength","hardness","temperature","energy_density","lewis_number","jackson_parameter","phase_field_method","molecular_dynamics","pinn","unet","convlstm","calphad","digital_twin","xai","uncertainty_quantification"], default=["laser_power","scan_speed","yield_strength"], key="viz_domains")
         with st.expander("Advanced Style Controls", expanded=False):
-            st.slider("Base font size", 6, 20, 10, key="viz_font_size")
-            st.slider("Title font size", 8, 30, 14, key="viz_title_font_size")
-            st.slider("Label font size", 6, 18, 9, key="viz_label_font_size")
-            st.slider("Figure DPI", 100, 600, 300, 50, key="viz_figure_dpi")
-            st.slider("Node size factor", 0.1, 3.0, 1.0, 0.1, key="viz_node_size_factor")
-            st.slider("Edge alpha", 0.05, 1.0, 0.25, 0.05, key="viz_edge_alpha")
-            st.slider("Edge width", 0.1, 5.0, 0.8, 0.1, key="viz_edge_width")
-            st.slider("Line width", 0.5, 5.0, 1.5, 0.5, key="viz_line_width")
-            st.slider("Marker size", 20, 200, 80, 10, key="viz_marker_size")
+            st.slider("Base font size", 6, 40, 10, key="viz_font_size")
+            st.slider("Title font size", 8, 60, 14, key="viz_title_font_size")
+            st.slider("Label font size", 6, 36, 9, key="viz_label_font_size")
+            st.slider("Figure DPI", 100, 1200, 300, 50, key="viz_figure_dpi")
+            st.slider("Node size factor", 0.1, 6.0, 1.0, 0.1, key="viz_node_size_factor")
+            st.slider("Edge alpha", 0.05, 2.0, 0.25, 0.05, key="viz_edge_alpha")
+            st.slider("Edge width", 0.1, 10.0, 0.8, 0.1, key="viz_edge_width")
+            st.slider("Line width", 0.5, 10.0, 1.5, 0.5, key="viz_line_width")
+            st.slider("Marker size", 20, 400, 80, 10, key="viz_marker_size")
             st.checkbox("PyVis physics enabled", value=True, key="viz_pyvis_physics")
-            st.slider("PyVis gravity", -5000, -100, -1800, 100, key="viz_pyvis_gravity")
-            st.slider("PyVis spring length", 50, 300, 140, 10, key="viz_pyvis_spring_length")
+            st.slider("PyVis gravity", -10000, -100, -1800, 100, key="viz_pyvis_gravity")
+            st.slider("PyVis spring length", 50, 600, 140, 10, key="viz_pyvis_spring_length")
             st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
             if st.button("Clear Cache & Reset", use_container_width=True):
                 for key in list(st.session_state.keys()):
@@ -3974,7 +3999,29 @@ def run_streamlit():
                     answer = synthesizer.synthesize(active_prompt, items)
                 progress.progress(1.0, text="Done!")
                 st.markdown(answer)
-                st.session_state.cached_query_result = {"prompt": active_prompt, "relevant_docs": relevant_docs, "retrieved": retrieved, "items": [i.model_dump() for i in items], "extracted_values": [v.model_dump() for v in extracted_values], "answer": answer, "multiphysics_flags": synthesizer.phys_classifier.CANONICAL.keys() if any(item.item_type in ["phase_field", "molecular_dynamics", "plasticity", "thermal", "mechanical", "microstructural", "electrochemical", "multiphysics", "ai_ml", "digital_twin", "informatics"] for item in items) else [], "electrochemical_flags": ["eis", "cpp", "tafel"] if any(item.item_type == "electrochemical" for item in items) else [], "ai_ml_flags": ["uq", "xai", "digital_twin"] if any(item.item_type in ["ai_ml", "digital_twin"] for item in items) else [], "microstructural_features": ["bimodal", "sfe", "eigenstrain", "lead_lag"]}
+                # Build flags properly from items
+                multiphysics_flags = []
+                electrochemical_flags = []
+                ai_ml_flags = []
+                microstructural_features = []
+
+                for item in items:
+                    if item.item_type in ["phase_field", "molecular_dynamics", "plasticity", "thermal", "mechanical", "microstructural", "electrochemical", "multiphysics", "ai_ml", "digital_twin", "informatics"]:
+                        multiphysics_flags.append(item.item_type)
+                    if item.item_type == "electrochemical":
+                        electrochemical_flags.extend(["eis", "cpp", "tafel"])
+                    if item.item_type in ["ai_ml", "digital_twin"]:
+                        ai_ml_flags.extend(["uq", "xai", "digital_twin"])
+                    if item.item_type in ["microstructural"] or (item.physical_quantity and item.physical_quantity in ["bimodal_microstructure", "stacking_fault_energy", "eigenstrain"]):
+                        microstructural_features.extend(["bimodal", "sfe", "eigenstrain", "lead_lag"])
+
+                # Deduplicate
+                multiphysics_flags = list(set(multiphysics_flags))
+                electrochemical_flags = list(set(electrochemical_flags))
+                ai_ml_flags = list(set(ai_ml_flags))
+                microstructural_features = list(set(microstructural_features))
+
+                st.session_state.cached_query_result = {"prompt": active_prompt, "relevant_docs": relevant_docs, "retrieved": retrieved, "items": [i.model_dump() for i in items], "extracted_values": [v.model_dump() for v in extracted_values], "answer": answer, "multiphysics_flags": multiphysics_flags, "electrochemical_flags": electrochemical_flags, "ai_ml_flags": ai_ml_flags, "microstructural_features": microstructural_features}
                 # Persist query context so visualizations survive reruns
                 try:
                     st.session_state.query_ctx_cache = QueryContext.from_cache(st.session_state.cached_query_result)

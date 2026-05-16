@@ -263,7 +263,7 @@ V86-V90: Ramping up the Indexing by using DualLLM Faster for Indexing amd Powerf
 
 Working Versions (v89 is stable version)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88.streamlit.app/) (Improvement on V80a to ramp up the indexing, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.0-violet)](https://vectorless-reasoning-rag-information-retrieval-parallel88.streamlit.app/) (Improvement on V80a to ramp up the indexing, Interactive Knowledge Graph doesn't work and so is fixed in V88c, More features, Two-call architecture, expanded StructuredMetadataExtractor,PhysicalQuantityClassifier,QuantitativeKnowledgeGraph etc.  with visualization rendered, Dynamic and interactive visualization)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.a-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel88a.streamlit.app/) (V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph doesn't work and is fixed in V88b)
 

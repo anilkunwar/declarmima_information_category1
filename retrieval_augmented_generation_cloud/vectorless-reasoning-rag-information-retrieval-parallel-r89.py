@@ -1,18 +1,163 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-DECLARMIMA v17.1+ EXTENDED - UNIFIED MULTI-PHYSICS RAG WITH AI/ML, ELECTROCHEMISTRY, & MICROSTRUCTURAL TRACKING
+DECLARMIMA v18.1+ FULLY EXPANDED - UNIFIED MULTI-PHYSICS RAG WITH COMPLETE VOCABULARY
 ================================================================================
-Comprehensive expansion integrating missing concepts from 21 peer-reviewed papers:
+Comprehensive expansion integrating ALL concepts from 21+ peer-reviewed papers:
+
+COMPLETE VOCABULARY LIST (112+ Physical Quantities & Concepts)
+==============================================================
+
+### A. LASER ENERGY DEPOSITION & PROCESS PARAMETERS (14)
+  1.  laser_power              — Laser beam power [W, kW, mW]
+  2.  electrical_power       — Electrical input power [W, kW]
+  3.  scan_speed              — Laser scanning velocity [mm/s, m/s, mm/min]
+  4.  flow_speed              — Fluid/gas flow velocity [mm/s, m/s, L/min]
+  5.  feed_rate               — Material feed rate [mm/s, mm/min]
+  6.  irradiance              — Power density / intensity [W/cm², kW/cm²]
+  7.  energy_density (VED)    — Volumetric energy density [J/mm³, J/cm³]
+  8.  areal_energy_density (AED) — Areal energy density [J/mm², J/m²]
+  9.  linear_energy_density (LED) — Linear energy density [J/mm, J/m]
+  10. layer_thickness         — Powder layer thickness [µm, mm]
+  11. spot_size               — Beam diameter / spot diameter [µm, mm]
+  12. exposure_time           — Dwell / laser-on time [ms, s, µs]
+  13. hatch_distance          — Hatch spacing [µm, mm]
+  14. rotation_angle          — Scan rotation angle [deg, rad]
+
+### B. THERMAL PROPERTIES (10)
+  15. temperature             — Process / annealing temperature [°C, K, °F]
+  16. melting_temperature    — Solidus / liquidus / Tm [K, °C]
+  17. enthalpy               — Heat content / formation enthalpy [J/mol, kJ/mol, J/kg]
+  18. thermal_conductivity   — Heat conductivity k [W/m·K]
+  19. thermal_diffusivity    — α_th = k/(ρ·cp) [m²/s, cm²/s]
+  20. specific_heat_capacity — cp [J/kg·K, kJ/kg·K]
+  21. latent_heat_fusion     — Lf [J/kg, kJ/mol]
+  22. surface_tension        — γ, liquid-vapor tension [N/m, mN/m]
+  23. cooling_rate           — Solidification rate dT/dt [K/s, °C/s, K/min] ★ NEW v18.1
+  24. recrystallization_temperature — Tx [°C, K] ★ NEW v18.1
+
+### C. FLUID DYNAMICS & MELT POOL (14)
+  25. viscosity              — Dynamic viscosity µ [Pa·s, mPa·s, cP]
+  26. density                — Mass density ρ [g/cm³, kg/m³]
+  27. meltpool_depth         — Penetration depth [µm, mm]
+  28. meltpool_width         — Track width [µm, mm]
+  29. lewis_number           — Le = α_th/D [unitless]
+  30. jackson_parameter      — αJ morphology parameter [unitless]
+  31. marangoni_effect       — Thermo-capillary convection [m/s, mm/s]
+  32. boussinesq_approximation — Density variation Δρ [kg/m³, g/cm³]
+  33. sauter_mean_diameter   — SMD, D32 [µm, nm, mm]
+  34. spray_penetration      — Fuel penetration length [mm, cm, m]
+  35. plume_height           — Spray plume height [mm, cm, m]
+  36. film_thickness         — Wall film thickness δ [µm, nm, mm]
+  37. absorption_coefficient — Laser absorptance α [m⁻¹, 1/m]
+  38. mass_diffusivity       — D [m²/s, cm²/s]
+
+### D. MECHANICAL PROPERTIES (20)
+  39. yield_strength          — σy, 0.2% proof, Rp0.2 [MPa, GPa, psi]
+  40. tensile_strength        — σUTS, Rm [MPa, GPa]
+  41. ultimate_tensile_strength — UTS [MPa, GPa]
+  42. hardness               — HV, HRC, nano-hardness [HV, MPa, GPa]
+  43. elongation             — εf, strain to failure [%]
+  44. modulus / youngs_modulus — E, elastic modulus [GPa, MPa]
+  45. poisson_ratio          — ν [unitless]
+  46. coefficient_thermal_expansion — CTE α [K⁻¹, 10⁻⁶/K]
+  47. work_hardening_rate    — dσ/dε, θ [MPa, GPa, 1/s]
+  48. hollomon_strength      — K, σ₀ [MPa, GPa]
+  49. hollomon_exponent      — n [unitless]
+  50. ramberg_osgood_k       — K_RG [unitless]
+  51. ramberg_osgood_n       — n_RG, q [unitless]
+  52. plasticity_model       — Elastoplastic framework [unitless]
+  53. fracture_toughness     — K_IC, critical SIF [MPa√m, ksi√in] ★ NEW v18.1
+  54. fatigue_limit          — Endurance limit [MPa, GPa, psi] ★ NEW v18.1
+  55. impact_energy          — Charpy energy [J, ft-lb, J/cm²] ★ NEW v18.1
+  56. wear_rate              — Specific wear rate [mm³/N·m] ★ NEW v18.1
+  57. friction_coefficient   — COF, µ_f [unitless] ★ NEW v18.1
+
+### E. MICROSTRUCTURAL FEATURES (24)
+  58. phase_fraction         — Volume fraction [%]
+  59. austenite_fraction     — f_γ, γ fraction [%]
+  60. ferrite_fraction       — f_α, α fraction [%]
+  61. grain_size             — dg, average grain size [µm, nm, mm]
+  62. cell_size              — Subgrain / cell diameter [µm, nm]
+  63. porosity               — Pore / void fraction [%]
+  64. relative_density       — ρ_rel [%]
+  65. surface_roughness      — Ra, Sa, Rz [µm, nm]
+  66. stacking_fault_energy  — γ_SFE, GSFE [mJ/m², J/m²]
+  67. unstable_stacking_fault_energy — γ_USFE [mJ/m²]
+  68. ideal_shear_strength   — τ_ideal, τ_max [GPa, MPa]
+  69. bimodal_microstructure — Dual grain size [µm, fraction]
+  70. martensitic_transformation — Ms, TTT/CCT [°C, K]
+  71. martensite_start_temperature — Ms [°C, K]
+  72. spinodal_temperature   — T_spinodal [°C, K]
+  73. nucleation_rate        — J_nuc [m⁻³s⁻¹, s⁻¹]
+  74. growth_rate            — v_growth [mm/s, µm/s]
+  75. eigenstrain            — ε*, transformation strain [unitless]
+  76. gnd_density            — ρ_d, dislocation density [m⁻², cm⁻²] ★ NEW v18.1
+  77. solute_clustering      — SRO/MRO cluster size [nm, Å]
+  78. grain_boundary_energy  — γ_GB, σ [J/m², mJ/m²]
+  79. diffuse_interface_width — δ [nm, µm]
+  80. common_tangent         — Equilibrium composition [at%, wt%]
+  81. phase_stability        — ΔG driving force [kJ/mol, J/mol]
+
+### F. ELECTROCHEMICAL PROPERTIES (13)
+  82. corrosion_potential    — Ecorr, OCP [mV, V vs SCE/Ag/AgCl]
+  83. pitting_potential      — Epit, E_br [mV, V]
+  84. repassivation_potential — Erp [mV, V]
+  85. breakdown_potential    — E_bd, depassivation [mV, V]
+  86. open_circuit_potential — Eocp [mV, V]
+  87. corrosion_current_density — j_corr, i_corr [µA/cm², mA/cm²]
+  88. current_density        — j, i [A/cm², mA/cm²]
+  89. polarization_resistance — Rp [kΩ·cm², Ω·cm²]
+  90. PREN                   — Pitting resistance equivalent [unitless]
+  91. exchange_current_density — j₀ [µA/cm², mA/cm²]
+  92. tafel_slope            — b_a, b_c [mV/dec]
+  93. charge_transfer_coefficient — α_ct [unitless]
+  94. diffusion_coefficient  — D_electrochemical [cm²/s, m²/s]
+
+### G. ELECTRONIC & CRYSTALLOGRAPHIC PROPERTIES (5) ★ NEW v18.1
+  95. electrical_resistivity — ρ_e [µΩ·cm, Ω·m, nΩ·m]
+  96. electrical_conductivity — σ_e [S/m, MS/m, S/cm]
+  97. band_gap               — Eg, E_g [eV, J]
+  98. lattice_constant       — a [Å, nm, pm]
+  99. VEC                    — Valence electron concentration [e⁻/atom]
+
+### H. HEA/MPEA THERMODYNAMICS (4) ★ NEW v18.1
+  100. mixing_enthalpy       — ΔH_mix [kJ/mol, J/mol, eV/atom]
+  101. mixing_entropy        — ΔS_mix [J/mol·K, R, eV/atom·K]
+  102. omega_parameter       — Ω = T_m·ΔS_mix/|ΔH_mix| [unitless]
+  103. atomic_size_mismatch  — δ [%]
+
+### I. MULTI-PHYSICS SIMULATION & AI/ML (11)
+  104. phase_field_method    — PFM, Cahn-Hilliard [iterations, steps]
+  105. molecular_dynamics    — MD, LAMMPS [steps, fs, ps, ns]
+  106. digital_twin          — VDT, virtual twin [ms, s]
+  107. pinn                  — Physics-informed NN [loss, epochs]
+  108. unet                  — U-Net segmentation [Dice, IoU]
+  109. convlstm             — Spatiotemporal LSTM [RMSE, MAE, R²]
+  110. calphad              — Thermo-Calc, pycalphad [kJ/mol]
+  111. xai                  — SHAP, LIME, attribution [importance]
+  112. uncertainty_quantification — UQ, confidence [std, CI]
+  113. lead_lag_dynamics    — Thermal/chemical diffusion lag [ms, s]
+  114. positional_time_lag  — δt_pos [ms, s, µs]
+
+### J. OTHER
+  115. unknown               — Unclassified quantities
+
+KEY FEATURES INTEGRATED:
 - Phase Field Method (PFM), Molecular Dynamics (MD), Density Functional Theory (DFT)
 - CALPHAD/Thermocalc/pycalphad integration & thermodynamic databases
 - Electrochemical modeling: Nernst-Planck, Butler-Volmer, EIS, CPP, Tafel kinetics
-- Microstructural tracking: Bimodal grains, SFE/USFE, phase fractions, precipitation, spinodal decomposition
+- Microstructural tracking: Bimodal grains, SFE/USFE, phase fractions, precipitation,
+  spinodal decomposition, GND density, eigenstrain
 - Advanced AI/ML: U-Net, ConvLSTM, Digital Twin, XAI, Uncertainty Quantification (UQ)
 - Materials Informatics: TF-IDF, PMI, NER, tensor decomposition (Tucker, CP)
-- Process parameters: VED/AED/LED, Super-Gaussian, Flat-Top, Ring, Bessel beams, scan strategies
+- Process parameters: VED/AED/LED, Super-Gaussian, Flat-Top, Ring, Bessel beams
 - Specific alloys: Ti3Au, SDSS 2507, AlSiMg1.4Zr, TiB2/Al-Si-Mg-Zr, nt-Cu, HEAs/MPEAs, CoCrNi
-- Physical quantities: Lewis number (Le), Jackson parameter (αJ), Marangoni, Boussinesq, eigenstrain, Hollomon/Ramberg-Osgood
+- Physical quantities: Lewis number (Le), Jackson parameter (αJ), Marangoni, Boussinesq,
+  eigenstrain, Hollomon/Ramberg-Osgood, fracture toughness, fatigue limit, VEC, band gap
+- v18.1 ADDITIONS: Cooling rate, recrystallization temperature, impact energy, wear rate,
+  friction coefficient, GND density, electrical resistivity/conductivity, band gap,
+  lattice constant, VEC, mixing enthalpy/entropy, omega parameter, atomic size mismatch
 """
 import streamlit as st
 import os
@@ -507,6 +652,25 @@ class DocumentMetadata(BaseModel):
     uq_confidence_interval: Optional[Tuple[float, float]] = None
     # === Process Types ===
     process_types: List[str] = []
+    # === High-Priority Missing Quantities (v18.1 Additions) ===
+    fracture_toughness_values: List[float] = []
+    fatigue_limit_values: List[float] = []
+    impact_energy_values: List[float] = []
+    wear_rate_values: List[float] = []
+    friction_coefficient_values: List[float] = []
+    cooling_rate_values: List[float] = []
+    recrystallization_temp_values: List[float] = []
+    gnd_density_values: List[float] = []
+    vec_values: List[float] = []
+    mixing_enthalpy_values: List[float] = []
+    mixing_entropy_values: List[float] = []
+    omega_parameter_values: List[float] = []
+    atomic_size_mismatch_values: List[float] = []
+    electrical_resistivity_values: List[float] = []
+    electrical_conductivity_values: List[float] = []
+    band_gap_values: List[float] = []
+    lattice_constant_values: List[float] = []
+
     # === Flexible catch-all ===
     other_parameters: Dict[str, List[float]] = {}
 
@@ -782,6 +946,38 @@ class PhysicalQuantityClassifier:
         self.keyword_to_canonical["boussinesq"] = "boussinesq_approximation"
         self.keyword_to_canonical["lead-lag"] = "lead_lag_dynamics"
         self.keyword_to_canonical["δt_pos"] = "positional_time_lag"
+        # === NEW v18.1 keyword index entries ===
+        self.keyword_to_canonical["k_ic"] = "fracture_toughness"
+        self.keyword_to_canonical["fracture toughness"] = "fracture_toughness"
+        self.keyword_to_canonical["fatigue limit"] = "fatigue_limit"
+        self.keyword_to_canonical["endurance limit"] = "fatigue_limit"
+        self.keyword_to_canonical["charpy"] = "impact_energy"
+        self.keyword_to_canonical["impact energy"] = "impact_energy"
+        self.keyword_to_canonical["wear rate"] = "wear_rate"
+        self.keyword_to_canonical["cof"] = "friction_coefficient"
+        self.keyword_to_canonical["friction coefficient"] = "friction_coefficient"
+        self.keyword_to_canonical["cooling rate"] = "cooling_rate"
+        self.keyword_to_canonical["solidification rate"] = "cooling_rate"
+        self.keyword_to_canonical["recrystallization"] = "recrystallization_temperature"
+        self.keyword_to_canonical["gnd"] = "gnd_density"
+        self.keyword_to_canonical["dislocation density"] = "gnd_density"
+        self.keyword_to_canonical["vec"] = "VEC"
+        self.keyword_to_canonical["valence electron"] = "VEC"
+        self.keyword_to_canonical["delta h mix"] = "mixing_enthalpy"
+        self.keyword_to_canonical["dh_mix"] = "mixing_enthalpy"
+        self.keyword_to_canonical["delta s mix"] = "mixing_entropy"
+        self.keyword_to_canonical["ds_mix"] = "mixing_entropy"
+        self.keyword_to_canonical["omega"] = "omega_parameter"
+        self.keyword_to_canonical["atomic size mismatch"] = "atomic_size_mismatch"
+        self.keyword_to_canonical["resistivity"] = "electrical_resistivity"
+        self.keyword_to_canonical["rho_e"] = "electrical_resistivity"
+        self.keyword_to_canonical["conductivity"] = "electrical_conductivity"
+        self.keyword_to_canonical["sigma_e"] = "electrical_conductivity"
+        self.keyword_to_canonical["band gap"] = "band_gap"
+        self.keyword_to_canonical["eg"] = "band_gap"
+        self.keyword_to_canonical["lattice constant"] = "lattice_constant"
+        self.keyword_to_canonical["lattice parameter"] = "lattice_constant"
+        self.keyword_to_canonical["a"] = "lattice_constant"
         self.keyword_to_canonical["sro"] = "solute_clustering"
         self.keyword_to_canonical["mro"] = "solute_clustering"
         self.keyword_to_canonical["cp"] = "specific_heat_capacity"
@@ -942,6 +1138,23 @@ class PhysicalQuantityClassifier:
             "latent_heat_fusion": "Latent Heat of Fusion (Lf)", "nucleation_rate": "Nucleation Rate",
             "growth_rate": "Interface Growth Rate", "spinodal_temperature": "Spinodal Temperature",
             "martensite_start_temperature": "Martensite Start Temperature (Ms)",
+            "fracture_toughness": "Fracture Toughness (K_IC)",
+            "fatigue_limit": "Fatigue / Endurance Limit",
+            "impact_energy": "Impact Energy (Charpy)",
+            "wear_rate": "Wear Rate",
+            "friction_coefficient": "Coefficient of Friction (COF)",
+            "cooling_rate": "Cooling Rate (dT/dt)",
+            "recrystallization_temperature": "Recrystallization Temperature (Tx)",
+            "gnd_density": "GND Density (ρ_d)",
+            "VEC": "Valence Electron Concentration (VEC)",
+            "mixing_enthalpy": "Mixing Enthalpy (ΔH_mix)",
+            "mixing_entropy": "Mixing Entropy (ΔS_mix)",
+            "omega_parameter": "Omega Parameter (Ω)",
+            "atomic_size_mismatch": "Atomic Size Mismatch (δ)",
+            "electrical_resistivity": "Electrical Resistivity (ρ_e)",
+            "electrical_conductivity": "Electrical Conductivity (σ_e)",
+            "band_gap": "Band Gap (E_g)",
+            "lattice_constant": "Lattice Constant (a)",
             "unknown": "Other Quantities"
         }
         return mapping.get(canonical, canonical.replace("_", " ").title())
@@ -1287,6 +1500,23 @@ class StructuredMetadataExtractor:
     TENSILE_PATTERN = r'(?:tensile\s+strength|UTS)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(MPa|GPa|psi)'
     HARDNESS_PATTERN = r'(?:hardness|HV|Vickers)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(HV|MPa|GPa)'
     TEMP_PATTERN = r'(?:temperature|T)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(°C|K|°F)'
+    FRACTURE_TOUGHNESS_PATTERN = r'(?:fracture toughness|K_IC|KIC|critical SIF)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(MPa√m|MPa·m\^0\.5|ksi√in|MPa m\^0\.5|MPa\.m0\.5)'
+    FATIGUE_LIMIT_PATTERN = r'(?:fatigue limit|endurance limit|fatigue strength)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(MPa|GPa|psi|ksi)'
+    IMPACT_ENERGY_PATTERN = r'(?:impact energy|charpy energy|impact toughness|Charpy)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(J|ft-lb|J/cm2|kJ/m2)'
+    WEAR_RATE_PATTERN = r'(?:wear rate|specific wear rate|volume loss rate)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(mm3/Nm|mm3/N·m|m3/Nm|mm3/N·m)'
+    FRICTION_COEFFICIENT_PATTERN = r'(?:coefficient of friction|friction coefficient|COF|μ_f)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)'
+    COOLING_RATE_PATTERN = r'(?:cooling rate|solidification rate|dT/dt|T_dot)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(K/s|°C/s|K/min|degC/s)'
+    RECRYSTALLIZATION_TEMP_PATTERN = r'(?:recrystallization temperature|Tx|recrystallization temp)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(C|K|°C)'
+    GND_DENSITY_PATTERN = r'(?:GND density|geometrically necessary dislocation density|rho_d|ρ_d)\s*[=:]\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(m-2|cm-2|1/m2|m\^-2)'
+    VEC_PATTERN = r'(?:VEC|valence electron concentration|electron concentration|e/a)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)'
+    MIXING_ENTHALPY_PATTERN = r'(?:mixing enthalpy|ΔH_mix|enthalpy of mixing|Delta H mix)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(kJ/mol|J/mol|eV/atom)'
+    MIXING_ENTROPY_PATTERN = r'(?:mixing entropy|ΔS_mix|configurational entropy|Delta S mix)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(J/mol·K|R|eV/atom·K)'
+    OMEGA_PARAMETER_PATTERN = r'(?:omega parameter|Ω|phase stability parameter|Omega)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)'
+    ATOMIC_SIZE_MISMATCH_PATTERN = r'(?:atomic size mismatch|δ|atomic size difference|atomic radius mismatch|size difference)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(%|unitless)'
+    ELECTRICAL_RESISTIVITY_PATTERN = r'(?:electrical resistivity|rho_e|resistivity|volume resistivity|ρ_e)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(μΩ·cm|Ω·m|μohm-cm|nΩ·m|ohm-cm)'
+    ELECTRICAL_CONDUCTIVITY_PATTERN = r'(?:electrical conductivity|sigma_e|conductivity|σ_e)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(S/m|MS/m|S/cm)'
+    BAND_GAP_PATTERN = r'(?:band gap|energy band gap|Eg|optical band gap|bandgap)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(eV|J)'
+    LATTICE_CONSTANT_PATTERN = r'(?:lattice constant|lattice parameter|a|unit cell size|lattice parameter a)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(Å|nm|pm)'
     VED_PATTERN = r'(?:volumetric\s+energy\s+density|VED)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(J/mm³|J/cm³)'
 
     def __init__(self):
@@ -1343,7 +1573,24 @@ class StructuredMetadataExtractor:
             "specific_heat_capacity": (re.compile(r"(?:specific heat capacity|heat capacity|cp|Cp)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(J/kg·K|J/kgK|kJ/kg·K|J/g·K)", re.IGNORECASE), float),
             "latent_heat_fusion": (re.compile(r"(?:latent heat of fusion|enthalpy of fusion|Lf|L_f)\s*[=:]\s*([+-]?\d+(?:\.\d+)?)\s*(J/kg|kJ/kg|J/mol|kJ/mol)", re.IGNORECASE), float),
             # === NEW: Simulation ===
-            "phase_field_iterations": (re.compile(r"(?:phase field iterations|pfm iterations|simulation iterations|time steps)\s*[=:]\s*(\d+)", re.IGNORECASE), int),
+            "fracture_toughness": (re.compile(self.FRACTURE_TOUGHNESS_PATTERN, re.IGNORECASE), float),
+        "fatigue_limit": (re.compile(self.FATIGUE_LIMIT_PATTERN, re.IGNORECASE), float),
+        "impact_energy": (re.compile(self.IMPACT_ENERGY_PATTERN, re.IGNORECASE), float),
+        "wear_rate": (re.compile(self.WEAR_RATE_PATTERN, re.IGNORECASE), float),
+        "friction_coefficient": (re.compile(self.FRICTION_COEFFICIENT_PATTERN, re.IGNORECASE), float),
+        "cooling_rate": (re.compile(self.COOLING_RATE_PATTERN, re.IGNORECASE), float),
+        "recrystallization_temp": (re.compile(self.RECRYSTALLIZATION_TEMP_PATTERN, re.IGNORECASE), float),
+        "gnd_density": (re.compile(self.GND_DENSITY_PATTERN, re.IGNORECASE), float),
+        "vec": (re.compile(self.VEC_PATTERN, re.IGNORECASE), float),
+        "mixing_enthalpy": (re.compile(self.MIXING_ENTHALPY_PATTERN, re.IGNORECASE), float),
+        "mixing_entropy": (re.compile(self.MIXING_ENTROPY_PATTERN, re.IGNORECASE), float),
+        "omega_parameter": (re.compile(self.OMEGA_PARAMETER_PATTERN, re.IGNORECASE), float),
+        "atomic_size_mismatch": (re.compile(self.ATOMIC_SIZE_MISMATCH_PATTERN, re.IGNORECASE), float),
+        "electrical_resistivity": (re.compile(self.ELECTRICAL_RESISTIVITY_PATTERN, re.IGNORECASE), float),
+        "electrical_conductivity": (re.compile(self.ELECTRICAL_CONDUCTIVITY_PATTERN, re.IGNORECASE), float),
+        "band_gap": (re.compile(self.BAND_GAP_PATTERN, re.IGNORECASE), float),
+        "lattice_constant": (re.compile(self.LATTICE_CONSTANT_PATTERN, re.IGNORECASE), float),
+        "phase_field_iterations": (re.compile(r"(?:phase field iterations|pfm iterations|simulation iterations|time steps)\s*[=:]\s*(\d+)", re.IGNORECASE), int),
             "md_steps": (re.compile(r"(?:md steps|molecular dynamics steps|simulation steps|timesteps)\s*[=:]\s*(\d+)", re.IGNORECASE), int),
             "fem_elements": (re.compile(r"(?:fem elements|finite elements|mesh elements|elements)\s*[=:]\s*(\d+)", re.IGNORECASE), int),
             "pinn_epochs": (re.compile(r"(?:pinn epochs|training epochs|epochs)\s*[=:]\s*(\d+)", re.IGNORECASE), int),
@@ -1544,6 +1791,28 @@ class StructuredMetadataExtractor:
             if "relative density" in query_lower and _has(meta, "relative_density_values"): score += 0.4
             if "surface roughness" in query_lower and _has(meta, "surface_roughness_values"): score += 0.4
             if "bimodal" in query_lower and _has(meta, "grain_size_values"): score += 0.5  # proxy via grain size
+            # === NEW v18.1: Fracture, Fatigue, Tribology ===
+            if any(t in query_lower for t in ["fracture toughness", "k_ic", "critical sif", "fracture"]) and _has(meta, "fracture_toughness_values"): score += 0.6
+            if any(t in query_lower for t in ["fatigue limit", "endurance limit", "fatigue strength", "fatigue"]) and _has(meta, "fatigue_limit_values"): score += 0.6
+            if any(t in query_lower for t in ["impact energy", "charpy", "impact toughness"]) and _has(meta, "impact_energy_values"): score += 0.6
+            if any(t in query_lower for t in ["wear rate", "specific wear", "volume loss"]) and _has(meta, "wear_rate_values"): score += 0.5
+            if any(t in query_lower for t in ["friction", "cof", "coefficient of friction"]) and _has(meta, "friction_coefficient_values"): score += 0.5
+            # === NEW v18.1: Solidification Kinetics ===
+            if any(t in query_lower for t in ["cooling rate", "solidification rate", "dt/dt"]) and _has(meta, "cooling_rate_values"): score += 0.5
+            if any(t in query_lower for t in ["recrystallization", "recryst"]) and _has(meta, "recrystallization_temp_values"): score += 0.5
+            # === NEW v18.1: Dislocation Mechanics ===
+            if any(t in query_lower for t in ["gnd", "geometrically necessary", "dislocation density"]) and _has(meta, "gnd_density_values"): score += 0.5
+            # === NEW v18.1: HEA/MPEA Thermodynamics ===
+            if any(t in query_lower for t in ["vec", "valence electron"]) and _has(meta, "vec_values"): score += 0.6
+            if any(t in query_lower for t in ["mixing enthalpy", "delta h mix", "dh_mix"]) and _has(meta, "mixing_enthalpy_values"): score += 0.5
+            if any(t in query_lower for t in ["mixing entropy", "delta s mix", "ds_mix", "configurational entropy"]) and _has(meta, "mixing_entropy_values"): score += 0.5
+            if any(t in query_lower for t in ["omega parameter", "omega", "phase stability"]) and _has(meta, "omega_parameter_values"): score += 0.5
+            if any(t in query_lower for t in ["atomic size mismatch", "size difference", "delta size"]) and _has(meta, "atomic_size_mismatch_values"): score += 0.5
+            # === NEW v18.1: Electronic & Crystallographic ===
+            if any(t in query_lower for t in ["electrical resistivity", "resistivity", "rho_e"]) and _has(meta, "electrical_resistivity_values"): score += 0.5
+            if any(t in query_lower for t in ["electrical conductivity", "conductivity", "sigma_e"]) and _has(meta, "electrical_conductivity_values"): score += 0.5
+            if any(t in query_lower for t in ["band gap", "eg", "energy gap"]) and _has(meta, "band_gap_values"): score += 0.5
+            if any(t in query_lower for t in ["lattice constant", "lattice parameter", "unit cell"]) and _has(meta, "lattice_constant_values"): score += 0.5
             if "martensite start" in query_lower and _has(meta, "martensite_start_temperature_values"): score += 0.5
             if "spinodal" in query_lower and _has(meta, "spinodal_temperature_values"): score += 0.5
             if any(t in query_lower for t in ["nucleation rate", "growth rate", "interface velocity"]):
@@ -1916,6 +2185,12 @@ class HybridSummarizer:
             "ttt diagram", "cct diagram", "ms temperature", "martensite start",
             "hollomon", "ramberg-osgood", "plasticity", "elastoplastic",
             "work hardening", "strain hardening", "flow stress",
+            "fracture toughness", "k_ic", "fatigue limit", "endurance limit", "impact energy", "charpy",
+            "wear rate", "friction coefficient", "cof", "cooling rate", "solidification rate",
+            "recrystallization", "gnd density", "dislocation density", "vec", "valence electron",
+            "mixing enthalpy", "delta h mix", "mixing entropy", "delta s mix", "omega parameter",
+            "atomic size mismatch", "electrical resistivity", "resistivity", "electrical conductivity",
+            "conductivity", "band gap", "eg", "lattice constant", "lattice parameter",
             "solute clustering", "short-range order", "grain boundary",
             "diffuse interface", "common tangent", "phase stability",
             "spinodal", "nucleation", "growth rate", "interface velocity"
@@ -1925,7 +2200,7 @@ class HybridSummarizer:
         self.tier2_boosters = [
             "laser power", "yield strength", "energy density", "stacking fault",
             "corrosion potential", "meltpool depth", "phase field", "calphad",
-            "digital twin", "pinn", "eigenstrain", "marangoni"
+            "digital twin", "pinn", "eigenstrain", "marangoni", "fracture toughness", "k_ic", "fatigue limit", "cooling rate", "vec", "band gap", "lattice constant"
         ]
 
     def _detect_tier(self, node: PageNode) -> int:
@@ -2574,7 +2849,7 @@ Return JSON array of extracted items with fields:
 "parameter_name": "...",
 "value": number,
 "unit": "e.g., W, kW, mm/s, MPa, GPa, HV, mV, V, µA/cm², A/cm², J/mm³, J/mm², J/m, mJ/m², nm, µm, mm, K, °C, wt%, at%, vol%, g/cm³, kg/m³, W/m·K, Pa·s, mPa·s, kΩ·cm², ppm, unitless, iterations, steps, fs, ps, ns, ms, s, μm, mm, cm, m",
-"physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, feed_rate, irradiance, temperature, melting_temperature, energy_density, areal_energy_density, linear_energy_density, layer_thickness, spot_size, exposure_time, enthalpy, viscosity, thermal_conductivity, density, yield_strength, tensile_strength, ultimate_tensile_strength, hardness, elongation, modulus, stacking_fault_energy, unstable_stacking_fault_energy, ideal_shear_strength, corrosion_potential, pitting_potential, breakdown_potential, repassivation_potential, open_circuit_potential, corrosion_current_density, polarization_resistance, apparent_polarization_resistance, current_density, PREN, phase_fraction, austenite_fraction, ferrite_fraction, grain_size, cell_size, porosity, relative_density, surface_roughness, sauter_mean_diameter, spray_penetration, plume_height, film_thickness, absorption_coefficient, youngs_modulus, poisson_ratio, coefficient_thermal_expansion, lewis_number, jackson_parameter, meltpool_depth, meltpool_width, hatch_distance, rotation_angle, work_hardening_rate, hollomon_strength, hollomon_exponent, ramberg_osgood_k, ramberg_osgood_n, plasticity_model, phase_field_method, molecular_dynamics, digital_twin, pinn, unet, convlstm, calphad, xai, uncertainty_quantification, bimodal_microstructure, martensitic_transformation, eigenstrain, marangoni_effect, boussinesq_approximation, lead_lag_dynamics, positional_time_lag, solute_clustering, grain_boundary_energy, diffuse_interface_width, common_tangent, phase_stability, unknown",
+"physical_quantity": "one of: laser_power, electrical_power, scan_speed, flow_speed, feed_rate, irradiance, temperature, melting_temperature, energy_density, areal_energy_density, linear_energy_density, layer_thickness, spot_size, exposure_time, enthalpy, viscosity, thermal_conductivity, density, yield_strength, tensile_strength, ultimate_tensile_strength, hardness, elongation, modulus, stacking_fault_energy, unstable_stacking_fault_energy, ideal_shear_strength, fracture_toughness, fatigue_limit, impact_energy, wear_rate, friction_coefficient, cooling_rate, recrystallization_temperature, gnd_density, VEC, mixing_enthalpy, mixing_entropy, omega_parameter, atomic_size_mismatch, electrical_resistivity, electrical_conductivity, band_gap, lattice_constant, corrosion_potential, pitting_potential, breakdown_potential, repassivation_potential, open_circuit_potential, corrosion_current_density, polarization_resistance, apparent_polarization_resistance, current_density, PREN, phase_fraction, austenite_fraction, ferrite_fraction, grain_size, cell_size, porosity, relative_density, surface_roughness, sauter_mean_diameter, spray_penetration, plume_height, film_thickness, absorption_coefficient, youngs_modulus, poisson_ratio, coefficient_thermal_expansion, lewis_number, jackson_parameter, meltpool_depth, meltpool_width, hatch_distance, rotation_angle, work_hardening_rate, hollomon_strength, hollomon_exponent, ramberg_osgood_k, ramberg_osgood_n, plasticity_model, phase_field_method, molecular_dynamics, digital_twin, pinn, unet, convlstm, calphad, xai, uncertainty_quantification, bimodal_microstructure, martensitic_transformation, eigenstrain, marangoni_effect, boussinesq_approximation, lead_lag_dynamics, positional_time_lag, solute_clustering, grain_boundary_energy, diffuse_interface_width, common_tangent, phase_stability, unknown",
 "material": "alloy or material name if mentioned (e.g., Ti3Au, CP Ti, Grade II Ti, SDSS 2507, UNS S32750, AlSiMgZr, Al-Si-Mg-Zr, TiB2/Al-Si-Mg-Zr, Fe-based metallic glass, Au-Ti, 316L, 2205, Inconel 718, Ti6Al4V, CoCrNi, nt-Cu, HEA/MPEA)",
 "method": "e.g., LPBF, L-PBF, DED, SLM, PFI, GDI, FEM, MD, nanoindentation, EIS, CPP, XRD, SEM, TEM, EBSD, EDS, DTA, CALPHAD, PINN, U-Net, ConvLSTM, Digital Twin, Phase Field, Tucker Decomposition, TF-IDF, PMI, NER",
 "simulation_type": "type of simulation if mentioned (e.g., phase-field, MD, FEM, PINN, U-Net, ConvLSTM, CALPHAD, digital twin)",

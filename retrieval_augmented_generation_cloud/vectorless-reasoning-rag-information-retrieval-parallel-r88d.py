@@ -2906,6 +2906,424 @@ Include up to {self.max_results} selections."""
 # =============================================================================
 # VISUALIZATION CONFIGURATION (EXPANDED)
 # =============================================================================
+
+# ============================================================================
+# DOCUMENT MARKER REGISTRY - NEW IN v17.2+
+# ============================================================================
+
+class DocumentMarkerRegistry:
+    """
+    Assigns unique marker shapes to each document/publication.
+    Supports both Matplotlib and Plotly marker symbol systems.
+    """
+
+    MATPLOTLIB_MARKERS = [
+        'D',      # diamond
+        '*',      # star  
+        '^',      # triangle up
+        'v',      # triangle down
+        's',      # square
+        'p',      # pentagon
+        'h',      # hexagon1
+        'H',      # hexagon2
+        '8',      # octagon
+        'd',      # thin diamond
+        'X',      # x filled
+        'P',      # plus filled
+        '<',      # triangle left
+        '>',      # triangle right
+        '1',      # tri down
+        '2',      # tri up
+        '3',      # tri left
+        '4',      # tri right
+        '+',      # plus
+        'x',      # x
+        'o',      # circle
+    ]
+
+    PLOTLY_MARKERS = [
+        'diamond',
+        'star',
+        'triangle-up',
+        'triangle-down',
+        'square',
+        'pentagon',
+        'hexagon',
+        'hexagram',
+        'octagon',
+        'diamond-tall',
+        'x',
+        'cross',
+        'asterisk',
+        'triangle-left',
+        'triangle-right',
+        'star-triangle-up',
+        'star-triangle-down',
+        'star-square',
+        'star-diamond',
+        'hourglass',
+        'bowtie',
+        'circle-cross',
+        'circle-x',
+    ]
+
+    MARKER_DESCRIPTIONS = {
+        'D': 'Diamond', '*': 'Star', '^': 'Triangle Up', 'v': 'Triangle Down',
+        's': 'Square', 'p': 'Pentagon', 'h': 'Hexagon', 'H': 'Hexagon (alt)',
+        '8': 'Octagon', 'd': 'Thin Diamond', 'X': 'X (filled)', 'P': 'Plus (filled)',
+        '<': 'Triangle Left', '>': 'Triangle Right', '1': 'Tri Down', '2': 'Tri Up',
+        '3': 'Tri Left', '4': 'Tri Right', '+': 'Plus', 'x': 'X', 'o': 'Circle',
+        'diamond': 'Diamond', 'star': 'Star', 'triangle-up': 'Triangle Up',
+        'triangle-down': 'Triangle Down', 'square': 'Square', 'pentagon': 'Pentagon',
+        'hexagon': 'Hexagon', 'hexagram': 'Hexagram', 'octagon': 'Octagon',
+        'diamond-tall': 'Tall Diamond', 'cross': 'Cross', 'asterisk': 'Asterisk',
+        'triangle-left': 'Triangle Left', 'triangle-right': 'Triangle Right',
+        'star-triangle-up': 'Star-Triangle Up', 'star-triangle-down': 'Star-Triangle Down',
+        'star-square': 'Star-Square', 'star-diamond': 'Star-Diamond',
+        'hourglass': 'Hourglass', 'bowtie': 'Bowtie', 'circle-cross': 'Circle-Cross',
+        'circle-x': 'Circle-X'
+    }
+
+    def __init__(self):
+        self._doc_to_marker: Dict[str, str] = {}
+        self._doc_to_plotly_marker: Dict[str, str] = {}
+        self._marker_index: Dict[str, int] = {}
+
+    def register_documents(self, doc_ids: List[str]) -> None:
+        """Register documents and assign unique markers."""
+        for i, doc_id in enumerate(doc_ids):
+            if doc_id not in self._doc_to_marker:
+                mpl_idx = i % len(self.MATPLOTLIB_MARKERS)
+                ply_idx = i % len(self.PLOTLY_MARKERS)
+                self._doc_to_marker[doc_id] = self.MATPLOTLIB_MARKERS[mpl_idx]
+                self._doc_to_plotly_marker[doc_id] = self.PLOTLY_MARKERS[ply_idx]
+                self._marker_index[doc_id] = i
+
+    def get_marker(self, doc_id: str, backend: str = 'matplotlib') -> str:
+        """Get marker for a document. Backend: 'matplotlib' or 'plotly'."""
+        if doc_id not in self._doc_to_marker:
+            self.register_documents([doc_id])
+        if backend == 'plotly':
+            return self._doc_to_plotly_marker.get(doc_id, 'circle')
+        return self._doc_to_marker.get(doc_id, 'o')
+
+    def get_marker_description(self, doc_id: str, backend: str = 'matplotlib') -> str:
+        """Get human-readable description of the marker."""
+        marker = self.get_marker(doc_id, backend)
+        return self.MARKER_DESCRIPTIONS.get(marker, marker)
+
+    def get_all_assignments(self, backend: str = 'matplotlib') -> Dict[str, str]:
+        """Get all document->marker assignments."""
+        if backend == 'plotly':
+            return self._doc_to_plotly_marker.copy()
+        return self._doc_to_marker.copy()
+
+    def get_registered_docs(self) -> List[str]:
+        """Get list of all registered document IDs."""
+        return list(self._doc_to_marker.keys())
+
+
+def render_matplotlib_legend(
+    ax,
+    doc_ids: List[str],
+    aliases: Optional[Dict[str, str]] = None,
+    registry: Optional['DocumentMarkerRegistry'] = None,
+    title: str = "Publications",
+    loc: str = "upper left",
+    bbox_to_anchor: Optional[Tuple[float, float]] = None,
+    ncol: int = 1,
+    fontsize: int = 9,
+    marker_size: int = 10,
+    framealpha: float = 0.95,
+    padding: float = 1.2
+) -> Any:
+    """Render a Matplotlib legend with unique markers for each publication."""
+    from matplotlib.lines import Line2D
+    if registry is None:
+        registry = DocumentMarkerRegistry()
+
+    registry.register_documents(doc_ids)
+
+    legend_elements = []
+    for doc_id in doc_ids:
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display_name = get_display_name(doc_id, aliases)
+        label = f"{display_name} [{marker}]"
+
+        legend_elements.append(
+            Line2D([0], [0], marker=marker, color='w', markerfacecolor='#1e40af',
+                   markeredgecolor='#1e40af', markersize=marker_size,
+                   label=label, linestyle='None')
+        )
+
+    if bbox_to_anchor is None:
+        bbox_to_anchor = (1.02, 1.0)
+
+    legend = ax.legend(
+        handles=legend_elements,
+        title=title,
+        loc=loc,
+        bbox_to_anchor=bbox_to_anchor,
+        ncol=ncol,
+        fontsize=fontsize,
+        title_fontsize=fontsize + 1,
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=framealpha,
+        borderpad=padding * 0.5,
+        labelspacing=padding * 0.3,
+        handlelength=padding * 1.5,
+        handletextpad=padding * 0.5
+    )
+
+    return legend
+
+
+def create_marker_legend_html(
+    doc_ids: List[str],
+    aliases: Optional[Dict[str, str]] = None,
+    registry: Optional['DocumentMarkerRegistry'] = None,
+    title: str = "Publication Markers"
+) -> str:
+    """Create an HTML legend for PyVis/interactive networks."""
+    if registry is None:
+        registry = DocumentMarkerRegistry()
+
+    registry.register_documents(doc_ids)
+
+    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:15px; margin:10px 0; max-width:400px;">']
+    html_parts.append(f'<h4 style="margin:0 0 10px 0; color:#1e293b; font-size:14px;">{title}</h4>')
+    html_parts.append('<div style="display:grid; grid-template-columns: auto 1fr; gap:8px 12px; align-items:center;">')
+
+    for doc_id in doc_ids:
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display_name = get_display_name(doc_id, aliases)
+        desc = registry.get_marker_description(doc_id, 'matplotlib')
+
+        symbol_map = {
+            'D': '◆', '*': '★', '^': '▲', 'v': '▼', 's': '■', 'p': '⬟',
+            'h': '⬡', 'H': '⬢', '8': '⯃', 'd': '◊', 'X': '✖', 'P': '➕',
+            '<': '◀', '>': '▶', '1': '▼', '2': '▲', '3': '◀', '4': '▶',
+            '+': '+', 'x': '×', 'o': '●'
+        }
+        symbol = symbol_map.get(marker, marker)
+
+        html_parts.append(f'<div style="font-size:18px; color:#1e40af; text-align:center;">{symbol}</div>')
+        html_parts.append(f'<div style="font-size:12px; color:#334155;"><b>{display_name}</b> <span style="color:#64748b;">({desc})</span></div>')
+
+    html_parts.append('</div></div>')
+    return ''.join(html_parts)
+
+
+# ============================================================================
+# DOCUMENT MARKER REGISTRY - NEW IN v17.2+
+# ============================================================================
+
+class DocumentMarkerRegistry:
+    """
+    Assigns unique marker shapes to each document/publication.
+    Supports both Matplotlib and Plotly marker symbol systems.
+    """
+
+    MATPLOTLIB_MARKERS = [
+        'D',      # diamond
+        '*',      # star  
+        '^',      # triangle up
+        'v',      # triangle down
+        's',      # square
+        'p',      # pentagon
+        'h',      # hexagon1
+        'H',      # hexagon2
+        '8',      # octagon
+        'd',      # thin diamond
+        'X',      # x filled
+        'P',      # plus filled
+        '<',      # triangle left
+        '>',      # triangle right
+        '1',      # tri down
+        '2',      # tri up
+        '3',      # tri left
+        '4',      # tri right
+        '+',      # plus
+        'x',      # x
+        'o',      # circle
+    ]
+
+    PLOTLY_MARKERS = [
+        'diamond',
+        'star',
+        'triangle-up',
+        'triangle-down',
+        'square',
+        'pentagon',
+        'hexagon',
+        'hexagram',
+        'octagon',
+        'diamond-tall',
+        'x',
+        'cross',
+        'asterisk',
+        'triangle-left',
+        'triangle-right',
+        'star-triangle-up',
+        'star-triangle-down',
+        'star-square',
+        'star-diamond',
+        'hourglass',
+        'bowtie',
+        'circle-cross',
+        'circle-x',
+    ]
+
+    MARKER_DESCRIPTIONS = {
+        'D': 'Diamond', '*': 'Star', '^': 'Triangle Up', 'v': 'Triangle Down',
+        's': 'Square', 'p': 'Pentagon', 'h': 'Hexagon', 'H': 'Hexagon (alt)',
+        '8': 'Octagon', 'd': 'Thin Diamond', 'X': 'X (filled)', 'P': 'Plus (filled)',
+        '<': 'Triangle Left', '>': 'Triangle Right', '1': 'Tri Down', '2': 'Tri Up',
+        '3': 'Tri Left', '4': 'Tri Right', '+': 'Plus', 'x': 'X', 'o': 'Circle',
+        'diamond': 'Diamond', 'star': 'Star', 'triangle-up': 'Triangle Up',
+        'triangle-down': 'Triangle Down', 'square': 'Square', 'pentagon': 'Pentagon',
+        'hexagon': 'Hexagon', 'hexagram': 'Hexagram', 'octagon': 'Octagon',
+        'diamond-tall': 'Tall Diamond', 'cross': 'Cross', 'asterisk': 'Asterisk',
+        'triangle-left': 'Triangle Left', 'triangle-right': 'Triangle Right',
+        'star-triangle-up': 'Star-Triangle Up', 'star-triangle-down': 'Star-Triangle Down',
+        'star-square': 'Star-Square', 'star-diamond': 'Star-Diamond',
+        'hourglass': 'Hourglass', 'bowtie': 'Bowtie', 'circle-cross': 'Circle-Cross',
+        'circle-x': 'Circle-X'
+    }
+
+    def __init__(self):
+        self._doc_to_marker: Dict[str, str] = {}
+        self._doc_to_plotly_marker: Dict[str, str] = {}
+        self._marker_index: Dict[str, int] = {}
+
+    def register_documents(self, doc_ids: List[str]) -> None:
+        """Register documents and assign unique markers."""
+        for i, doc_id in enumerate(doc_ids):
+            if doc_id not in self._doc_to_marker:
+                mpl_idx = i % len(self.MATPLOTLIB_MARKERS)
+                ply_idx = i % len(self.PLOTLY_MARKERS)
+                self._doc_to_marker[doc_id] = self.MATPLOTLIB_MARKERS[mpl_idx]
+                self._doc_to_plotly_marker[doc_id] = self.PLOTLY_MARKERS[ply_idx]
+                self._marker_index[doc_id] = i
+
+    def get_marker(self, doc_id: str, backend: str = 'matplotlib') -> str:
+        """Get marker for a document. Backend: 'matplotlib' or 'plotly'."""
+        if doc_id not in self._doc_to_marker:
+            self.register_documents([doc_id])
+        if backend == 'plotly':
+            return self._doc_to_plotly_marker.get(doc_id, 'circle')
+        return self._doc_to_marker.get(doc_id, 'o')
+
+    def get_marker_description(self, doc_id: str, backend: str = 'matplotlib') -> str:
+        """Get human-readable description of the marker."""
+        marker = self.get_marker(doc_id, backend)
+        return self.MARKER_DESCRIPTIONS.get(marker, marker)
+
+    def get_all_assignments(self, backend: str = 'matplotlib') -> Dict[str, str]:
+        """Get all document->marker assignments."""
+        if backend == 'plotly':
+            return self._doc_to_plotly_marker.copy()
+        return self._doc_to_marker.copy()
+
+    def get_registered_docs(self) -> List[str]:
+        """Get list of all registered document IDs."""
+        return list(self._doc_to_marker.keys())
+
+
+def render_matplotlib_legend(
+    ax,
+    doc_ids: List[str],
+    aliases: Optional[Dict[str, str]] = None,
+    registry: Optional['DocumentMarkerRegistry'] = None,
+    title: str = "Publications",
+    loc: str = "upper left",
+    bbox_to_anchor: Optional[Tuple[float, float]] = None,
+    ncol: int = 1,
+    fontsize: int = 9,
+    marker_size: int = 10,
+    framealpha: float = 0.95,
+    padding: float = 1.2
+) -> Any:
+    """Render a Matplotlib legend with unique markers for each publication."""
+    from matplotlib.lines import Line2D
+    if registry is None:
+        registry = DocumentMarkerRegistry()
+
+    registry.register_documents(doc_ids)
+
+    legend_elements = []
+    for doc_id in doc_ids:
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display_name = get_display_name(doc_id, aliases)
+        label = f"{display_name} [{marker}]"
+
+        legend_elements.append(
+            Line2D([0], [0], marker=marker, color='w', markerfacecolor='#1e40af',
+                   markeredgecolor='#1e40af', markersize=marker_size,
+                   label=label, linestyle='None')
+        )
+
+    if bbox_to_anchor is None:
+        bbox_to_anchor = (1.02, 1.0)
+
+    legend = ax.legend(
+        handles=legend_elements,
+        title=title,
+        loc=loc,
+        bbox_to_anchor=bbox_to_anchor,
+        ncol=ncol,
+        fontsize=fontsize,
+        title_fontsize=fontsize + 1,
+        frameon=True,
+        fancybox=True,
+        shadow=True,
+        framealpha=framealpha,
+        borderpad=padding * 0.5,
+        labelspacing=padding * 0.3,
+        handlelength=padding * 1.5,
+        handletextpad=padding * 0.5
+    )
+
+    return legend
+
+
+def create_marker_legend_html(
+    doc_ids: List[str],
+    aliases: Optional[Dict[str, str]] = None,
+    registry: Optional['DocumentMarkerRegistry'] = None,
+    title: str = "Publication Markers"
+) -> str:
+    """Create an HTML legend for PyVis/interactive networks."""
+    if registry is None:
+        registry = DocumentMarkerRegistry()
+
+    registry.register_documents(doc_ids)
+
+    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:15px; margin:10px 0; max-width:400px;">']
+    html_parts.append(f'<h4 style="margin:0 0 10px 0; color:#1e293b; font-size:14px;">{title}</h4>')
+    html_parts.append('<div style="display:grid; grid-template-columns: auto 1fr; gap:8px 12px; align-items:center;">')
+
+    for doc_id in doc_ids:
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display_name = get_display_name(doc_id, aliases)
+        desc = registry.get_marker_description(doc_id, 'matplotlib')
+
+        symbol_map = {
+            'D': '◆', '*': '★', '^': '▲', 'v': '▼', 's': '■', 'p': '⬟',
+            'h': '⬡', 'H': '⬢', '8': '⯃', 'd': '◊', 'X': '✖', 'P': '➕',
+            '<': '◀', '>': '▶', '1': '▼', '2': '▲', '3': '◀', '4': '▶',
+            '+': '+', 'x': '×', 'o': '●'
+        }
+        symbol = symbol_map.get(marker, marker)
+
+        html_parts.append(f'<div style="font-size:18px; color:#1e40af; text-align:center;">{symbol}</div>')
+        html_parts.append(f'<div style="font-size:12px; color:#334155;"><b>{display_name}</b> <span style="color:#64748b;">({desc})</span></div>')
+
+    html_parts.append('</div></div>')
+    return ''.join(html_parts)
+
 @dataclass
 class VisConfig:
     font_family: str = "DejaVu Sans"
@@ -2970,6 +3388,7 @@ class PublicationVisualizationEngine:
     def __init__(self, kgraph: QuantitativeKnowledgeGraph, config: Optional[VisConfig] = None):
         self.kgraph = kgraph
         self.cfg = config or VisConfig()
+        self.marker_registry = DocumentMarkerRegistry()
         plt.rcParams['font.family'] = self.cfg.font_family
         plt.rcParams['font.size'] = self.cfg.font_size
         plt.rcParams['axes.titlesize'] = self.cfg.title_font_size
@@ -3039,9 +3458,16 @@ class PublicationVisualizationEngine:
         df_focus = self.get_query_focused_df(query_ctx)
         G = nx.Graph()
         G.add_node("QUERY", node_type="query", label=query_ctx.query[:45] + "...", title=f"Query: {query_ctx.query}")
+
+        # Register all docs for marker assignment
+        all_docs = list(query_ctx.relevant_doc_ids)
+        self.marker_registry.register_documents(all_docs)
+
         for doc_id in query_ctx.relevant_doc_ids:
             display_name = get_display_name(doc_id, self.cfg.aliases)
-            G.add_node(display_name, node_type="doc", color="#10b981", size=1400, title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
+            marker = self.marker_registry.get_marker(doc_id, 'matplotlib')
+            G.add_node(display_name, node_type="doc", color="#10b981", size=1400, 
+                      marker=marker, title=f"Document: {display_name}\nMarker: {marker}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
             G.add_node(pq, node_type="pq", label=readable, color=self.DOMAIN_COLORS.get(pq, "#3b82f6"), size=1100)
@@ -3064,12 +3490,32 @@ class PublicationVisualizationEngine:
         mat_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "material"]
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
         nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", node_size=3200, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", node_size=1400, ax=ax)
+
+        # Draw document nodes with unique markers
+        for doc_node in doc_nodes:
+            orig_doc_id = None
+            for d in query_ctx.relevant_doc_ids:
+                if get_display_name(d, self.cfg.aliases) == doc_node:
+                    orig_doc_id = d
+                    break
+            marker = self.marker_registry.get_marker(orig_doc_id or doc_node, 'matplotlib')
+            nx.draw_networkx_nodes(G, pos, nodelist=[doc_node], node_color="#10b981", 
+                                  node_size=1400, node_shape=marker, ax=ax)
+
         nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", node_size=1100, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", node_size=1300, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#ec4899", node_size=650, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.35, width=1.2, edge_color="#94a3b8", ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=9, font_family=self.font_family, ax=ax)
+
+        # Add marker legend with padding
+        render_matplotlib_legend(
+            ax, all_docs, self.cfg.aliases, self.marker_registry,
+            title="Publications (by Marker)", loc="upper left",
+            bbox_to_anchor=(1.02, 1.0), ncol=1, fontsize=8,
+            marker_size=9, padding=1.3
+        )
+
         ax.set_title(f"Query-Focused Knowledge Graph\n{query_ctx.query[:70]}...", fontsize=15, fontweight='bold', pad=20)
         ax.axis("off")
         plt.tight_layout()
@@ -3078,17 +3524,27 @@ class PublicationVisualizationEngine:
     def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
         if not PYVIS_AVAILABLE: return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
         if not query_ctx.has_data(): return "<p>No quantitative data available for this query.</p>"
+
+        # Register docs for markers
+        all_docs = list(query_ctx.relevant_doc_ids)
+        self.marker_registry.register_documents(all_docs)
+
         net = Network(height="780px", width="100%", bgcolor="#ffffff", font_color="#1e293b", cdn_resources='remote')
         net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
         high_conf_threshold = 0.75
         net.add_node("QUERY", label="YOUR QUERY", title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>", color="#7c3aed", size=45, font={"size": 18, "bold": True, "color": "#1e293b"})
+
+        # Build HTML legend for markers
+        legend_html = create_marker_legend_html(all_docs, self.cfg.aliases, self.marker_registry, "Publication Markers")
+
         for doc_id in query_ctx.relevant_doc_ids:
             display = get_display_name(doc_id, self.cfg.aliases)
+            marker = self.marker_registry.get_marker(doc_id, 'plotly')
             count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
-            tooltip = f"<b>Document:</b> {display}<br><b>Extracted Values:</b> {count}<br><br>"
+            tooltip = f"<b>Document:</b> {display}<br><b>Marker:</b> {marker}<br><b>Extracted Values:</b> {count}<br><br>"
             for item in query_ctx.extracted_values[:5]:
                 if item.doc_name == doc_id: tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
-            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", size=32, font={"size": 14, "color": "#1e293b"})
+            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", size=32, font={"size": 14, "color": "#1e293b"}, shape="dot")
             net.add_edge("QUERY", display, value=3)
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
@@ -3113,6 +3569,14 @@ class PublicationVisualizationEngine:
         for node in net.get_nodes():
             if node != "QUERY": net.add_edge("QUERY", node, value=1, color="#64748b")
         html = net.generate_html()
+
+        # Inject marker legend
+        legend_html = create_marker_legend_html(all_docs, self.cfg.aliases, self.marker_registry, "Publication Markers")
+        if "</body>" in html:
+            html = html.replace("</body>", legend_html + "</body>")
+        else:
+            html += legend_html
+
         modal_js = """<script>var modal = null;network.on("click", function(params) {if (params.nodes.length === 0) return;var nodeId = params.nodes[0];if (nodeId.startsWith("val_")) {var node = network.body.nodes[nodeId];var title = node.options.title || "No details";if (!modal) {modal = document.createElement("div");modal.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:9999; display:flex; align-items:center; justify-content:center; font-family:system-ui;";document.body.appendChild(modal);}modal.innerHTML = "<div style=\"background:#f8fafc; color:#1e293b; padding:25px; border-radius:12px; max-width:620px; max-height:85vh; overflow:auto; border:1px solid #cbd5e1;\"><h3 style=\"margin-top:0; color:#db2777;\">Extracted Value Details</h3><div style=\"white-space:pre-wrap; font-size:15px; line-height:1.5;\">${title}</div><br><button onclick=\"this.parentElement.parentElement.remove()\" style=\"padding:10px 20px; background:#e11d48; color:white; border:none; border-radius:6px; cursor:pointer;\">Close</button></div>";}});</script>"""
         if "</body>" in html: html = html.replace("</body>", modal_js + "</body>")
         else: html += modal_js
@@ -3258,12 +3722,50 @@ class PublicationVisualizationEngine:
         return fig
 
     def plot_scatter_power_vs_speed(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
-        power_df = df[df["physical_quantity"] == "laser_power"][["doc", "material", "value"]].rename(columns={"value": "laser_power"})
-        speed_df = df[df["physical_quantity"] == "scan_speed"][["doc", "material", "value"]].rename(columns={"value": "scan_speed"})
-        merged = pd.merge(power_df, speed_df, on=["doc", "material"], how="inner")
+        power_df = df[df["physical_quantity"] == "laser_power"][["doc", "doc_stem", "material", "value"]].rename(columns={"value": "laser_power"})
+        speed_df = df[df["physical_quantity"] == "scan_speed"][["doc", "doc_stem", "material", "value"]].rename(columns={"value": "scan_speed"})
+        merged = pd.merge(power_df, speed_df, on=["doc", "doc_stem", "material"], how="inner")
         if merged.empty: return go.Figure().update_layout(title="No paired laser power and scan speed data")
-        fig = px.scatter(merged, x="laser_power", y="scan_speed", color="material", title="Laser Power vs Scan Speed by Material", labels={"laser_power": "Laser Power (W)", "scan_speed": "Scan Speed (mm/s)"})
-        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+
+        # Register docs for markers
+        docs = list(merged["doc_stem"].unique())
+        self.marker_registry.register_documents(docs)
+
+        fig = go.Figure()
+
+        # Create traces per document with unique markers
+        for doc in docs:
+            doc_data = merged[merged["doc_stem"] == doc]
+            marker = self.marker_registry.get_marker(doc, 'plotly')
+            display = get_display_name(doc, self.cfg.aliases)
+
+            for mat in doc_data["material"].unique():
+                mat_data = doc_data[doc_data["material"] == mat]
+                fig.add_trace(go.Scatter(
+                    x=mat_data["laser_power"],
+                    y=mat_data["scan_speed"],
+                    mode='markers',
+                    name=f"{display} ({mat})",
+                    marker=dict(
+                        symbol=marker,
+                        size=12,
+                        line=dict(width=1, color='DarkSlateGrey')
+                    ),
+                    hovertemplate='<b>%{fullData.name}</b><br>Power: %{x:.1f} W<br>Speed: %{y:.1f} mm/s<extra></extra>'
+                ))
+
+        fig.update_layout(
+            title="Laser Power vs Scan Speed by Document (Unique Markers)",
+            xaxis_title="Laser Power (W)",
+            yaxis_title="Scan Speed (mm/s)",
+            font=dict(family=self.font_family, size=self.font_size),
+            showlegend=True,
+            legend=dict(
+                title=dict(text="<b>Documents</b>"),
+                x=1.02, y=1.0, xanchor='left', yanchor='top',
+                bgcolor='rgba(255,255,255,0.95)', bordercolor='#cbd5e1', borderwidth=1
+            )
+        )
         return fig
 
     def plot_radar_by_material(self, colormap: Optional[str] = None) -> go.Figure:
@@ -3415,6 +3917,10 @@ class PublicationVisualizationEngine:
     def plot_static_knowledge_network(self, filtered_concepts: Optional[List[str]] = None, top_n: int = 30, figsize: Tuple[int,int] = (14, 12), layout: str = "spring", colormap: Optional[str] = None, node_size_factor: float = 1.0, edge_alpha: float = 0.25, show_labels: bool = True, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> plt.Figure:
         G = nx.Graph()
         docs = list(self.kgraph.doc_graphs.keys())
+
+        # Register docs for markers
+        self.marker_registry.register_documents(docs)
+
         for doc_id in docs:
             display = get_display_name(doc_id, aliases)
             label = get_citation_label(doc_id, aliases, style=label_style)
@@ -3424,7 +3930,8 @@ class PublicationVisualizationEngine:
                 tooltip += "Top values:\n"
                 top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
                 for it in top_vals: tooltip += f"- {it.get('physical_quantity', 'unknown')}: {it.get('value')} {it.get('unit', '')}\n"
-            G.add_node(display, node_type="doc", bipartite=0, domain="DOCUMENT", title=tooltip, orig_doc=doc_id)
+            marker = self.marker_registry.get_marker(doc_id, 'matplotlib')
+            G.add_node(display, node_type="doc", bipartite=0, domain="DOCUMENT", marker=marker, title=tooltip, orig_doc=doc_id)
         entities = filtered_concepts or list(self.kgraph.get_all_physical_quantities().keys())[:top_n]
         for ent in entities:
             stats = self.kgraph.get_summary_stats(ent)
@@ -3438,7 +3945,13 @@ class PublicationVisualizationEngine:
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42) if layout == "spring" else nx.kamada_kawai_layout(G)
         doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
         ent_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "entity"]
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#1e40af", node_shape="s", node_size=800, alpha=0.85, ax=ax, label="Documents")
+
+        # Draw documents with unique markers
+        for doc_node in doc_nodes:
+            marker = G.nodes[doc_node].get('marker', 'o')
+            nx.draw_networkx_nodes(G, pos, nodelist=[doc_node], node_color="#1e40af", 
+                                  node_shape=marker, node_size=800, alpha=0.85, ax=ax)
+
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
         domains = list(set(G.nodes[n].get("domain", "UNKNOWN") for n in ent_nodes))
         domain_color_idx = {d: i for i, d in enumerate(domains)}
@@ -3456,14 +3969,25 @@ class PublicationVisualizationEngine:
         nx.draw_networkx_edges(G, pos, alpha=edge_alpha, width=0.8, ax=ax)
         if show_labels:
             nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-        legend_patches = [mpatches.Patch(color="#1e40af", label="Documents")]
+
+        # Add marker legend for documents
+        render_matplotlib_legend(
+            ax, docs, aliases, self.marker_registry,
+            title="Publications", loc="upper left",
+            bbox_to_anchor=(1.02, 1.0), ncol=1, fontsize=8,
+            marker_size=8, padding=1.2
+        )
+
+        # Add domain color legend
+        legend_patches = []
         for dom in domains:
             if colormap and cmap_obj:
                 c = mcolors.to_hex(cmap_obj(domain_color_idx[dom] / max(len(domains) - 1, 1)))
             else:
                 c = self.DOMAIN_COLORS.get(dom, "#6b7280")
             legend_patches.append(mpatches.Patch(color=c, label=dom))
-        ax.legend(handles=legend_patches, loc="upper left", fontsize=9)
+        ax.legend(handles=legend_patches, loc="lower left", fontsize=9)
+
         ax.set_title("Salience-Aware Cross-Document Knowledge Network\n(Node size = importance | Labels: {} format)".format(label_style), fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
         ax.axis("off")
         plt.tight_layout()
@@ -3743,8 +4267,55 @@ class PublicationVisualizationEngine:
         df["year"] = df["doc"].map(years)
         top_q = df["physical_quantity"].value_counts().head(5).index.tolist()
         df_top = df[df["physical_quantity"].isin(top_q)]
-        fig = px.scatter(df_top, x="year", y="physical_quantity", color="material", title="Temporal Distribution of Quantities by Material", labels={"year": "Estimated Year", "physical_quantity": "Physical Quantity"}, color_discrete_sequence=px.colors.qualitative.Set1)
-        fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+
+        # Register docs for markers
+        docs = list(df_top["doc_stem"].unique())
+        self.marker_registry.register_documents(docs)
+
+        fig = go.Figure()
+
+        # Create traces per document with unique markers
+        for doc in docs:
+            doc_data = df_top[df_top["doc_stem"] == doc]
+            marker = self.marker_registry.get_marker(doc, 'plotly')
+            display = get_display_name(doc, self.cfg.aliases)
+
+            for pq in top_q:
+                pq_data = doc_data[doc_data["physical_quantity"] == pq]
+                if not pq_data.empty:
+                    fig.add_trace(go.Scatter(
+                        x=pq_data["year"],
+                        y=[pq] * len(pq_data),
+                        mode='markers',
+                        name=display,
+                        marker=dict(symbol=marker, size=10, color='#1e40af'),
+                        hovertemplate='<b>%{fullData.name}</b><br>Year: %{x}<br>Quantity: %{y}<extra></extra>',
+                        showlegend=False
+                    ))
+
+        # Add legend entries for documents
+        for doc in docs:
+            marker = self.marker_registry.get_marker(doc, 'plotly')
+            display = get_display_name(doc, self.cfg.aliases)
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None],
+                mode='markers',
+                marker=dict(symbol=marker, size=10, color='#1e40af'),
+                name=display,
+                showlegend=True
+            ))
+
+        fig.update_layout(
+            title="Temporal Distribution of Quantities by Document (Unique Markers)",
+            xaxis_title="Estimated Year",
+            yaxis_title="Physical Quantity",
+            font=dict(family=self.font_family, size=self.font_size),
+            legend=dict(
+                title=dict(text="<b>Documents</b>"),
+                x=1.02, y=1.0, xanchor='left', yanchor='top',
+                bgcolor='rgba(255,255,255,0.95)', bordercolor='#cbd5e1', borderwidth=1
+            )
+        )
         return fig
 
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
@@ -3969,6 +4540,38 @@ def render_sidebar():
 def get_cached_llm(model_choice: str, use_4bit: bool):
     internal = LOCAL_LLM_OPTIONS[model_choice]
     return HybridLLM(model_key=internal, use_4bit=use_4bit)
+
+
+
+def render_streamlit_marker_legend(
+    doc_ids: List[str],
+    aliases: Optional[Dict[str, str]] = None,
+    registry: Optional[DocumentMarkerRegistry] = None,
+    title: str = "Publication Markers"
+) -> None:
+    """Render a Streamlit-native marker legend widget."""
+    if registry is None:
+        registry = DocumentMarkerRegistry()
+
+    registry.register_documents(doc_ids)
+
+    with st.container():
+        st.markdown(f"**{title}**")
+
+        cols = st.columns(min(len(doc_ids), 4))
+        for i, doc_id in enumerate(doc_ids):
+            marker = registry.get_marker(doc_id, 'matplotlib')
+            display = get_display_name(doc_id, aliases)
+            desc = registry.get_marker_description(doc_id, 'matplotlib')
+
+            with cols[i % len(cols)]:
+                st.markdown(f"""
+                <div style="background:#f1f5f9; border-radius:6px; padding:8px; margin:4px 0; text-align:center;">
+                    <div style="font-size:24px; color:#1e40af; line-height:1;">{marker}</div>
+                    <div style="font-size:11px; color:#334155; font-weight:600; margin-top:4px;">{display}</div>
+                    <div style="font-size:9px; color:#64748b;">{desc}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
 def run_streamlit():
     st.set_page_config(page_title="DECLARMIMA v17.1+ Extended - Unified Multi-Physics RAG", layout="wide")
@@ -4233,6 +4836,15 @@ def run_streamlit():
                     query_ctx = None
 
             if query_ctx and query_ctx.has_data():
+                # Show publication marker legend for current query
+                with st.expander("Publication Markers for This Query", expanded=True):
+                    render_streamlit_marker_legend(
+                        sorted(list(query_ctx.relevant_doc_ids)),
+                        st.session_state.get("doc_aliases", {}),
+                        None,
+                        "Query Documents"
+                    )
+
                 aliases = st.session_state.get("doc_aliases", {})
                 label_style = st.session_state.get("viz_label_style", "doi")
                 config = VisConfig(
@@ -4360,6 +4972,11 @@ def run_streamlit():
             viz = PublicationVisualizationEngine(st.session_state.knowledge_graph, config=config)
             df_all = viz.extract_dataframe(aliases=aliases, label_style=label_style)
             if not df_all.empty:
+                # Global publication marker reference
+                with st.expander("Publication Marker Reference", expanded=False):
+                    all_doc_ids = sorted(list(self.kgraph.doc_graphs.keys()))
+                    render_streamlit_marker_legend(all_doc_ids, aliases, self.marker_registry, "All Publications")
+
                 selected_qty = st.selectbox("Filter by physical quantity", options=["All"] + sorted(df_all["physical_quantity"].unique()), key="viz_qty_filter")
                 group_by = st.selectbox("Group by", ["material", "doc_stem"], key="viz_group_by")
                 colormap = st.session_state.get("viz_colormap", "viridis")

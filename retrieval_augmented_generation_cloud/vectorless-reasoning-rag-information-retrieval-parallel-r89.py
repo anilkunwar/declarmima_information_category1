@@ -1520,6 +1520,7 @@ class StructuredMetadataExtractor:
     VED_PATTERN = r'(?:volumetric\s+energy\s+density|VED)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(J/mm³|J/cm³)'
 
     def __init__(self):
+        self.alloy_regexes = [re.compile(p, re.IGNORECASE) for p in self.ALLOY_PATTERNS]
         self.compiled_patterns = {
             "laser_power": (re.compile(self.POWER_PATTERN, re.IGNORECASE), float),
             "scan_speed": (re.compile(self.SCAN_SPEED_PATTERN, re.IGNORECASE), float),
@@ -3232,6 +3233,11 @@ class PublicationVisualizationEngine:
         "grain_boundary_energy": "#f59e0b", "diffuse_interface_width": "#0ea5e9", "common_tangent": "#ec4899",
         "phase_stability": "#10b981", "stacking_fault_energy": "#a855f7", "sauter_mean_diameter": "#f97316"
     }
+    # Unique marker shapes for publications/documents in network visualizations
+    DOC_MARKERS = ["D", "*", "^", "h", "p", "H", "8", "d", "v", "<", ">", "s", "o", "X", "P"]
+    DOC_PLOTLY_SYMBOLS = ["diamond", "star", "triangle-up", "hexagon", "pentagon", "hexagram", 
+                          "octagon", "diamond-tall", "triangle-down", "triangle-left", "triangle-right",
+                          "square", "circle", "x", "cross"]
     COLORMAP_OPTIONS = {
         "viridis": "viridis", "plasma": "plasma", "inferno": "inferno", "magma": "magma",
         "cividis": "cividis", "Blues": "Blues", "Greens": "Greens", "Oranges": "Oranges",
@@ -3249,6 +3255,29 @@ class PublicationVisualizationEngine:
         plt.rcParams['figure.dpi'] = self.cfg.figure_dpi
         plt.rcParams['savefig.dpi'] = self.cfg.figure_dpi
         plt.rcParams['lines.linewidth'] = self.cfg.line_width
+        # Cache for document-to-marker mapping
+        self._doc_marker_cache: Dict[str, Tuple[str, str]] = {}
+
+    def _get_doc_marker(self, doc_id: str, doc_index: int = 0) -> Tuple[str, str]:
+        """Return (matplotlib_marker, plotly_symbol) for a document, with legend label."""
+        if doc_id not in self._doc_marker_cache:
+            idx = doc_index % len(self.DOC_MARKERS)
+            self._doc_marker_cache[doc_id] = (self.DOC_MARKERS[idx], self.DOC_PLOTLY_SYMBOLS[idx])
+        return self._doc_marker_cache[doc_id]
+
+    def _build_doc_legend_data(self, doc_ids: List[str], aliases: Optional[Dict[str, str]] = None) -> Tuple[List[str], List[str], List[str]]:
+        """Build labels, markers, and colors for document legend. Returns (labels, mpl_markers, plotly_symbols)."""
+        labels = []
+        mpl_markers = []
+        plotly_symbols = []
+        for i, doc_id in enumerate(doc_ids):
+            marker_mpl, marker_plotly = self._get_doc_marker(doc_id, i)
+            display = get_display_name(doc_id, aliases)
+            citation = get_citation_label(doc_id, aliases, index=i, style=self.cfg.label_style)
+            labels.append(f"{citation}: {display}")
+            mpl_markers.append(marker_mpl)
+            plotly_symbols.append(marker_plotly)
+        return labels, mpl_markers, plotly_symbols
 
     @property
     def font_family(self): return self.cfg.font_family
@@ -3311,9 +3340,12 @@ class PublicationVisualizationEngine:
         df_focus = self.get_query_focused_df(query_ctx)
         G = nx.Graph()
         G.add_node("QUERY", node_type="query", label=query_ctx.query[:45] + "...", title=f"Query: {query_ctx.query}")
-        for doc_id in query_ctx.relevant_doc_ids:
+        doc_list = list(query_ctx.relevant_doc_ids)
+        for i, doc_id in enumerate(doc_list):
             display_name = get_display_name(doc_id, self.cfg.aliases)
-            G.add_node(display_name, node_type="doc", color="#10b981", size=1400, title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
+            marker_mpl, _ = self._get_doc_marker(doc_id, i)
+            G.add_node(display_name, node_type="doc", color="#10b981", size=1400, 
+                      marker=marker_mpl, title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
             G.add_node(pq, node_type="pq", label=readable, color=self.DOMAIN_COLORS.get(pq, "#3b82f6"), size=1100)
@@ -3336,7 +3368,10 @@ class PublicationVisualizationEngine:
         mat_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "material"]
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
         nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", node_size=3200, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", node_size=1400, ax=ax)
+        # Draw doc nodes with unique markers
+        for i, n in enumerate(doc_nodes):
+            marker = G.nodes[n].get("marker", "o")
+            nx.draw_networkx_nodes(G, pos, nodelist=[n], node_color="#10b981", node_size=1400, ax=ax, node_shape=marker)
         nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", node_size=1100, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", node_size=1300, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#ec4899", node_size=650, ax=ax)
@@ -3353,14 +3388,19 @@ class PublicationVisualizationEngine:
         net = Network(height="780px", width="100%", bgcolor="#ffffff", font_color="#1e293b", cdn_resources='remote')
         net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
         high_conf_threshold = 0.75
-        net.add_node("QUERY", label="YOUR QUERY", title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>", color="#7c3aed", size=45, font={"size": 18, "bold": True, "color": "#1e293b"})
-        for doc_id in query_ctx.relevant_doc_ids:
+        net.add_node("QUERY", label="YOUR QUERY", title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>", color="#7c3aed", size=45, font={"size": 18, "bold": True, "color": "#1e293b"}, shape="ellipse")
+        doc_list = list(query_ctx.relevant_doc_ids)
+        for i, doc_id in enumerate(doc_list):
             display = get_display_name(doc_id, self.cfg.aliases)
+            _, plotly_symbol = self._get_doc_marker(doc_id, i)
             count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
             tooltip = f"<b>Document:</b> {display}<br><b>Extracted Values:</b> {count}<br><br>"
             for item in query_ctx.extracted_values[:5]:
                 if item.doc_name == doc_id: tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
-            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", size=32, font={"size": 14, "color": "#1e293b"})
+            # Use shape to represent unique marker per document
+            shape = "diamond" if i % 5 == 0 else "star" if i % 5 == 1 else "triangle" if i % 5 == 2 else "hexagon" if i % 5 == 3 else "square"
+            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", size=32, 
+                        font={"size": 14, "color": "#1e293b"}, shape=shape)
             net.add_edge("QUERY", display, value=3)
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
@@ -3622,10 +3662,19 @@ class PublicationVisualizationEngine:
         docs = [n for n,d in G.nodes(data=True) if d.get("node_type")=="doc"]
         vals = [n for n,d in G.nodes(data=True) if d.get("node_type")=="value"]
         nx.draw_networkx_nodes(G, pos, nodelist=materials, node_color=self.DOMAIN_COLORS.get(quantity, "#3b82f6"), node_size=800, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=docs, node_color="#10b981", node_size=600, ax=ax)
+        # Draw docs with unique markers
+        for i, n in enumerate(docs):
+            marker = G.nodes[n].get("marker", "s")
+            nx.draw_networkx_nodes(G, pos, nodelist=[n], node_color="#10b981", node_size=600, ax=ax, node_shape=marker)
         nx.draw_networkx_nodes(G, pos, nodelist=vals, node_color="#f59e0b", node_size=300, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.25, width=0.8, ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
+        # Add document legend
+        if docs:
+            doc_ids = [orig_doc if orig_doc else d for d in docs]
+            legend_labels, legend_markers, _ = self._build_doc_legend_data(doc_ids, aliases)
+            legend_elements = [mpatches.Patch(facecolor="#10b981", edgecolor="black", label=lbl) for lbl in legend_labels[:len(docs)]]
+            ax.legend(handles=legend_elements, loc="upper left", fontsize=8, title="Publications", title_fontsize=9, framealpha=0.9, bbox_to_anchor=(1.02, 1.0))
         ax.set_title(f"Quantitative Knowledge Graph - {quantity.replace('_',' ').title()}", fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")
         plt.tight_layout()
@@ -3676,9 +3725,20 @@ class PublicationVisualizationEngine:
         pos = nx.spring_layout(G, k=0.5, seed=42)
         fig, ax = plt.subplots(figsize=figsize)
         node_colors = [G.nodes[n].get("color", "#6b7280") for n in G.nodes()]
-        nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=500, alpha=0.8, ax=ax)
+        # Draw nodes with document-specific markers
+        doc_nodes_kn = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
+        other_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") != "doc"]
+        for i, n in enumerate(doc_nodes_kn):
+            marker = G.nodes[n].get("marker", "s")
+            nx.draw_networkx_nodes(G, pos, nodelist=[n], node_color="#1e40af", node_size=500, alpha=0.8, ax=ax, node_shape=marker)
+        nx.draw_networkx_nodes(G, pos, nodelist=other_nodes, node_color=[node_colors[G.nodes[n]["color"]] if isinstance(node_colors, dict) else node_colors[list(G.nodes()).index(n)] for n in other_nodes], node_size=500, alpha=0.8, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.3, ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=8, ax=ax)
+        # Add document legend
+        if doc_nodes_kn:
+            legend_labels, legend_markers, _ = self._build_doc_legend_data([doc_id_map.get(n, n) for n in doc_nodes_kn], aliases)
+            legend_elements = [mpatches.Patch(facecolor="#1e40af", edgecolor="black", label=lbl) for lbl in legend_labels[:len(doc_nodes_kn)]]
+            ax.legend(handles=legend_elements, loc="upper left", fontsize=8, title="Publications", title_fontsize=9, framealpha=0.9, bbox_to_anchor=(1.02, 1.0))
         ax.set_title("Knowledge Network: Documents <-> Quantities <-> Materials")
         ax.axis("off")
         plt.tight_layout()
@@ -3710,7 +3770,15 @@ class PublicationVisualizationEngine:
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42) if layout == "spring" else nx.kamada_kawai_layout(G)
         doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
         ent_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "entity"]
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#1e40af", node_shape="s", node_size=800, alpha=0.85, ax=ax, label="Documents")
+        # Draw document nodes with unique markers
+        for i, n in enumerate(doc_nodes):
+            marker = G.nodes[n].get("marker", "s")
+            nx.draw_networkx_nodes(G, pos, nodelist=[n], node_color="#1e40af", node_shape=marker, node_size=800, alpha=0.85, ax=ax)
+        # Build document legend
+        if doc_nodes:
+            legend_labels, legend_markers, _ = self._build_doc_legend_data([G.nodes[n].get("orig_doc", n) for n in doc_nodes], aliases)
+            legend_elements = [mpatches.Patch(facecolor="#1e40af", edgecolor="black", label=lbl) for lbl in legend_labels[:len(doc_nodes)]]
+            ax.legend(handles=legend_elements, loc="upper left", fontsize=8, title="Publications", title_fontsize=9, framealpha=0.9, bbox_to_anchor=(1.02, 1.0))
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
         domains = list(set(G.nodes[n].get("domain", "UNKNOWN") for n in ent_nodes))
         domain_color_idx = {d: i for i, d in enumerate(domains)}
@@ -3745,16 +3813,19 @@ class PublicationVisualizationEngine:
         if not PYVIS_AVAILABLE: return "<p>PyVis not installed. pip install pyvis</p>"
         G = nx.Graph()
         docs = list(self.kgraph.doc_graphs.keys())
-        for doc in docs:
+        for i, doc in enumerate(docs):
             display = get_display_name(doc, aliases)
             label = get_citation_label(doc, aliases, style=label_style)
+            _, plotly_symbol = self._get_doc_marker(doc, i)
             tooltip = f"<b>{label}</b><br>File: {Path(doc).name}<br>"
             doc_items = [it for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("value") is not None]
             if doc_items:
                 tooltip += "<b>Top values:</b><br>"
                 top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
                 for it in top_vals: tooltip += f"- {it.get('physical_quantity', 'unknown')}: {it.get('value')} {it.get('unit', '')} (p.{it.get('page', '?')})<br>"
-            G.add_node(display, node_type="doc", domain="DOCUMENT", title=tooltip, orig_doc=doc)
+            # Use unique shape per document
+            shape = self.DOC_PLOTLY_SYMBOLS[i % len(self.DOC_PLOTLY_SYMBOLS)]
+            G.add_node(display, node_type="doc", domain="DOCUMENT", title=tooltip, orig_doc=doc, shape=shape)
         entities = filtered_concepts or list(self.kgraph.get_all_physical_quantities().keys())[:top_n_nodes]
         for ent in entities:
             stats = self.kgraph.get_summary_stats(ent)
@@ -3795,20 +3866,25 @@ class PublicationVisualizationEngine:
         net = Network(height=self.cfg.pyvis_height, width=self.cfg.pyvis_width, bgcolor="#ffffff", font_color="#000000", cdn_resources='remote')
         if self.cfg.pyvis_physics_enabled: net.barnes_hut(gravity=self.cfg.pyvis_gravity, spring_length=self.cfg.pyvis_spring_length, damping=self.cfg.pyvis_damping)
         hub = f"{quantity}_hub"
-        net.add_node(hub, label=quantity.replace("_", " ").title(), size=self.cfg.node_size_base_hub, color="#dc2626", borderWidth=3, title=f"Hub: {quantity}")
+        net.add_node(hub, label=quantity.replace("_", " ").title(), size=self.cfg.node_size_base_hub, color="#dc2626", borderWidth=3, title=f"Hub: {quantity}", shape="hexagon")
         cmap_obj = plt.get_cmap(self._get_colormap(colormap))
         for mat in subset["material"].unique():
             if pd.notna(mat) and str(mat).strip() and mat != "Unknown":
                 mat_vals = subset[subset["material"] == mat]["value"].tolist()
                 tooltip = f"<b>{mat}</b><br>Count: {len(mat_vals)}<br>Range: {min(mat_vals):.2f} - {max(mat_vals):.2f}<br>Mean: {np.mean(mat_vals):.2f}"
-                net.add_node(mat, label=mat[:25], size=int(self.cfg.node_size_base_material * self.cfg.node_size_factor), color="#3b82f6", title=tooltip)
+                net.add_node(mat, label=mat[:25], size=int(self.cfg.node_size_base_material * self.cfg.node_size_factor), color="#3b82f6", title=tooltip, shape="triangle")
                 net.add_edge(hub, mat, width=int(len(mat_vals) * self.cfg.edge_width_pyvis))
-        for doc in subset["doc_stem"].unique():
-            if pd.notna(doc) and str(doc).strip():
-                doc_vals = subset[subset["doc_stem"] == doc]["value"].tolist()
-                tooltip = f"<b>{doc}</b><br>Count: {len(doc_vals)}<br>Range: {min(doc_vals):.2f} - {max(doc_vals):.2f}<br>Mean: {np.mean(doc_vals):.2f}"
-                net.add_node(doc, label=doc[:25], size=int(self.cfg.node_size_base_doc * self.cfg.node_size_factor), color="#10b981", title=tooltip)
-                net.add_edge(hub, doc, width=int(len(doc_vals) * self.cfg.edge_width_pyvis))
+        doc_list = [d for d in subset["doc_stem"].unique() if pd.notna(d) and str(d).strip()]
+        for i, doc in enumerate(doc_list):
+            doc_vals = subset[subset["doc_stem"] == doc]["value"].tolist()
+            tooltip = f"<b>{doc}</b><br>Count: {len(doc_vals)}<br>Range: {min(doc_vals):.2f} - {max(doc_vals):.2f}<br>Mean: {np.mean(doc_vals):.2f}"
+            # Find original doc_id for marker lookup
+            orig_doc = None
+            for d in self.kgraph.doc_graphs:
+                if get_display_name(d, aliases) == doc: orig_doc = d; break
+            _, plotly_symbol = self._get_doc_marker(orig_doc if orig_doc else doc, i)
+            net.add_node(doc, label=doc[:25], size=int(self.cfg.node_size_base_doc * self.cfg.node_size_factor), color="#10b981", title=tooltip, shape=plotly_symbol)
+            net.add_edge(hub, doc, width=int(len(doc_vals) * self.cfg.edge_width_pyvis))
         top = subset.nlargest(min(25, len(subset)), "value")
         for _, row in top.iterrows():
             leaf = f"{row['value']:.1f} {row['unit']}"
@@ -3823,7 +3899,13 @@ class PublicationVisualizationEngine:
         net = Network(height=self.cfg.pyvis_height, width=self.cfg.pyvis_width, bgcolor="#ffffff", font_color="#000000", cdn_resources='remote')
         if self.cfg.pyvis_physics_enabled: net.barnes_hut(gravity=self.cfg.pyvis_gravity, spring_length=self.cfg.pyvis_spring_length, damping=self.cfg.pyvis_damping)
         docs = [d for d in df["doc_stem"].unique() if pd.notna(d) and str(d).strip() != "" and str(d).lower() != "nan"]
-        for doc in docs: net.add_node(doc, label=doc[:25], size=int(self.cfg.node_size_base_doc * self.cfg.node_size_factor), color="#1e40af", title=f"Document: {doc}")
+        for i, doc in enumerate(docs):
+            # Find original doc_id for marker lookup
+            orig_doc = None
+            for d in self.kgraph.doc_graphs:
+                if get_display_name(d, aliases) == doc: orig_doc = d; break
+            _, plotly_symbol = self._get_doc_marker(orig_doc if orig_doc else doc, i)
+            net.add_node(doc, label=doc[:25], size=int(self.cfg.node_size_base_doc * self.cfg.node_size_factor), color="#1e40af", title=f"Document: {doc}", shape=plotly_symbol)
         pqs = [p for p in df["physical_quantity"].unique() if pd.notna(p) and str(p).strip() != "" and str(p).lower() != "nan"]
         for pq in pqs:
             stats = self.kgraph.get_summary_stats(pq)
@@ -4074,10 +4156,32 @@ class PublicationVisualizationEngine:
         for pq_key in pq_nodes_list:
             sources.append(label_index[pq_key]); targets.append(label_index["Answer"]); vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
         node_colors = ["#1e3a5f"] + ["#2563eb"] * len(doc_nodes) + ["#059669"] * len(node_labels_list) + ["#dc2626"] * len(pq_nodes_list) + ["#7c3aed"]
+        # Add document marker annotations (shapes as text prefixes)
+        doc_marker_annotations = []
+        for i, doc_name in enumerate(doc_nodes):
+            _, plotly_symbol = self._get_doc_marker(doc_name, i)
+            # Find the label index for this document
+            doc_label = f"{Path(doc_name).stem}\n({relevant_docs[i][1]:.2f})" if i < len(relevant_docs) else Path(doc_name).stem
+            if doc_label in labels:
+                idx = labels.index(doc_label)
+                # Add annotation near the node
+                doc_marker_annotations.append(dict(
+                    x=0.05, y=1.0 - (i * 0.15), 
+                    text=f"<b>{plotly_symbol.upper()}</b> {get_citation_label(doc_name, self.cfg.aliases, style=self.cfg.label_style)}",
+                    showarrow=False, font=dict(size=10, color="#2563eb"),
+                    bgcolor="rgba(255,255,255,0.8)", bordercolor="#2563eb", borderwidth=1,
+                    borderpad=3, align="left"
+                ))
         fig = go.Figure(data=[go.Sankey(
             node=dict(pad=20, thickness=24, line=dict(color="#334155", width=0.8), label=labels, color=node_colors, hovertemplate="%{label}<extra></extra>"),
             link=dict(source=sources, target=targets, value=vals, color=["rgba(37, 99, 235, 0.25)" if s < len(doc_nodes)+1 else "rgba(5, 150, 105, 0.2)" for s in sources], hovertemplate="From: %{source.label}<br>To: %{target.label}<br>Value: %{value}<extra></extra>"))])
-        fig.update_layout(title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'", font=dict(family=self.font_family, size=self.font_size, color="#1e293b"), paper_bgcolor="white", plot_bgcolor="white", height=650, width=1100, margin=dict(l=40, r=40, t=80, b=40))
+        fig.update_layout(
+            title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'", 
+            font=dict(family=self.font_family, size=self.font_size, color="#1e293b"), 
+            paper_bgcolor="white", plot_bgcolor="white", height=650, width=1100, 
+            margin=dict(l=40, r=40, t=80, b=40),
+            annotations=doc_marker_annotations if doc_marker_annotations else []
+        )
         return fig
 
     def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
@@ -4156,11 +4260,13 @@ class PublicationVisualizationEngine:
         retrieved_nodes_list = [n for n, d in G.nodes(data=True) if d.get("retrieved")]
         nx.draw_networkx_nodes(G, pos, nodelist=normal_nodes, node_color="#e5e7eb", node_size=400, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=quant_nodes, node_color="#93c5fd", node_size=600, ax=ax)
-        nx.draw_networkx_nodes(G, pos, nodelist=retrieved_nodes_list, node_color="#ef4444", node_size=900, ax=ax)
+        # Use star marker for retrieved nodes to distinguish them
+        for n in retrieved_nodes_list:
+            nx.draw_networkx_nodes(G, pos, nodelist=[n], node_color="#ef4444", node_size=900, ax=ax, node_shape="*")
         nx.draw_networkx_edges(G, pos, alpha=0.3, arrows=True, arrowsize=10, ax=ax)
         labels = {n: d["label"] for n, d in G.nodes(data=True)}
         nx.draw_networkx_labels(G, pos, labels, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
-        legend_elements = [mpatches.Patch(facecolor="#ef4444", label="Retrieved Node"), Patch(facecolor="#93c5fd", label="Has Quantitative Data"), Patch(facecolor="#e5e7eb", label="Other Node")]
+        legend_elements = [mpatches.Patch(facecolor="#ef4444", label="Retrieved Node ★"), Patch(facecolor="#93c5fd", label="Has Quantitative Data"), Patch(facecolor="#e5e7eb", label="Other Node")]
         ax.legend(handles=legend_elements, loc='upper right')
         ax.set_title(f"Retrieval Tree: {Path(doc_id).stem if doc_id else 'Document'}", fontsize=self.title_font_size, fontweight='bold')
         ax.axis("off")
@@ -4219,18 +4325,18 @@ def render_sidebar():
         st.slider("Top N concepts", 5, 100, 25, key="viz_top_n")
         st.multiselect("Filter domains", options=["laser_power","scan_speed","yield_strength","tensile_strength","hardness","temperature","energy_density","lewis_number","jackson_parameter","phase_field_method","molecular_dynamics","pinn","unet","convlstm","calphad","digital_twin","xai","uncertainty_quantification"], default=["laser_power","scan_speed","yield_strength"], key="viz_domains")
         with st.expander("Advanced Style Controls", expanded=False):
-            st.slider("Base font size", 6, 20, 10, key="viz_font_size")
-            st.slider("Title font size", 8, 30, 14, key="viz_title_font_size")
-            st.slider("Label font size", 6, 18, 9, key="viz_label_font_size")
-            st.slider("Figure DPI", 100, 600, 300, 50, key="viz_figure_dpi")
-            st.slider("Node size factor", 0.1, 3.0, 1.0, 0.1, key="viz_node_size_factor")
-            st.slider("Edge alpha", 0.05, 1.0, 0.25, 0.05, key="viz_edge_alpha")
-            st.slider("Edge width", 0.1, 5.0, 0.8, 0.1, key="viz_edge_width")
-            st.slider("Line width", 0.5, 5.0, 1.5, 0.5, key="viz_line_width")
-            st.slider("Marker size", 20, 200, 80, 10, key="viz_marker_size")
+            st.slider("Base font size", 6, 40, 10, key="viz_font_size")
+            st.slider("Title font size", 8, 60, 14, key="viz_title_font_size")
+            st.slider("Label font size", 6, 36, 9, key="viz_label_font_size")
+            st.slider("Figure DPI", 100, 1200, 300, 50, key="viz_figure_dpi")
+            st.slider("Node size factor", 0.1, 6.0, 1.0, 0.1, key="viz_node_size_factor")
+            st.slider("Edge alpha", 0.05, 2.0, 0.25, 0.05, key="viz_edge_alpha")
+            st.slider("Edge width", 0.1, 10.0, 0.8, 0.1, key="viz_edge_width")
+            st.slider("Line width", 0.5, 10.0, 1.5, 0.5, key="viz_line_width")
+            st.slider("Marker size", 20, 400, 80, 10, key="viz_marker_size")
             st.checkbox("PyVis physics enabled", value=True, key="viz_pyvis_physics")
-            st.slider("PyVis gravity", -5000, -100, -1800, 100, key="viz_pyvis_gravity")
-            st.slider("PyVis spring length", 50, 300, 140, 10, key="viz_pyvis_spring_length")
+            st.slider("PyVis gravity", -5000, -200, -1800, 100, key="viz_pyvis_gravity")
+            st.slider("PyVis spring length", 50, 600, 140, 10, key="viz_pyvis_spring_length")
             st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
             if st.button("Clear Cache & Reset", use_container_width=True):
                 for key in list(st.session_state.keys()):
@@ -4481,6 +4587,13 @@ def run_streamlit():
             conclusion = synthesizer.generate_human_conclusion(active_prompt, report)
             st.markdown(conclusion)
         # --- Query-Focused Visualizations (always render shell, persist context) ---
+        # Ensure query context is available from cached results before visualization
+        if "query_ctx_cache" not in st.session_state and st.session_state.get("cached_query_result"):
+            try:
+                st.session_state.query_ctx_cache = QueryContext.from_cache(st.session_state.cached_query_result)
+            except Exception:
+                st.session_state.query_ctx_cache = None
+
         if st.session_state.annotated_trees:
             st.markdown("---")
             st.subheader("🎯 Query-Focused Visualizations")
@@ -4552,12 +4665,19 @@ def run_streamlit():
                         st.markdown("### Legend")
                         st.markdown("""
                         - **Purple** → Your Query (Center)
-                        - **Green** → Relevant Documents
+                        - **Green** → Relevant Documents (unique marker per paper)
                         - **Blue** → Physical Quantities
                         - **Orange** → Materials/Alloys
                         - **Pink** → Extracted Values (clickable)
                         """)
                         st.caption("**Tip:** Hover for tooltips • Click pink nodes for context")
+                        # Show document marker legend
+                        if query_ctx and query_ctx.relevant_doc_ids:
+                            st.markdown("#### Publication Markers")
+                            doc_list = list(query_ctx.relevant_doc_ids)
+                            legend_labels, legend_markers, _ = viz._build_doc_legend_data(doc_list, aliases)
+                            for lbl, mk in zip(legend_labels[:len(doc_list)], legend_markers[:len(doc_list)]):
+                                st.markdown(f"<span style='font-size:16px'>{mk}</span> {lbl}", unsafe_allow_html=True)
                 with viz_tabs[1]:
                     fig_sun = viz.plot_query_sunburst(query_ctx)
                     st.plotly_chart(fig_sun, use_container_width=True, key="plotly_1")

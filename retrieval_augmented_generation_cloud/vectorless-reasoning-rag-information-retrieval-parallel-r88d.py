@@ -2914,9 +2914,11 @@ Include up to {self.max_results} selections."""
 class DocumentMarkerRegistry:
     """
     Assigns unique marker shapes to each document/publication.
-    Supports both Matplotlib and Plotly marker symbol systems.
+    Supports Matplotlib, Plotly, AND PyVis/Vis.js marker symbol systems.
+    v17.2 FIX: Added PYVIS_SHAPES with only Vis.js-valid shapes.
     """
 
+    # Matplotlib markers (20+ options)
     MATPLOTLIB_MARKERS = [
         'D',      # diamond
         '*',      # star  
@@ -2941,6 +2943,7 @@ class DocumentMarkerRegistry:
         'o',      # circle
     ]
 
+    # Plotly markers (for scatter plots) - 24 options
     PLOTLY_MARKERS = [
         'diamond',
         'star',
@@ -2967,6 +2970,26 @@ class DocumentMarkerRegistry:
         'circle-x',
     ]
 
+    # PyVis/Vis.js VALID shapes only (14 options)
+    # These are the ONLY shapes that work in PyVis interactive networks.
+    # Using Vis.js node shapes: https://visjs.github.io/vis-network/docs/network/nodes.html
+    PYVIS_SHAPES = [
+        'diamond',       # 0 - diamond
+        'star',          # 1 - star
+        'triangle',      # 2 - triangle-up equivalent
+        'triangleDown',  # 3 - triangle-down equivalent
+        'square',        # 4 - square
+        'box',           # 5 - box (text inside)
+        'circle',        # 6 - circle
+        'ellipse',       # 7 - ellipse
+        'database',      # 8 - database cylinder
+        'text',          # 9 - text only
+        'dot',           # 10 - small dot
+        'circularImage', # 11 - circular image (needs URL)
+        'icon',          # 12 - icon (needs font awesome config)
+        'image',         # 13 - image (needs URL)
+    ]
+
     MARKER_DESCRIPTIONS = {
         'D': 'Diamond', '*': 'Star', '^': 'Triangle Up', 'v': 'Triangle Down',
         's': 'Square', 'p': 'Pentagon', 'h': 'Hexagon', 'H': 'Hexagon (alt)',
@@ -2981,30 +3004,41 @@ class DocumentMarkerRegistry:
         'star-triangle-up': 'Star-Triangle Up', 'star-triangle-down': 'Star-Triangle Down',
         'star-square': 'Star-Square', 'star-diamond': 'Star-Diamond',
         'hourglass': 'Hourglass', 'bowtie': 'Bowtie', 'circle-cross': 'Circle-Cross',
-        'circle-x': 'Circle-X'
+        'circle-x': 'Circle-X',
+        # PyVis-specific descriptions
+        'triangleDown': 'Triangle Down (PyVis)', 'box': 'Box (PyVis)',
+        'circle': 'Circle (PyVis)', 'ellipse': 'Ellipse (PyVis)',
+        'database': 'Database (PyVis)', 'text': 'Text (PyVis)',
+        'dot': 'Dot (PyVis)', 'circularImage': 'Circular Image (PyVis)',
+        'icon': 'Icon (PyVis)', 'image': 'Image (PyVis)',
     }
 
     def __init__(self):
         self._doc_to_marker: Dict[str, str] = {}
         self._doc_to_plotly_marker: Dict[str, str] = {}
+        self._doc_to_pyvis_shape: Dict[str, str] = {}  # NEW: PyVis-valid shapes
         self._marker_index: Dict[str, int] = {}
 
     def register_documents(self, doc_ids: List[str]) -> None:
-        """Register documents and assign unique markers."""
+        """Register documents and assign unique markers for ALL backends."""
         for i, doc_id in enumerate(doc_ids):
             if doc_id not in self._doc_to_marker:
                 mpl_idx = i % len(self.MATPLOTLIB_MARKERS)
                 ply_idx = i % len(self.PLOTLY_MARKERS)
+                pyvis_idx = i % len(self.PYVIS_SHAPES)
                 self._doc_to_marker[doc_id] = self.MATPLOTLIB_MARKERS[mpl_idx]
                 self._doc_to_plotly_marker[doc_id] = self.PLOTLY_MARKERS[ply_idx]
+                self._doc_to_pyvis_shape[doc_id] = self.PYVIS_SHAPES[pyvis_idx]
                 self._marker_index[doc_id] = i
 
     def get_marker(self, doc_id: str, backend: str = 'matplotlib') -> str:
-        """Get marker for a document. Backend: 'matplotlib' or 'plotly'."""
+        """Get marker for a document. Backend: 'matplotlib', 'plotly', or 'pyvis'."""
         if doc_id not in self._doc_to_marker:
             self.register_documents([doc_id])
         if backend == 'plotly':
             return self._doc_to_plotly_marker.get(doc_id, 'circle')
+        if backend == 'pyvis':
+            return self._doc_to_pyvis_shape.get(doc_id, 'dot')
         return self._doc_to_marker.get(doc_id, 'o')
 
     def get_marker_description(self, doc_id: str, backend: str = 'matplotlib') -> str:
@@ -3016,106 +3050,13 @@ class DocumentMarkerRegistry:
         """Get all document->marker assignments."""
         if backend == 'plotly':
             return self._doc_to_plotly_marker.copy()
+        if backend == 'pyvis':
+            return self._doc_to_pyvis_shape.copy()
         return self._doc_to_marker.copy()
 
     def get_registered_docs(self) -> List[str]:
         """Get list of all registered document IDs."""
         return list(self._doc_to_marker.keys())
-
-
-def render_matplotlib_legend(
-    ax,
-    doc_ids: List[str],
-    aliases: Optional[Dict[str, str]] = None,
-    registry: Optional['DocumentMarkerRegistry'] = None,
-    title: str = "Publications",
-    loc: str = "upper left",
-    bbox_to_anchor: Optional[Tuple[float, float]] = None,
-    ncol: int = 1,
-    fontsize: int = 9,
-    marker_size: int = 10,
-    framealpha: float = 0.95,
-    padding: float = 1.2
-) -> Any:
-    """Render a Matplotlib legend with unique markers for each publication."""
-    from matplotlib.lines import Line2D
-    if registry is None:
-        registry = DocumentMarkerRegistry()
-
-    registry.register_documents(doc_ids)
-
-    legend_elements = []
-    for doc_id in doc_ids:
-        marker = registry.get_marker(doc_id, 'matplotlib')
-        display_name = get_display_name(doc_id, aliases)
-        label = f"{display_name} [{marker}]"
-
-        legend_elements.append(
-            Line2D([0], [0], marker=marker, color='w', markerfacecolor='#1e40af',
-                   markeredgecolor='#1e40af', markersize=marker_size,
-                   label=label, linestyle='None')
-        )
-
-    if bbox_to_anchor is None:
-        bbox_to_anchor = (1.02, 1.0)
-
-    legend = ax.legend(
-        handles=legend_elements,
-        title=title,
-        loc=loc,
-        bbox_to_anchor=bbox_to_anchor,
-        ncol=ncol,
-        fontsize=fontsize,
-        title_fontsize=fontsize + 1,
-        frameon=True,
-        fancybox=True,
-        shadow=True,
-        framealpha=framealpha,
-        borderpad=padding * 0.5,
-        labelspacing=padding * 0.3,
-        handlelength=padding * 1.5,
-        handletextpad=padding * 0.5
-    )
-
-    return legend
-
-
-def create_marker_legend_html(
-    doc_ids: List[str],
-    aliases: Optional[Dict[str, str]] = None,
-    registry: Optional['DocumentMarkerRegistry'] = None,
-    title: str = "Publication Markers"
-) -> str:
-    """Create an HTML legend for PyVis/interactive networks."""
-    if registry is None:
-        registry = DocumentMarkerRegistry()
-
-    registry.register_documents(doc_ids)
-
-    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:15px; margin:10px 0; max-width:400px;">']
-    html_parts.append(f'<h4 style="margin:0 0 10px 0; color:#1e293b; font-size:14px;">{title}</h4>')
-    html_parts.append('<div style="display:grid; grid-template-columns: auto 1fr; gap:8px 12px; align-items:center;">')
-
-    for doc_id in doc_ids:
-        marker = registry.get_marker(doc_id, 'matplotlib')
-        display_name = get_display_name(doc_id, aliases)
-        desc = registry.get_marker_description(doc_id, 'matplotlib')
-
-        symbol_map = {
-            'D': '◆', '*': '★', '^': '▲', 'v': '▼', 's': '■', 'p': '⬟',
-            'h': '⬡', 'H': '⬢', '8': '⯃', 'd': '◊', 'X': '✖', 'P': '➕',
-            '<': '◀', '>': '▶', '1': '▼', '2': '▲', '3': '◀', '4': '▶',
-            '+': '+', 'x': '×', 'o': '●'
-        }
-        symbol = symbol_map.get(marker, marker)
-
-        html_parts.append(f'<div style="font-size:18px; color:#1e40af; text-align:center;">{symbol}</div>')
-        html_parts.append(f'<div style="font-size:12px; color:#334155;"><b>{display_name}</b> <span style="color:#64748b;">({desc})</span></div>')
-
-    html_parts.append('</div></div>')
-    return ''.join(html_parts)
-
-
 # ============================================================================
 # DOCUMENT MARKER REGISTRY - NEW IN v17.2+
 # ============================================================================
@@ -3123,9 +3064,11 @@ def create_marker_legend_html(
 class DocumentMarkerRegistry:
     """
     Assigns unique marker shapes to each document/publication.
-    Supports both Matplotlib and Plotly marker symbol systems.
+    Supports Matplotlib, Plotly, AND PyVis/Vis.js marker symbol systems.
+    v17.2 FIX: Added PYVIS_SHAPES with only Vis.js-valid shapes.
     """
 
+    # Matplotlib markers (20+ options)
     MATPLOTLIB_MARKERS = [
         'D',      # diamond
         '*',      # star  
@@ -3150,6 +3093,7 @@ class DocumentMarkerRegistry:
         'o',      # circle
     ]
 
+    # Plotly markers (for scatter plots) - 24 options
     PLOTLY_MARKERS = [
         'diamond',
         'star',
@@ -3176,6 +3120,26 @@ class DocumentMarkerRegistry:
         'circle-x',
     ]
 
+    # PyVis/Vis.js VALID shapes only (14 options)
+    # These are the ONLY shapes that work in PyVis interactive networks.
+    # Using Vis.js node shapes: https://visjs.github.io/vis-network/docs/network/nodes.html
+    PYVIS_SHAPES = [
+        'diamond',       # 0 - diamond
+        'star',          # 1 - star
+        'triangle',      # 2 - triangle-up equivalent
+        'triangleDown',  # 3 - triangle-down equivalent
+        'square',        # 4 - square
+        'box',           # 5 - box (text inside)
+        'circle',        # 6 - circle
+        'ellipse',       # 7 - ellipse
+        'database',      # 8 - database cylinder
+        'text',          # 9 - text only
+        'dot',           # 10 - small dot
+        'circularImage', # 11 - circular image (needs URL)
+        'icon',          # 12 - icon (needs font awesome config)
+        'image',         # 13 - image (needs URL)
+    ]
+
     MARKER_DESCRIPTIONS = {
         'D': 'Diamond', '*': 'Star', '^': 'Triangle Up', 'v': 'Triangle Down',
         's': 'Square', 'p': 'Pentagon', 'h': 'Hexagon', 'H': 'Hexagon (alt)',
@@ -3190,30 +3154,41 @@ class DocumentMarkerRegistry:
         'star-triangle-up': 'Star-Triangle Up', 'star-triangle-down': 'Star-Triangle Down',
         'star-square': 'Star-Square', 'star-diamond': 'Star-Diamond',
         'hourglass': 'Hourglass', 'bowtie': 'Bowtie', 'circle-cross': 'Circle-Cross',
-        'circle-x': 'Circle-X'
+        'circle-x': 'Circle-X',
+        # PyVis-specific descriptions
+        'triangleDown': 'Triangle Down (PyVis)', 'box': 'Box (PyVis)',
+        'circle': 'Circle (PyVis)', 'ellipse': 'Ellipse (PyVis)',
+        'database': 'Database (PyVis)', 'text': 'Text (PyVis)',
+        'dot': 'Dot (PyVis)', 'circularImage': 'Circular Image (PyVis)',
+        'icon': 'Icon (PyVis)', 'image': 'Image (PyVis)',
     }
 
     def __init__(self):
         self._doc_to_marker: Dict[str, str] = {}
         self._doc_to_plotly_marker: Dict[str, str] = {}
+        self._doc_to_pyvis_shape: Dict[str, str] = {}  # NEW: PyVis-valid shapes
         self._marker_index: Dict[str, int] = {}
 
     def register_documents(self, doc_ids: List[str]) -> None:
-        """Register documents and assign unique markers."""
+        """Register documents and assign unique markers for ALL backends."""
         for i, doc_id in enumerate(doc_ids):
             if doc_id not in self._doc_to_marker:
                 mpl_idx = i % len(self.MATPLOTLIB_MARKERS)
                 ply_idx = i % len(self.PLOTLY_MARKERS)
+                pyvis_idx = i % len(self.PYVIS_SHAPES)
                 self._doc_to_marker[doc_id] = self.MATPLOTLIB_MARKERS[mpl_idx]
                 self._doc_to_plotly_marker[doc_id] = self.PLOTLY_MARKERS[ply_idx]
+                self._doc_to_pyvis_shape[doc_id] = self.PYVIS_SHAPES[pyvis_idx]
                 self._marker_index[doc_id] = i
 
     def get_marker(self, doc_id: str, backend: str = 'matplotlib') -> str:
-        """Get marker for a document. Backend: 'matplotlib' or 'plotly'."""
+        """Get marker for a document. Backend: 'matplotlib', 'plotly', or 'pyvis'."""
         if doc_id not in self._doc_to_marker:
             self.register_documents([doc_id])
         if backend == 'plotly':
             return self._doc_to_plotly_marker.get(doc_id, 'circle')
+        if backend == 'pyvis':
+            return self._doc_to_pyvis_shape.get(doc_id, 'dot')
         return self._doc_to_marker.get(doc_id, 'o')
 
     def get_marker_description(self, doc_id: str, backend: str = 'matplotlib') -> str:
@@ -3225,106 +3200,13 @@ class DocumentMarkerRegistry:
         """Get all document->marker assignments."""
         if backend == 'plotly':
             return self._doc_to_plotly_marker.copy()
+        if backend == 'pyvis':
+            return self._doc_to_pyvis_shape.copy()
         return self._doc_to_marker.copy()
 
     def get_registered_docs(self) -> List[str]:
         """Get list of all registered document IDs."""
         return list(self._doc_to_marker.keys())
-
-
-def render_matplotlib_legend(
-    ax,
-    doc_ids: List[str],
-    aliases: Optional[Dict[str, str]] = None,
-    registry: Optional['DocumentMarkerRegistry'] = None,
-    title: str = "Publications",
-    loc: str = "upper left",
-    bbox_to_anchor: Optional[Tuple[float, float]] = None,
-    ncol: int = 1,
-    fontsize: int = 9,
-    marker_size: int = 10,
-    framealpha: float = 0.95,
-    padding: float = 1.2
-) -> Any:
-    """Render a Matplotlib legend with unique markers for each publication."""
-    from matplotlib.lines import Line2D
-    if registry is None:
-        registry = DocumentMarkerRegistry()
-
-    registry.register_documents(doc_ids)
-
-    legend_elements = []
-    for doc_id in doc_ids:
-        marker = registry.get_marker(doc_id, 'matplotlib')
-        display_name = get_display_name(doc_id, aliases)
-        label = f"{display_name} [{marker}]"
-
-        legend_elements.append(
-            Line2D([0], [0], marker=marker, color='w', markerfacecolor='#1e40af',
-                   markeredgecolor='#1e40af', markersize=marker_size,
-                   label=label, linestyle='None')
-        )
-
-    if bbox_to_anchor is None:
-        bbox_to_anchor = (1.02, 1.0)
-
-    legend = ax.legend(
-        handles=legend_elements,
-        title=title,
-        loc=loc,
-        bbox_to_anchor=bbox_to_anchor,
-        ncol=ncol,
-        fontsize=fontsize,
-        title_fontsize=fontsize + 1,
-        frameon=True,
-        fancybox=True,
-        shadow=True,
-        framealpha=framealpha,
-        borderpad=padding * 0.5,
-        labelspacing=padding * 0.3,
-        handlelength=padding * 1.5,
-        handletextpad=padding * 0.5
-    )
-
-    return legend
-
-
-def create_marker_legend_html(
-    doc_ids: List[str],
-    aliases: Optional[Dict[str, str]] = None,
-    registry: Optional['DocumentMarkerRegistry'] = None,
-    title: str = "Publication Markers"
-) -> str:
-    """Create an HTML legend for PyVis/interactive networks."""
-    if registry is None:
-        registry = DocumentMarkerRegistry()
-
-    registry.register_documents(doc_ids)
-
-    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:15px; margin:10px 0; max-width:400px;">']
-    html_parts.append(f'<h4 style="margin:0 0 10px 0; color:#1e293b; font-size:14px;">{title}</h4>')
-    html_parts.append('<div style="display:grid; grid-template-columns: auto 1fr; gap:8px 12px; align-items:center;">')
-
-    for doc_id in doc_ids:
-        marker = registry.get_marker(doc_id, 'matplotlib')
-        display_name = get_display_name(doc_id, aliases)
-        desc = registry.get_marker_description(doc_id, 'matplotlib')
-
-        symbol_map = {
-            'D': '◆', '*': '★', '^': '▲', 'v': '▼', 's': '■', 'p': '⬟',
-            'h': '⬡', 'H': '⬢', '8': '⯃', 'd': '◊', 'X': '✖', 'P': '➕',
-            '<': '◀', '>': '▶', '1': '▼', '2': '▲', '3': '◀', '4': '▶',
-            '+': '+', 'x': '×', 'o': '●'
-        }
-        symbol = symbol_map.get(marker, marker)
-
-        html_parts.append(f'<div style="font-size:18px; color:#1e40af; text-align:center;">{symbol}</div>')
-        html_parts.append(f'<div style="font-size:12px; color:#334155;"><b>{display_name}</b> <span style="color:#64748b;">({desc})</span></div>')
-
-    html_parts.append('</div></div>')
-    return ''.join(html_parts)
-
-@dataclass
 class VisConfig:
     font_family: str = "DejaVu Sans"
     font_size: int = 10
@@ -3534,17 +3416,18 @@ class PublicationVisualizationEngine:
         high_conf_threshold = 0.75
         net.add_node("QUERY", label="YOUR QUERY", title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>", color="#7c3aed", size=45, font={"size": 18, "bold": True, "color": "#1e293b"})
 
-        # Build HTML legend for markers
-        legend_html = create_marker_legend_html(all_docs, self.cfg.aliases, self.marker_registry, "Publication Markers")
-
         for doc_id in query_ctx.relevant_doc_ids:
             display = get_display_name(doc_id, self.cfg.aliases)
-            marker = self.marker_registry.get_marker(doc_id, 'plotly')
+            # v17.2 FIX: Use PyVis-valid shape from registry instead of hardcoded "dot"
+            shape = self.marker_registry.get_marker(doc_id, 'pyvis')
             count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
-            tooltip = f"<b>Document:</b> {display}<br><b>Marker:</b> {marker}<br><b>Extracted Values:</b> {count}<br><br>"
+            tooltip = f"<b>Document:</b> {display}<br><b>Shape:</b> {shape}<br><b>Extracted Values:</b> {count}<br><br>"
             for item in query_ctx.extracted_values[:5]:
                 if item.doc_name == doc_id: tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
-            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", size=32, font={"size": 14, "color": "#1e293b"}, shape="dot")
+            # v17.2 FIX: Pass shape=shape instead of hardcoded "dot"
+            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", 
+                         size=32, font={"size": 14, "color": "#1e293b"}, 
+                         shape=shape)
             net.add_edge("QUERY", display, value=3)
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
@@ -3581,32 +3464,77 @@ class PublicationVisualizationEngine:
         if "</body>" in html: html = html.replace("</body>", modal_js + "</body>")
         else: html += modal_js
         return html
-
     def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
         df_focus = self.get_query_focused_df(query_ctx)
-        if df_focus.empty: return go.Figure().update_layout(title="No data for current query")
+        if df_focus.empty: 
+            return go.Figure().update_layout(title="No data for current query")
+
         df_sun = df_focus.copy()
         df_sun["material"] = df_sun["material"].fillna("Unknown").replace("", "Unknown")
         df_sun["doc_stem"] = df_sun["doc_stem"].fillna("Unknown").replace("", "Unknown")
-        if not df_sun.empty and len(df_sun) >= 3:
+
+        # v17.2 FIX: Robust binning with pre-checks and fallback chain
+        if len(df_sun) >= 3:
             try:
                 n_bins = min(5, max(2, len(df_sun)//3))
-                df_sun["value_range"] = pd.cut(df_sun["value"], bins=n_bins, precision=1).astype(str).fillna("unknown")
-                fig = px.sunburst(df_sun, path=["physical_quantity", "material", "doc_stem", "value_range"], values="value", color="value", color_continuous_scale=self._get_plotly_colorscale(), title=f"Query Hierarchy: {query_ctx.query[:60]}...", maxdepth=4)
+                val_min, val_max = df_sun["value"].min(), df_sun["value"].max()
+
+                # Check if binning is possible
+                if val_min == val_max or not np.isfinite(val_min) or not np.isfinite(val_max):
+                    raise ValueError("Cannot bin: identical or non-finite values")
+
+                if df_sun["value"].nunique() < n_bins:
+                    df_sun["value_range"] = df_sun["value"].astype(str) + " " + df_sun["unit"].fillna("")
+                else:
+                    try:
+                        df_sun["value_range"] = pd.cut(df_sun["value"], bins=n_bins, precision=1, duplicates='drop').astype(str).fillna("unknown")
+                    except ValueError:
+                        try:
+                            df_sun["value_range"] = pd.qcut(df_sun["value"], q=min(n_bins, df_sun["value"].nunique()), duplicates='drop').astype(str).fillna("unknown")
+                        except ValueError:
+                            df_sun["value_range"] = df_sun["value"].astype(str) + " " + df_sun["unit"].fillna("")
+
+                fig = px.sunburst(
+                    df_sun, 
+                    path=["physical_quantity", "material", "doc_stem", "value_range"], 
+                    values="value", color="value", 
+                    color_continuous_scale=self._get_plotly_colorscale(),
+                    title=f"Query Hierarchy: {query_ctx.query[:60]}...",
+                    maxdepth=4
+                )
                 fig.update_traces(textinfo="label+percent entry")
                 fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
                 return fig
             except Exception as e:
                 logger.warning(f"Sunburst binning failed: {e}")
-            try:
-                fig = px.sunburst(df_sun, path=["physical_quantity", "material", "doc_stem"], values="value", color="value", color_continuous_scale=self._get_plotly_colorscale(), title=f"Query Hierarchy: {query_ctx.query[:60]}...")
-                fig.update_traces(textinfo="label+percent entry")
-                fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
-                return fig
-            except Exception as e:
-                logger.error(f"Query sunburst failed: {e}")
-        return go.Figure().update_layout(title="Sunburst unavailable for this query")
 
+        # Fallback: simpler sunburst without value_range binning
+        try:
+            fig = px.sunburst(
+                df_sun, 
+                path=["physical_quantity", "material", "doc_stem"], 
+                values="value", color="value", 
+                color_continuous_scale=self._get_plotly_colorscale(),
+                title=f"Query Hierarchy: {query_ctx.query[:60]}..."
+            )
+            fig.update_traces(textinfo="label+percent entry")
+            fig.update_layout(font=dict(family=self.font_family, size=self.font_size))
+            return fig
+        except Exception as e:
+            logger.error(f"Query sunburst failed: {e}")
+            # Ultimate fallback: even simpler
+            try:
+                fig = px.sunburst(
+                    df_sun, 
+                    path=["physical_quantity", "material"], 
+                    values="value",
+                    title=f"Query Hierarchy (simplified): {query_ctx.query[:60]}..."
+                )
+                return fig
+            except Exception:
+                pass
+
+        return go.Figure().update_layout(title="Sunburst unavailable for this query")
     def plot_quantitative_histogram(self, df: pd.DataFrame, quantity_name: str, group_by: str = "material", colormap: Optional[str] = None) -> go.Figure:
         if df.empty: return go.Figure().update_layout(title=f"No {quantity_name} data")
         subset = df[df["physical_quantity"] == quantity_name]
@@ -4319,15 +4247,30 @@ class PublicationVisualizationEngine:
         return fig
 
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
-        if not relevant_docs and not retrieved_nodes: return go.Figure().update_layout(title="No retrieval data available")
+        if not relevant_docs and not retrieved_nodes: 
+            return go.Figure().update_layout(title="No retrieval data available")
+
         labels = ["Query"]
         label_index = {"Query": 0}
         doc_nodes = []
-        for doc_name, score in relevant_docs:
+
+        # v17.2 FIX: Register docs for consistent color assignment
+        doc_ids = [d for d, _ in relevant_docs]
+        self.marker_registry.register_documents(doc_ids)
+
+        # v17.2 FIX: Generate distinct colors for each document
+        n_docs = len(relevant_docs)
+        doc_colors = []
+        for i in range(n_docs):
+            hue = i / max(n_docs, 1)
+            doc_colors.append(mcolors.to_hex(plt.cm.tab20(hue)))
+
+        for i, (doc_name, score) in enumerate(relevant_docs):
             doc_label = f"{Path(doc_name).stem}\n({score:.2f})"
             label_index[doc_name] = len(labels)
             labels.append(doc_label)
             doc_nodes.append(doc_name)
+
         node_labels_list = []
         for r in retrieved_nodes:
             doc_id = r.get("doc_id", "unknown")
@@ -4337,10 +4280,12 @@ class PublicationVisualizationEngine:
                 label_index[key] = len(labels)
                 labels.append(f"{Path(doc_id).stem}:{node_id[:15]}")
             node_labels_list.append(key)
+
         pq_groups = defaultdict(list)
         for item in extracted_items:
             pq = item.get("physical_quantity", "unknown")
             pq_groups[pq].append(item)
+
         pq_nodes_list = []
         for pq, items in pq_groups.items():
             key = f"pq:{pq}"
@@ -4348,37 +4293,112 @@ class PublicationVisualizationEngine:
                 label_index[key] = len(labels)
                 labels.append(f"{pq} ({len(items)})")
             pq_nodes_list.append(key)
+
         label_index["Answer"] = len(labels)
         labels.append("Answer")
+
         sources, targets, vals = [], [], []
         for doc_name, score in relevant_docs:
-            sources.append(0); targets.append(label_index[doc_name]); vals.append(max(1, int(score * 10)))
+            sources.append(0)
+            targets.append(label_index[doc_name])
+            vals.append(max(1, int(score * 10)))
+
         for r in retrieved_nodes:
-            doc_id = r.get("doc_id"); node_id = r.get("node_id", "unknown"); key = f"{doc_id}:{node_id}"
+            doc_id = r.get("doc_id")
+            node_id = r.get("node_id", "unknown")
+            key = f"{doc_id}:{node_id}"
             conf = r.get("confidence", 0.5)
             if doc_id in label_index and key in label_index:
-                sources.append(label_index[doc_id]); targets.append(label_index[key]); vals.append(max(1, int(conf * 10)))
+                sources.append(label_index[doc_id])
+                targets.append(label_index[key])
+                vals.append(max(1, int(conf * 10)))
+
         node_to_pq = defaultdict(set)
         for item in extracted_items:
             pq = item.get("physical_quantity", "unknown")
             doc_id = item.get("doc_source", item.get("doc_id", "unknown"))
             for r in retrieved_nodes:
                 if r.get("doc_id") == doc_id:
-                    node_id = r.get("node_id", "unknown"); key = f"{doc_id}:{node_id}"
+                    node_id = r.get("node_id", "unknown")
+                    key = f"{doc_id}:{node_id}"
                     node_to_pq[key].add(f"pq:{pq}")
+
         for node_key, pq_set in node_to_pq.items():
             for pq_key in pq_set:
                 if node_key in label_index and pq_key in label_index:
-                    sources.append(label_index[node_key]); targets.append(label_index[pq_key]); vals.append(1)
-        for pq_key in pq_nodes_list:
-            sources.append(label_index[pq_key]); targets.append(label_index["Answer"]); vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
-        node_colors = ["#1e3a5f"] + ["#2563eb"] * len(doc_nodes) + ["#059669"] * len(node_labels_list) + ["#dc2626"] * len(pq_nodes_list) + ["#7c3aed"]
-        fig = go.Figure(data=[go.Sankey(
-            node=dict(pad=20, thickness=24, line=dict(color="#334155", width=0.8), label=labels, color=node_colors, hovertemplate="%{label}<extra></extra>"),
-            link=dict(source=sources, target=targets, value=vals, color=["rgba(37, 99, 235, 0.25)" if s < len(doc_nodes)+1 else "rgba(5, 150, 105, 0.2)" for s in sources], hovertemplate="From: %{source.label}<br>To: %{target.label}<br>Value: %{value}<extra></extra>"))])
-        fig.update_layout(title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'", font=dict(family=self.font_family, size=self.font_size, color="#1e293b"), paper_bgcolor="white", plot_bgcolor="white", height=650, width=1100, margin=dict(l=40, r=40, t=80, b=40))
-        return fig
+                    sources.append(label_index[node_key])
+                    targets.append(label_index[pq_key])
+                    vals.append(1)
 
+        for pq_key in pq_nodes_list:
+            sources.append(label_index[pq_key])
+            targets.append(label_index["Answer"])
+            vals.append(max(1, len(pq_groups.get(pq_key.replace("pq:", ""), []))))
+
+        # v17.2 FIX: Color nodes by document with distinct colors
+        node_colors = ["#1e3a5f"]  # Query
+        node_colors.extend(doc_colors)  # Documents get unique colors
+        node_colors.extend(["#059669"] * len(node_labels_list))  # Retrieved nodes
+        node_colors.extend(["#dc2626"] * len(pq_nodes_list))  # Physical quantities
+        node_colors.append("#7c3aed")  # Answer
+
+        # v17.2 FIX: Link colors trace back to source document
+        link_colors = []
+        for s in sources:
+            if s == 0:  # From Query
+                link_colors.append("rgba(30, 58, 95, 0.25)")
+            elif s <= len(doc_nodes):  # From Document
+                c = doc_colors[s - 1] if (s - 1) < len(doc_colors) else "#2563eb"
+                # Convert hex to rgba
+                r, g, b = tuple(int(c.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                link_colors.append(f"rgba({r}, {g}, {b}, 0.3)")
+            else:
+                link_colors.append("rgba(5, 150, 105, 0.2)")
+
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=20, thickness=24, 
+                line=dict(color="#334155", width=0.8), 
+                label=labels, 
+                color=node_colors,
+                hovertemplate="%{label}<extra></extra>"
+            ),
+            link=dict(
+                source=sources, 
+                target=targets, 
+                value=vals, 
+                color=link_colors,
+                hovertemplate="From: %{source.label}<br>To: %{target.label}<br>Value: %{value}<extra></extra>"
+            )
+        )])
+
+        # v17.2 FIX: Add annotation legend for document colors and markers
+        annotations = []
+        for i, (doc_name, _) in enumerate(relevant_docs):
+            marker = self.marker_registry.get_marker(doc_name, 'matplotlib')
+            display = get_display_name(doc_name, self.cfg.aliases)
+            annotations.append(dict(
+                x=1.15, 
+                y=1.0 - (i * 0.05),
+                xref="paper",
+                yref="paper",
+                text=f"◆ {display} [{marker}]",
+                showarrow=False,
+                font=dict(size=10, color=doc_colors[i]),
+                align="left"
+            ))
+
+        fig.update_layout(
+            title_text=f"Retrieval Provenance Flow: '{query[:50]}{'...' if len(query)>50 else ''}'",
+            font=dict(family=self.font_family, size=self.font_size, color="#1e293b"),
+            paper_bgcolor="white", 
+            plot_bgcolor="white",
+            height=650, 
+            width=1100,
+            margin=dict(l=40, r=200, t=80, b=40),  # v17.2 FIX: Increased right margin for legend
+            annotations=annotations
+        )
+        return fig
     def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
         if not doc_trees or not retrieved_nodes: return go.Figure().update_layout(title="No coverage data")
         doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))

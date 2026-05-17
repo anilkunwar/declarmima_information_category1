@@ -4838,10 +4838,12 @@ def run_streamlit():
             if query_ctx and query_ctx.has_data():
                 # Show publication marker legend for current query
                 with st.expander("Publication Markers for This Query", expanded=True):
+                    _reg = DocumentMarkerRegistry()
+                    _reg.register_documents(sorted(list(query_ctx.relevant_doc_ids)))
                     render_streamlit_marker_legend(
                         sorted(list(query_ctx.relevant_doc_ids)),
                         st.session_state.get("doc_aliases", {}),
-                        viz.marker_registry,
+                        _reg,
                         "Query Documents"
                     )
 
@@ -4975,7 +4977,9 @@ def run_streamlit():
                 # Global publication marker reference
                 with st.expander("Publication Marker Reference", expanded=False):
                     all_doc_ids = sorted(list(st.session_state.knowledge_graph.doc_graphs.keys()))
-                    render_streamlit_marker_legend(all_doc_ids, aliases, viz.marker_registry, "All Publications")
+                    _global_reg = DocumentMarkerRegistry()
+                    _global_reg.register_documents(all_doc_ids)
+                    render_streamlit_marker_legend(all_doc_ids, aliases, _global_reg, "All Publications")
 
                 selected_qty = st.selectbox("Filter by physical quantity", options=["All"] + sorted(df_all["physical_quantity"].unique()), key="viz_qty_filter")
                 group_by = st.selectbox("Group by", ["material", "doc_stem"], key="viz_group_by")

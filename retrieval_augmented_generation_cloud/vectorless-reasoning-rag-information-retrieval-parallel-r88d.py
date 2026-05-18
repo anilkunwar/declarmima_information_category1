@@ -3332,6 +3332,34 @@ class PublicationVisualizationEngine:
         )
         return df[mask].copy()
 
+
+    def _create_marker_legend_html(self, doc_ids: List[str], title: str = "Publication Markers") -> str:
+        """Create an HTML legend for PyVis/interactive networks."""
+        self.marker_registry.register_documents(doc_ids)
+
+        html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:15px; margin:10px 0; max-width:400px;">']
+        html_parts.append(f'<h4 style="margin:0 0 10px 0; color:#1e293b; font-size:14px;">{title}</h4>')
+        html_parts.append('<div style="display:grid; grid-template-columns: auto 1fr; gap:8px 12px; align-items:center;">')
+
+        for doc_id in doc_ids:
+            marker = self.marker_registry.get_marker(doc_id, 'matplotlib')
+            display_name = get_display_name(doc_id, self.cfg.aliases)
+            desc = self.marker_registry.get_marker_description(doc_id, 'matplotlib')
+
+            symbol_map = {
+                'D': '◆', '*': '★', '^': '▲', 'v': '▼', 's': '■', 'p': '⬟',
+                'h': '⬡', 'H': '⬢', '8': '⯃', 'd': '◊', 'X': '✖', 'P': '➕',
+                '<': '◀', '>': '▶', '1': '▼', '2': '▲', '3': '◀', '4': '▶',
+                '+': '+', 'x': '×', 'o': '●'
+            }
+            symbol = symbol_map.get(marker, marker)
+
+            html_parts.append(f'<div style="font-size:18px; color:#1e40af; text-align:center;">{symbol}</div>')
+            html_parts.append(f'<div style="font-size:12px; color:#334155;"><b>{display_name}</b> <span style="color:#64748b;">({desc})</span></div>')
+
+        html_parts.append('</div></div>')
+        return ''.join(html_parts)
+
     def plot_query_knowledge_graph(self, query_ctx: QueryContext, figsize=(14, 11)) -> plt.Figure:
         if not query_ctx.has_data():
             fig, ax = plt.subplots(figsize=figsize)
@@ -3455,7 +3483,7 @@ class PublicationVisualizationEngine:
         html = net.generate_html()
 
         # Inject marker legend
-        legend_html = create_marker_legend_html(all_docs, self.cfg.aliases, self.marker_registry, "Publication Markers")
+        legend_html = self._create_marker_legend_html(all_docs, "Publication Markers")
         if "</body>" in html:
             html = html.replace("</body>", legend_html + "</body>")
         else:

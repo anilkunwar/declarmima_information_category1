@@ -3207,6 +3207,7 @@ class DocumentMarkerRegistry:
     def get_registered_docs(self) -> List[str]:
         """Get list of all registered document IDs."""
         return list(self._doc_to_marker.keys())
+@dataclass
 class VisConfig:
     font_family: str = "DejaVu Sans"
     font_size: int = 10

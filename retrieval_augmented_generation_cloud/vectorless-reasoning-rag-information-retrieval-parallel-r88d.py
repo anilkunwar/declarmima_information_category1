@@ -3207,6 +3207,100 @@ class DocumentMarkerRegistry:
     def get_registered_docs(self) -> List[str]:
         """Get list of all registered document IDs."""
         return list(self._doc_to_marker.keys())
+
+
+def _marker_to_unicode(marker: str) -> str:
+    """Convert matplotlib marker character to a Unicode symbol for text labels."""
+    symbol_map = {
+        'D': '◆',      # diamond
+        '*': '★',      # star
+        '^': '▲',      # triangle up
+        'v': '▼',      # triangle down
+        's': '■',      # square
+        'p': '⬟',      # pentagon
+        'h': '⬢',      # hexagon
+        'H': '⬣',      # hexagon (alt)
+        '8': '⯃',      # octagon
+        'd': '◇',      # thin diamond
+        'X': '✖',      # x filled
+        'P': '➕',      # plus filled
+        '<': '◀',      # triangle left
+        '>': '▶',      # triangle right
+        '1': '▼',      # tri down
+        '2': '▲',      # tri up
+        '3': '◀',      # tri left
+        '4': '▶',      # tri right
+        '+': '➕',      # plus
+        'x': '✖',      # x
+        'o': '●',      # circle filled
+    }
+    return symbol_map.get(marker, '●')
+
+
+def render_matplotlib_legend(
+    ax,
+    doc_ids: List[str],
+    aliases: Optional[Dict[str, str]] = None,
+    registry: Optional[Any] = None,
+    title: str = "Publications",
+    loc: str = "upper left",
+    bbox_to_anchor: Tuple[float, float] = (1.02, 1.0),
+    ncol: int = 1,
+    fontsize: int = 9,
+    marker_size: int = 10,
+    padding: float = 1.0,
+    frameon: bool = True,
+    shadow: bool = False,
+) -> None:
+    """
+    Render a matplotlib legend showing document-to-marker assignments.
+    Uses Unicode symbols in legend text for maximum compatibility.
+    """
+    if registry is None:
+        registry = DocumentMarkerRegistry()
+        registry.register_documents(doc_ids)
+
+    legend_entries = []
+    for doc_id in doc_ids:
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display = get_display_name(doc_id, aliases)
+        # Use Unicode symbol + document name
+        uni_symbol = _marker_to_unicode(marker)
+        label_text = f"{uni_symbol}  {display}"
+        # Create a proxy artist with the actual marker shape
+        from matplotlib.lines import Line2D
+        proxy = Line2D(
+            [0], [0],
+            marker=marker,
+            color='w',
+            markerfacecolor='#1e40af',
+            markeredgecolor='#1e40af',
+            markersize=marker_size,
+            label=label_text,
+            linestyle='None',
+        )
+        legend_entries.append(proxy)
+
+    if legend_entries:
+        leg = ax.legend(
+            handles=legend_entries,
+            title=title,
+            loc=loc,
+            bbox_to_anchor=bbox_to_anchor,
+            ncol=ncol,
+            fontsize=fontsize,
+            title_fontsize=fontsize + 1,
+            frameon=frameon,
+            shadow=shadow,
+            borderpad=padding,
+            labelspacing=0.6,
+            handletextpad=0.4,
+        )
+        if leg:
+            leg.get_frame().set_facecolor('#f8fafc')
+            leg.get_frame().set_edgecolor('#cbd5e1')
+            leg.get_frame().set_linewidth(0.8)
+
 @dataclass
 class VisConfig:
     font_family: str = "DejaVu Sans"
@@ -3376,9 +3470,9 @@ class PublicationVisualizationEngine:
 
         for doc_id in query_ctx.relevant_doc_ids:
             display_name = get_display_name(doc_id, self.cfg.aliases)
-            marker = self.marker_registry.get_marker(doc_id, 'matplotlib')
+            # Store original doc_id in node attributes for marker lookup
             G.add_node(display_name, node_type="doc", color="#10b981", size=1400, 
-                      marker=marker, title=f"Document: {display_name}\nMarker: {marker}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
+                      orig_doc=doc_id, title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
             G.add_node(pq, node_type="pq", label=readable, color=self.DOMAIN_COLORS.get(pq, "#3b82f6"), size=1100)
@@ -3400,18 +3494,23 @@ class PublicationVisualizationEngine:
         pq_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "pq"]
         mat_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "material"]
         val_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "value"]
+
+        # Draw query node
         nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", node_size=3200, ax=ax)
 
-        # Draw document nodes with unique markers
+        # Draw document nodes as standard circles (not using marker shape)
+        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", 
+                              node_size=1400, node_shape='o', ax=ax)
+
+        # Add marker symbols next to document node positions
         for doc_node in doc_nodes:
-            orig_doc_id = None
-            for d in query_ctx.relevant_doc_ids:
-                if get_display_name(d, self.cfg.aliases) == doc_node:
-                    orig_doc_id = d
-                    break
-            marker = self.marker_registry.get_marker(orig_doc_id or doc_node, 'matplotlib')
-            nx.draw_networkx_nodes(G, pos, nodelist=[doc_node], node_color="#10b981", 
-                                  node_size=1400, node_shape=marker, ax=ax)
+            orig_doc_id = G.nodes[doc_node].get('orig_doc', doc_node)
+            marker = self.marker_registry.get_marker(orig_doc_id, 'matplotlib')
+            x, y = pos[doc_node]
+            # Offset the marker slightly to the right of the node
+            ax.plot(x + 0.08, y, marker=marker, markersize=10, 
+                   markerfacecolor='#1e40af', markeredgecolor='#1e40af', 
+                   linestyle='None', zorder=10)
 
         nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", node_size=1100, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", node_size=1300, ax=ax)
@@ -3419,7 +3518,7 @@ class PublicationVisualizationEngine:
         nx.draw_networkx_edges(G, pos, alpha=0.35, width=1.2, edge_color="#94a3b8", ax=ax)
         nx.draw_networkx_labels(G, pos, font_size=9, font_family=self.font_family, ax=ax)
 
-        # Add marker legend with padding
+        # Add marker legend outside the graph
         render_matplotlib_legend(
             ax, all_docs, self.cfg.aliases, self.marker_registry,
             title="Publications (by Marker)", loc="upper left",
@@ -3871,7 +3970,7 @@ class PublicationVisualizationEngine:
         plt.tight_layout()
         return fig
 
-    def plot_static_knowledge_network(self, filtered_concepts: Optional[List[str]] = None, top_n: int = 30, figsize: Tuple[int,int] = (14, 12), layout: str = "spring", colormap: Optional[str] = None, node_size_factor: float = 1.0, edge_alpha: float = 0.25, show_labels: bool = True, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> plt.Figure:
+    def plot_static_knowledge_network(self, filtered_concepts: Optional[List[str]] = None, top_n: int = 30, figsize: Tuple[int, int] = (14, 12), layout: str = "spring", colormap: Optional[str] = None, node_size_factor: float = 1.0, edge_alpha: float = 0.25, show_labels: bool = True, aliases: Optional[Dict[str, str]] = None, label_style: str = "doi") -> plt.Figure:
         G = nx.Graph()
         docs = list(self.kgraph.doc_graphs.keys())
 
@@ -3887,8 +3986,8 @@ class PublicationVisualizationEngine:
                 tooltip += "Top values:\n"
                 top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
                 for it in top_vals: tooltip += f"- {it.get('physical_quantity', 'unknown')}: {it.get('value')} {it.get('unit', '')}\n"
-            marker = self.marker_registry.get_marker(doc_id, 'matplotlib')
-            G.add_node(display, node_type="doc", bipartite=0, domain="DOCUMENT", marker=marker, title=tooltip, orig_doc=doc_id)
+            G.add_node(display, node_type="doc", bipartite=0, domain="DOCUMENT", 
+                      orig_doc=doc_id, title=tooltip)
         entities = filtered_concepts or list(self.kgraph.get_all_physical_quantities().keys())[:top_n]
         for ent in entities:
             stats = self.kgraph.get_summary_stats(ent)
@@ -3903,11 +4002,18 @@ class PublicationVisualizationEngine:
         doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
         ent_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "entity"]
 
-        # Draw documents with unique markers
+        # Draw documents as standard circles with marker indicators beside them
+        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#1e40af", 
+                              node_shape='o', node_size=800, alpha=0.85, ax=ax)
+
+        # Add marker symbols next to document nodes
         for doc_node in doc_nodes:
-            marker = G.nodes[doc_node].get('marker', 'o')
-            nx.draw_networkx_nodes(G, pos, nodelist=[doc_node], node_color="#1e40af", 
-                                  node_shape=marker, node_size=800, alpha=0.85, ax=ax)
+            orig_doc_id = G.nodes[doc_node].get('orig_doc', doc_node)
+            marker = self.marker_registry.get_marker(orig_doc_id, 'matplotlib')
+            x, y = pos[doc_node]
+            ax.plot(x + 0.08, y, marker=marker, markersize=9, 
+                   markerfacecolor='#1e40af', markeredgecolor='#1e40af',
+                   linestyle='None', zorder=10)
 
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
         domains = list(set(G.nodes[n].get("domain", "UNKNOWN") for n in ent_nodes))

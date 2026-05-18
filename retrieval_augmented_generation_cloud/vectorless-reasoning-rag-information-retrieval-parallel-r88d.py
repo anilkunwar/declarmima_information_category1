@@ -3237,6 +3237,182 @@ def _marker_to_unicode(marker: str) -> str:
     return symbol_map.get(marker, '●')
 
 
+
+
+# ============================================================================
+# DOCUMENT SHORT LABEL REGISTRY - v17.3 UNIFIED SHORT LABEL SYSTEM
+# ============================================================================
+
+class DocumentShortLabelRegistry:
+    """
+    Unified short-label system for all chart types.
+
+    Maps each document to:
+      - A short letter label: [A], [B], [C]...
+      - A unique marker shape (matplotlib/plotly/pyvis)
+      - The full DOI/display name for legend tables
+
+    This replaces long DOI filenames in all visualizations with compact markers,
+    while preserving full provenance via legend lookup tables.
+    """
+
+    def __init__(self, marker_registry: Optional[DocumentMarkerRegistry] = None):
+        self._doc_to_short: Dict[str, str] = {}
+        self._short_to_doc: Dict[str, str] = {}
+        self._doc_to_marker: Dict[str, str] = {}
+        self._marker_registry = marker_registry or DocumentMarkerRegistry()
+        self._registered: List[str] = []
+
+    def register_documents(self, doc_ids: List[str]) -> None:
+        """Register documents and assign [A], [B], [C]... labels with markers."""
+        for doc_id in doc_ids:
+            if doc_id not in self._doc_to_short:
+                idx = len(self._registered)
+                label = f"[{chr(65 + idx)}]"  # [A], [B], [C]...
+                self._doc_to_short[doc_id] = label
+                self._short_to_doc[label] = doc_id
+                self._registered.append(doc_id)
+        # Also register with marker registry for shape assignment
+        self._marker_registry.register_documents(doc_ids)
+        for doc_id in doc_ids:
+            self._doc_to_marker[doc_id] = self._marker_registry.get_marker(doc_id, 'matplotlib')
+
+    def get_short_label(self, doc_id: str) -> str:
+        """Get [A], [B], etc. label for a document."""
+        if doc_id not in self._doc_to_short:
+            self.register_documents([doc_id])
+        return self._doc_to_short.get(doc_id, doc_id[:15])
+
+    def get_marker(self, doc_id: str, backend: str = 'matplotlib') -> str:
+        """Get marker shape for a document."""
+        return self._marker_registry.get_marker(doc_id, backend)
+
+    def get_full_display(self, doc_id: str, aliases: Optional[Dict[str, str]] = None) -> str:
+        """Get human-readable full display name for legend tables."""
+        return get_display_name(doc_id, aliases)
+
+    def get_legend_entry(self, doc_id: str, aliases: Optional[Dict[str, str]] = None, 
+                         include_marker: bool = True) -> str:
+        """Get a single legend entry line: '[A] ● 10.1016/...'"""
+        short = self.get_short_label(doc_id)
+        marker = self.get_marker(doc_id, 'matplotlib')
+        display = self.get_full_display(doc_id, aliases)
+        if include_marker:
+            uni = _marker_to_unicode(marker)
+            return f"{short} {uni} {display}"
+        return f"{short} {display}"
+
+    def get_legend_table(self, doc_ids: Optional[List[str]] = None, 
+                        aliases: Optional[Dict[str, str]] = None) -> List[Tuple[str, str, str]]:
+        """Get list of (short_label, marker, full_display) for all registered docs."""
+        docs = doc_ids or self._registered
+        return [(self.get_short_label(d), self.get_marker(d, 'matplotlib'), 
+                 self.get_full_display(d, aliases)) for d in docs]
+
+    def get_doc_id_from_short(self, short_label: str) -> Optional[str]:
+        """Reverse lookup: [A] -> doc_id."""
+        return self._short_to_doc.get(short_label)
+
+    def get_registered_docs(self) -> List[str]:
+        return list(self._registered)
+
+
+def render_short_label_legend(
+    ax,
+    registry: DocumentShortLabelRegistry,
+    aliases: Optional[Dict[str, str]] = None,
+    title: str = "Document Legend",
+    loc: str = "upper left",
+    bbox_to_anchor: Tuple[float, float] = (1.02, 1.0),
+    ncol: int = 1,
+    fontsize: int = 8,
+    padding: float = 1.0,
+    frameon: bool = True,
+) -> None:
+    """
+    Render a matplotlib legend table mapping [A], [B]... -> marker -> full DOI.
+    Replaces long DOI labels with compact short labels + legend table.
+    """
+    from matplotlib.lines import Line2D
+
+    legend_entries = []
+    for doc_id in registry.get_registered_docs():
+        short = registry.get_short_label(doc_id)
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display = registry.get_full_display(doc_id, aliases)
+        uni = _marker_to_unicode(marker)
+        # Label shows short code + unicode marker + truncated display
+        label_text = f"{short} {uni} {display[:35]}{'...' if len(display) > 35 else ''}"
+        proxy = Line2D(
+            [0], [0],
+            marker=marker,
+            color='w',
+            markerfacecolor='#1e40af',
+            markeredgecolor='#1e40af',
+            markersize=8,
+            label=label_text,
+            linestyle='None',
+        )
+        legend_entries.append(proxy)
+
+    if legend_entries:
+        leg = ax.legend(
+            handles=legend_entries,
+            title=title,
+            loc=loc,
+            bbox_to_anchor=bbox_to_anchor,
+            ncol=ncol,
+            fontsize=fontsize,
+            title_fontsize=fontsize + 1,
+            frameon=frameon,
+            borderpad=padding,
+            labelspacing=0.5,
+            handletextpad=0.3,
+        )
+        if leg:
+            leg.get_frame().set_facecolor('#f8fafc')
+            leg.get_frame().set_edgecolor('#cbd5e1')
+            leg.get_frame().set_linewidth(0.8)
+
+
+def create_short_label_legend_html(
+    registry: DocumentShortLabelRegistry,
+    aliases: Optional[Dict[str, str]] = None,
+    title: str = "Document Legend"
+) -> str:
+    """Create HTML legend table for PyVis/Plotly interactive charts."""
+    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:12px; margin:8px 0; max-width:500px; font-family:system-ui,sans-serif;">']
+    html_parts.append(f'<h4 style="margin:0 0 8px 0; color:#1e293b; font-size:13px;">{title}</h4>')
+    html_parts.append('<table style="width:100%; border-collapse:collapse; font-size:11px;">')
+    html_parts.append('<tr style="color:#64748b; border-bottom:1px solid #e2e8f0;"><th style="text-align:left;padding:4px;">ID</th><th style="text-align:left;padding:4px;">Marker</th><th style="text-align:left;padding:4px;">Publication</th></tr>')
+
+    for doc_id in registry.get_registered_docs():
+        short = registry.get_short_label(doc_id)
+        marker = registry.get_marker(doc_id, 'matplotlib')
+        display = registry.get_full_display(doc_id, aliases)
+        uni = _marker_to_unicode(marker)
+        html_parts.append(f'<tr style="border-bottom:1px solid #f1f5f9;">')
+        html_parts.append(f'<td style="padding:4px; font-weight:600; color:#1e40af;">{short}</td>')
+        html_parts.append(f'<td style="padding:4px; color:#1e40af; font-size:14px;">{uni}</td>')
+        html_parts.append(f'<td style="padding:4px; color:#334155;">{display}</td>')
+        html_parts.append('</tr>')
+
+    html_parts.append('</table></div>')
+    return ''.join(html_parts)
+
+
+# ============================================================================
+# BACKWARD COMPATIBILITY: Integrate short labels into existing marker registry
+# ============================================================================
+
+def _get_or_create_short_registry(doc_ids: List[str], 
+                                   existing_registry: Optional[DocumentMarkerRegistry] = None
+                                   ) -> DocumentShortLabelRegistry:
+    """Helper to get/create a unified short-label registry."""
+    reg = DocumentShortLabelRegistry(existing_registry)
+    reg.register_documents(doc_ids)
+    return reg
+
 def render_matplotlib_legend(
     ax,
     doc_ids: List[str],
@@ -3464,15 +3640,15 @@ class PublicationVisualizationEngine:
         G = nx.Graph()
         G.add_node("QUERY", node_type="query", label=query_ctx.query[:45] + "...", title=f"Query: {query_ctx.query}")
 
-        # Register all docs for marker assignment
+        # v17.3 FIX: Use short label registry for all document labels
         all_docs = list(query_ctx.relevant_doc_ids)
-        self.marker_registry.register_documents(all_docs)
+        short_reg = _get_or_create_short_registry(all_docs, self.marker_registry)
 
         for doc_id in query_ctx.relevant_doc_ids:
-            display_name = get_display_name(doc_id, self.cfg.aliases)
+            short_label = short_reg.get_short_label(doc_id)
             # Store original doc_id in node attributes for marker lookup
-            G.add_node(display_name, node_type="doc", color="#10b981", size=1400, 
-                      orig_doc=doc_id, title=f"Document: {display_name}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
+            G.add_node(short_label, node_type="doc", color="#10b981", size=1400, 
+                      orig_doc=doc_id, title=f"Document: {short_label}\n{short_reg.get_full_display(doc_id, self.cfg.aliases)}\n{len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])} values")
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
             G.add_node(pq, node_type="pq", label=readable, color=self.DOMAIN_COLORS.get(pq, "#3b82f6"), size=1100)
@@ -3482,7 +3658,9 @@ class PublicationVisualizationEngine:
             label = f"{val.value:.1f} {val.unit or ''}"
             G.add_node(label, node_type="value", color="#ec4899", size=600, title=f"{val.value} {val.unit} | {val.material or ''} | p.{val.page}")
             if val.material and val.material in G: G.add_edge(val.material, label, weight=2)
-            if val.doc_name and get_display_name(val.doc_name, self.cfg.aliases) in G: G.add_edge(get_display_name(val.doc_name, self.cfg.aliases), label, weight=1.5)
+            # v17.3 FIX: Use short label for document edges
+            doc_short = short_reg.get_short_label(val.doc_name) if val.doc_name in short_reg._doc_to_short else None
+            if doc_short and doc_short in G: G.add_edge(doc_short, label, weight=1.5)
             for pq in query_ctx.physical_quantities:
                 if val.physical_quantity == pq and pq in G: G.add_edge(pq, label, weight=1)
         for node in list(G.nodes()):
@@ -3498,32 +3676,36 @@ class PublicationVisualizationEngine:
         # Draw query node
         nx.draw_networkx_nodes(G, pos, nodelist=query_nodes, node_color="#8b5cf6", node_size=3200, ax=ax)
 
-        # Draw document nodes as standard circles (not using marker shape)
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#10b981", 
-                              node_size=1400, node_shape='o', ax=ax)
-
-        # Add marker symbols next to document node positions
+        # v17.3 FIX: Draw document nodes with marker symbols inside the node
         for doc_node in doc_nodes:
             orig_doc_id = G.nodes[doc_node].get('orig_doc', doc_node)
-            marker = self.marker_registry.get_marker(orig_doc_id, 'matplotlib')
+            marker = short_reg.get_marker(orig_doc_id, 'matplotlib')
             x, y = pos[doc_node]
-            # Offset the marker slightly to the right of the node
-            ax.plot(x + 0.08, y, marker=marker, markersize=10, 
-                   markerfacecolor='#1e40af', markeredgecolor='#1e40af', 
-                   linestyle='None', zorder=10)
+            # Draw the marker at the node position
+            ax.plot(x, y, marker=marker, markersize=14, 
+                   markerfacecolor='#10b981', markeredgecolor='white', 
+                   markeredgewidth=1.5, linestyle='None', zorder=10)
 
         nx.draw_networkx_nodes(G, pos, nodelist=pq_nodes, node_color="#3b82f6", node_size=1100, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=mat_nodes, node_color="#f59e0b", node_size=1300, ax=ax)
         nx.draw_networkx_nodes(G, pos, nodelist=val_nodes, node_color="#ec4899", node_size=650, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=0.35, width=1.2, edge_color="#94a3b8", ax=ax)
-        nx.draw_networkx_labels(G, pos, font_size=9, font_family=self.font_family, ax=ax)
 
-        # Add marker legend outside the graph
-        render_matplotlib_legend(
-            ax, all_docs, self.cfg.aliases, self.marker_registry,
-            title="Publications (by Marker)", loc="upper left",
+        # v17.3 FIX: Use short labels for node labels
+        labels = {}
+        for n in G.nodes():
+            if G.nodes[n].get("node_type") == "doc":
+                labels[n] = n  # Already short [A], [B]...
+            else:
+                labels[n] = n
+        nx.draw_networkx_labels(G, pos, labels, font_size=9, font_family=self.font_family, ax=ax, font_weight='bold')
+
+        # v17.3 FIX: Add short-label legend with full DOI mapping
+        render_short_label_legend(
+            ax, short_reg, self.cfg.aliases,
+            title="Documents", loc="upper left",
             bbox_to_anchor=(1.02, 1.0), ncol=1, fontsize=8,
-            marker_size=9, padding=1.3
+            padding=1.3
         )
 
         ax.set_title(f"Query-Focused Knowledge Graph\n{query_ctx.query[:70]}...", fontsize=15, fontweight='bold', pad=20)
@@ -3531,13 +3713,14 @@ class PublicationVisualizationEngine:
         plt.tight_layout()
         return fig
 
+
     def plot_query_knowledge_graph_pyvis(self, query_ctx: QueryContext) -> str:
         if not PYVIS_AVAILABLE: return "<p>PyVis not installed. Run: <code>pip install pyvis</code></p>"
         if not query_ctx.has_data(): return "<p>No quantitative data available for this query.</p>"
 
-        # Register docs for markers
+        # v17.3 FIX: Use short labels [A], [B]... for all document nodes
         all_docs = list(query_ctx.relevant_doc_ids)
-        self.marker_registry.register_documents(all_docs)
+        short_reg = _get_or_create_short_registry(all_docs, self.marker_registry)
 
         net = Network(height="780px", width="100%", bgcolor="#ffffff", font_color="#1e293b", cdn_resources='remote')
         net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
@@ -3545,18 +3728,19 @@ class PublicationVisualizationEngine:
         net.add_node("QUERY", label="YOUR QUERY", title=f"<b>Query:</b><br>{query_ctx.query}<br><br><i>Click pink nodes for details</i>", color="#7c3aed", size=45, font={"size": 18, "bold": True, "color": "#1e293b"})
 
         for doc_id in query_ctx.relevant_doc_ids:
-            display = get_display_name(doc_id, self.cfg.aliases)
-            # v17.2 FIX: Use PyVis-valid shape from registry instead of hardcoded "dot"
-            shape = self.marker_registry.get_marker(doc_id, 'pyvis')
+            # v17.3 FIX: Use short label instead of long display name
+            short_label = short_reg.get_short_label(doc_id)
+            display = short_reg.get_full_display(doc_id, self.cfg.aliases)
+            shape = short_reg.get_marker(doc_id, 'pyvis')
             count = len([v for v in query_ctx.extracted_values if v.doc_name == doc_id])
-            tooltip = f"<b>Document:</b> {display}<br><b>Shape:</b> {shape}<br><b>Extracted Values:</b> {count}<br><br>"
+            tooltip = f"<b>Document:</b> {short_label}<br><b>Full ID:</b> {display}<br><b>Shape:</b> {shape}<br><b>Extracted Values:</b> {count}<br><br>"
             for item in query_ctx.extracted_values[:5]:
                 if item.doc_name == doc_id: tooltip += f"• {item.value} {item.unit} ({item.physical_quantity})<br>"
-            # v17.2 FIX: Pass shape=shape instead of hardcoded "dot"
-            net.add_node(display, label=display[:25], title=tooltip, color="#16a34a", 
-                         size=32, font={"size": 14, "color": "#1e293b"}, 
+            # v17.3 FIX: Label is now short [A], [B]... code
+            net.add_node(short_label, label=short_label, title=tooltip, color="#16a34a", 
+                         size=32, font={"size": 16, "bold": True, "color": "#1e293b"}, 
                          shape=shape)
-            net.add_edge("QUERY", display, value=3)
+            net.add_edge("QUERY", short_label, value=3)
         for pq in query_ctx.physical_quantities:
             readable = self.kgraph.phys_classifier.get_human_readable(pq)
             net.add_node(pq, label=readable, title=f"<b>Physical Quantity:</b><br>{readable}", color=self.DOMAIN_COLORS.get(pq, "#2563eb"), size=28, font={"color": "#1e293b"})
@@ -3570,19 +3754,23 @@ class PublicationVisualizationEngine:
             conf = val.confidence
             color = "#e11d48" if conf >= high_conf_threshold else "#ea580c" if conf >= 0.6 else "#64748b"
             excerpt = val.context[:420] + "..." if len(val.context) > 420 else val.context
-            tooltip = f"<b>{val.value} {val.unit}</b><br><b>Confidence:</b> {conf:.2f}<br><b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br><b>Material:</b> {val.material or '—'}<br><b>Source:</b> {get_display_name(val.doc_name, self.cfg.aliases)} (p.{val.page})<br><br><b>Context:</b><br>{excerpt}"
+            # v17.3 FIX: Show short label in tooltip instead of long display name
+            doc_short = short_reg.get_short_label(val.doc_name) if val.doc_name in short_reg._doc_to_short else val.doc_name[:15]
+            tooltip = f"<b>{val.value} {val.unit}</b><br><b>Confidence:</b> {conf:.2f}<br><b>Quantity:</b> {self.kgraph.phys_classifier.get_human_readable(val.physical_quantity)}<br><b>Material:</b> {val.material or '—'}<br><b>Source:</b> {doc_short} (p.{val.page})<br><br><b>Context:</b><br>{excerpt}"
             net.add_node(node_id, label=label, title=tooltip, color=color, size=24 + int(conf * 18), font={"size": 11, "color": "#1e293b"})
             edge_width = 3 if conf >= high_conf_threshold else 1.5
             if val.material and val.material in net.get_nodes(): net.add_edge(val.material, node_id, value=edge_width, color="#cbd5e1")
             if val.physical_quantity in net.get_nodes(): net.add_edge(val.physical_quantity, node_id, value=edge_width*0.8)
-            doc_name = get_display_name(val.doc_name, self.cfg.aliases)
-            if doc_name in net.get_nodes(): net.add_edge(doc_name, node_id, value=edge_width, color="#86efac")
+            # v17.3 FIX: Use short label for document edge
+            doc_short = short_reg.get_short_label(val.doc_name) if val.doc_name in short_reg._doc_to_short else None
+            if doc_short and doc_short in net.get_nodes(): 
+                net.add_edge(doc_short, node_id, value=edge_width, color="#86efac")
         for node in net.get_nodes():
             if node != "QUERY": net.add_edge("QUERY", node, value=1, color="#64748b")
         html = net.generate_html()
 
-        # Inject marker legend
-        legend_html = self._create_marker_legend_html(all_docs, "Publication Markers")
+        # v17.3 FIX: Inject short-label legend table instead of marker-only legend
+        legend_html = create_short_label_legend_html(short_reg, self.cfg.aliases, "Document Legend")
         if "</body>" in html:
             html = html.replace("</body>", legend_html + "</body>")
         else:
@@ -3592,6 +3780,8 @@ class PublicationVisualizationEngine:
         if "</body>" in html: html = html.replace("</body>", modal_js + "</body>")
         else: html += modal_js
         return html
+
+
     def plot_query_sunburst(self, query_ctx: QueryContext) -> go.Figure:
         df_focus = self.get_query_focused_df(query_ctx)
         if df_focus.empty: 
@@ -3783,35 +3973,37 @@ class PublicationVisualizationEngine:
         merged = pd.merge(power_df, speed_df, on=["doc", "doc_stem", "material"], how="inner")
         if merged.empty: return go.Figure().update_layout(title="No paired laser power and scan speed data")
 
-        # Register docs for markers
+        # v17.3 FIX: Use short labels for documents
         docs = list(merged["doc_stem"].unique())
-        self.marker_registry.register_documents(docs)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
 
         fig = go.Figure()
 
-        # Create traces per document with unique markers
+        # Create traces per document with unique markers and short labels
         for doc in docs:
             doc_data = merged[merged["doc_stem"] == doc]
-            marker = self.marker_registry.get_marker(doc, 'plotly')
-            display = get_display_name(doc, self.cfg.aliases)
+            marker = short_reg.get_marker(doc, 'plotly')
+            short_label = short_reg.get_short_label(doc)
+            display = short_reg.get_full_display(doc, self.cfg.aliases)
 
             for mat in doc_data["material"].unique():
                 mat_data = doc_data[doc_data["material"] == mat]
+                # v17.3 FIX: Use short label in trace name
                 fig.add_trace(go.Scatter(
                     x=mat_data["laser_power"],
                     y=mat_data["scan_speed"],
                     mode='markers',
-                    name=f"{display} ({mat})",
+                    name=f"{short_label} ({mat})",
                     marker=dict(
                         symbol=marker,
                         size=12,
                         line=dict(width=1, color='DarkSlateGrey')
                     ),
-                    hovertemplate='<b>%{fullData.name}</b><br>Power: %{x:.1f} W<br>Speed: %{y:.1f} mm/s<extra></extra>'
+                    hovertemplate=f'<b>{short_label}</b> ({display})<br>Material: {mat}<br>Power: %{{x:.1f}} W<br>Speed: %{{y:.1f}} mm/s<extra></extra>'
                 ))
 
         fig.update_layout(
-            title="Laser Power vs Scan Speed by Document (Unique Markers)",
+            title="Laser Power vs Scan Speed by Document (Short Labels)",
             xaxis_title="Laser Power (W)",
             yaxis_title="Scan Speed (mm/s)",
             font=dict(family=self.font_family, size=self.font_size),
@@ -3823,6 +4015,7 @@ class PublicationVisualizationEngine:
             )
         )
         return fig
+
 
     def plot_radar_by_material(self, colormap: Optional[str] = None) -> go.Figure:
         df = self.extract_dataframe()
@@ -3841,21 +4034,31 @@ class PublicationVisualizationEngine:
         fig.update_layout(polar=dict(radialaxis=dict(visible=True)), title="Material Performance Radar (Mean Values)", font=dict(family=self.font_family, size=self.font_size))
         return fig
 
+
     def plot_document_radar(self, colormap: Optional[str] = None) -> go.Figure:
         df = self.extract_dataframe()
         if df.empty: return go.Figure().update_layout(title="No data")
         pivot = df.pivot_table(index="doc_stem", columns="physical_quantity", values="value", aggfunc="count").fillna(0)
         if pivot.empty: return go.Figure().update_layout(title="No data")
+
+        # v17.3 FIX: Use short labels for documents
+        docs = pivot.index.tolist()
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+
         fig = go.Figure()
         cmap = plt.get_cmap(self._get_colormap(colormap))
-        docs = pivot.index.tolist()
         for i, doc in enumerate(docs):
             values = pivot.loc[doc].tolist()
             values += values[:1]
             color = mcolors.to_hex(cmap(i / max(len(docs)-1, 1))) if len(docs)>1 else "#3b82f6"
-            fig.add_trace(go.Scatterpolar(r=values, theta=pivot.columns.tolist() + [pivot.columns[0]], fill='toself', name=doc, line_color=color))
+            short_label = short_reg.get_short_label(doc)
+            display = short_reg.get_full_display(doc, self.cfg.aliases)
+            # v17.3 FIX: Use short label + truncated display in legend
+            legend_name = f"{short_label} {display[:30]}{'...' if len(display) > 30 else ''}"
+            fig.add_trace(go.Scatterpolar(r=values, theta=pivot.columns.tolist() + [pivot.columns[0]], fill='toself', name=legend_name, line_color=color))
         fig.update_layout(polar=dict(radialaxis=dict(visible=True)), title="Document Coverage Radar (Counts per Quantity Type)", font=dict(family=self.font_family, size=self.font_size))
         return fig
+
 
     def plot_quantitative_radar(self, df: pd.DataFrame, quantity_name: str, colormap: Optional[str] = None) -> go.Figure:
         if df.empty: return go.Figure().update_layout(title=f"No {quantity_name} data")
@@ -3974,19 +4177,20 @@ class PublicationVisualizationEngine:
         G = nx.Graph()
         docs = list(self.kgraph.doc_graphs.keys())
 
-        # Register docs for markers
-        self.marker_registry.register_documents(docs)
+        # v17.3 FIX: Use short label registry
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
 
         for doc_id in docs:
-            display = get_display_name(doc_id, aliases)
+            short_label = short_reg.get_short_label(doc_id)
+            display = short_reg.get_full_display(doc_id, aliases)
             label = get_citation_label(doc_id, aliases, style=label_style)
-            tooltip = f"Document: {label}\n"
+            tooltip = f"Document: {short_label}\nFull: {display}\n"
             doc_items = [it for it in self.kgraph.doc_graphs[doc_id]["all_items"] if it.get("value") is not None]
             if doc_items:
                 tooltip += "Top values:\n"
                 top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
                 for it in top_vals: tooltip += f"- {it.get('physical_quantity', 'unknown')}: {it.get('value')} {it.get('unit', '')}\n"
-            G.add_node(display, node_type="doc", bipartite=0, domain="DOCUMENT", 
+            G.add_node(short_label, node_type="doc", bipartite=0, domain="DOCUMENT", 
                       orig_doc=doc_id, title=tooltip)
         entities = filtered_concepts or list(self.kgraph.get_all_physical_quantities().keys())[:top_n]
         for ent in entities:
@@ -3995,25 +4199,21 @@ class PublicationVisualizationEngine:
             G.add_node(ent, node_type="entity", domain="PARAMETER", bipartite=1, salience=doc_count)
             for doc in docs:
                 if any(item.get("physical_quantity") == ent or item.get("parameter_name") == ent for item in self.kgraph.doc_graphs[doc]["all_items"]):
-                    doc_display = get_display_name(doc, aliases)
-                    G.add_edge(doc_display, ent, weight=doc_count * 0.5)
+                    doc_short = short_reg.get_short_label(doc)
+                    G.add_edge(doc_short, ent, weight=doc_count * 0.5)
         fig, ax = plt.subplots(figsize=figsize)
         pos = nx.spring_layout(G, k=0.55, iterations=60, seed=42) if layout == "spring" else nx.kamada_kawai_layout(G)
         doc_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "doc"]
         ent_nodes = [n for n, d in G.nodes(data=True) if d.get("node_type") == "entity"]
 
-        # Draw documents as standard circles with marker indicators beside them
-        nx.draw_networkx_nodes(G, pos, nodelist=doc_nodes, node_color="#1e40af", 
-                              node_shape='o', node_size=800, alpha=0.85, ax=ax)
-
-        # Add marker symbols next to document nodes
+        # v17.3 FIX: Draw document nodes with marker symbols
         for doc_node in doc_nodes:
             orig_doc_id = G.nodes[doc_node].get('orig_doc', doc_node)
-            marker = self.marker_registry.get_marker(orig_doc_id, 'matplotlib')
+            marker = short_reg.get_marker(orig_doc_id, 'matplotlib')
             x, y = pos[doc_node]
-            ax.plot(x + 0.08, y, marker=marker, markersize=9, 
-                   markerfacecolor='#1e40af', markeredgecolor='#1e40af',
-                   linestyle='None', zorder=10)
+            ax.plot(x, y, marker=marker, markersize=12, 
+                   markerfacecolor='#1e40af', markeredgecolor='white', 
+                   markeredgewidth=1.5, linestyle='None', zorder=10)
 
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
         domains = list(set(G.nodes[n].get("domain", "UNKNOWN") for n in ent_nodes))
@@ -4031,14 +4231,15 @@ class PublicationVisualizationEngine:
             nx.draw_networkx_nodes(G, pos, nodelist=[node], node_color=color, node_shape="o", node_size=size, alpha=0.9, ax=ax)
         nx.draw_networkx_edges(G, pos, alpha=edge_alpha, width=0.8, ax=ax)
         if show_labels:
-            nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family)
+            # v17.3 FIX: Labels already use short [A], [B]... codes
+            nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family, font_weight='bold')
 
-        # Add marker legend for documents
-        render_matplotlib_legend(
-            ax, docs, aliases, self.marker_registry,
-            title="Publications", loc="upper left",
+        # v17.3 FIX: Add short-label legend with full DOI mapping
+        render_short_label_legend(
+            ax, short_reg, aliases,
+            title="Documents", loc="upper left",
             bbox_to_anchor=(1.02, 1.0), ncol=1, fontsize=8,
-            marker_size=8, padding=1.2
+            padding=1.2
         )
 
         # Add domain color legend
@@ -4051,25 +4252,32 @@ class PublicationVisualizationEngine:
             legend_patches.append(mpatches.Patch(color=c, label=dom))
         ax.legend(handles=legend_patches, loc="lower left", fontsize=9)
 
-        ax.set_title("Salience-Aware Cross-Document Knowledge Network\n(Node size = importance | Labels: {} format)".format(label_style), fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
+        ax.set_title("Salience-Aware Cross-Document Knowledge Network\n(Node size = importance | Labels: [A], [B]... format)", fontsize=self.title_font_size, fontweight='bold', fontfamily=self.font_family)
         ax.axis("off")
         plt.tight_layout()
         return fig
 
+
     def render_pyvis_salience(self, filtered_concepts: Optional[List[str]] = None, top_n_nodes: int = 30, physics_enabled: bool = True, colormap: Optional[str] = None, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> str:
         if not PYVIS_AVAILABLE: return "<p>PyVis not installed. pip install pyvis</p>"
-        G = nx.Graph()
+
+        # v17.3 FIX: Use short label registry for all document nodes
         docs = list(self.kgraph.doc_graphs.keys())
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+
+        G = nx.Graph()
         for doc in docs:
-            display = get_display_name(doc, aliases)
+            # v17.3 FIX: Use short label [A], [B]... as node ID
+            short_label = short_reg.get_short_label(doc)
+            display = short_reg.get_full_display(doc, aliases)
             label = get_citation_label(doc, aliases, style=label_style)
-            tooltip = f"<b>{label}</b><br>File: {Path(doc).name}<br>"
+            tooltip = f"<b>{short_label}</b><br>Full: {display}<br>File: {Path(doc).name}<br>"
             doc_items = [it for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("value") is not None]
             if doc_items:
                 tooltip += "<b>Top values:</b><br>"
                 top_vals = sorted(doc_items, key=lambda x: x.get("confidence", 0), reverse=True)[:5]
                 for it in top_vals: tooltip += f"- {it.get('physical_quantity', 'unknown')}: {it.get('value')} {it.get('unit', '')} (p.{it.get('page', '?')})<br>"
-            G.add_node(display, node_type="doc", domain="DOCUMENT", title=tooltip, orig_doc=doc)
+            G.add_node(short_label, node_type="doc", domain="DOCUMENT", title=tooltip, orig_doc=doc)
         entities = filtered_concepts or list(self.kgraph.get_all_physical_quantities().keys())[:top_n_nodes]
         for ent in entities:
             stats = self.kgraph.get_summary_stats(ent)
@@ -4081,13 +4289,13 @@ class PublicationVisualizationEngine:
                 for doc in docs:
                     doc_vals = [it["value"] for it in self.kgraph.doc_graphs[doc]["all_items"] if it.get("physical_quantity") == ent and it.get("value") is not None]
                     if doc_vals:
-                        doc_label = get_citation_label(doc, aliases, style=label_style)
-                        tooltip += f"- {doc_label}: {min(doc_vals):.2f} to {max(doc_vals):.2f}<br>"
+                        doc_short = short_reg.get_short_label(doc)
+                        tooltip += f"- {doc_short}: {min(doc_vals):.2f} to {max(doc_vals):.2f}<br>"
             G.add_node(ent, node_type="entity", domain="PARAMETER", salience=count, title=tooltip)
             for doc in docs:
                 if any(item.get("physical_quantity") == ent or item.get("parameter_name") == ent for item in self.kgraph.doc_graphs[doc]["all_items"]):
-                    doc_display = get_display_name(doc, aliases)
-                    G.add_edge(doc_display, ent, weight=count)
+                    doc_short = short_reg.get_short_label(doc)
+                    G.add_edge(doc_short, ent, weight=count)
         net = Network(height="700px", width="100%", bgcolor="#ffffff", font_color="#000000", cdn_resources='remote')
         if physics_enabled: net.barnes_hut(gravity=-1800, spring_length=140, damping=0.85)
         cmap_obj = plt.get_cmap(self._get_colormap(colormap)) if colormap else None
@@ -4097,11 +4305,26 @@ class PublicationVisualizationEngine:
             domain = G.nodes[node].get("domain", "UNKNOWN")
             color = self._get_domain_color(domain, colormap, i, len(G.nodes()))
             title = G.nodes[node].get("title", f"{node}\nSalience: {salience}")
-            net.add_node(node, label=node[:25], size=size, color=color, borderWidth=2, title=title)
+            # v17.3 FIX: Bold short labels for document nodes
+            font_size = 16 if G.nodes[node].get("node_type") == "doc" else 14
+            is_bold = G.nodes[node].get("node_type") == "doc"
+            net.add_node(node, label=node[:25], size=size, color=color, borderWidth=2, title=title,
+                        font={"size": font_size, "bold": is_bold, "color": "#1e293b"})
         for u, v, data in G.edges(data=True):
             w = data.get('weight', 1)
             net.add_edge(u, v, value=max(1, int(w * 2)), width=max(1, int(w)))
-        return net.generate_html()
+
+        html = net.generate_html()
+
+        # v17.3 FIX: Inject short-label legend table
+        legend_html = create_short_label_legend_html(short_reg, aliases, "Document Legend")
+        if "</body>" in html:
+            html = html.replace("</body>", legend_html + "</body>")
+        else:
+            html += legend_html
+
+        return html
+
 
     def plot_quantitative_knowledge_graph_pyvis(self, df: pd.DataFrame, quantity: str, colormap: Optional[str] = None, aliases: Optional[Dict[str,str]] = None, label_style: str = "doi") -> str:
         if not PYVIS_AVAILABLE: return "<p>PyVis not installed. pip install pyvis</p>"
@@ -4331,17 +4554,18 @@ class PublicationVisualizationEngine:
         top_q = df["physical_quantity"].value_counts().head(5).index.tolist()
         df_top = df[df["physical_quantity"].isin(top_q)]
 
-        # Register docs for markers
+        # v17.3 FIX: Use short labels for documents
         docs = list(df_top["doc_stem"].unique())
-        self.marker_registry.register_documents(docs)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
 
         fig = go.Figure()
 
-        # Create traces per document with unique markers
+        # Create traces per document with unique markers and short labels
         for doc in docs:
             doc_data = df_top[df_top["doc_stem"] == doc]
-            marker = self.marker_registry.get_marker(doc, 'plotly')
-            display = get_display_name(doc, self.cfg.aliases)
+            marker = short_reg.get_marker(doc, 'plotly')
+            short_label = short_reg.get_short_label(doc)
+            display = short_reg.get_full_display(doc, self.cfg.aliases)
 
             for pq in top_q:
                 pq_data = doc_data[doc_data["physical_quantity"] == pq]
@@ -4350,26 +4574,27 @@ class PublicationVisualizationEngine:
                         x=pq_data["year"],
                         y=[pq] * len(pq_data),
                         mode='markers',
-                        name=display,
+                        name=short_label,
                         marker=dict(symbol=marker, size=10, color='#1e40af'),
-                        hovertemplate='<b>%{fullData.name}</b><br>Year: %{x}<br>Quantity: %{y}<extra></extra>',
+                        hovertemplate=f'<b>{short_label}</b> ({display})<br>Year: %{{x}}<br>Quantity: %{{y}}<extra></extra>',
                         showlegend=False
                     ))
 
-        # Add legend entries for documents
+        # Add legend entries for documents with short labels
         for doc in docs:
-            marker = self.marker_registry.get_marker(doc, 'plotly')
-            display = get_display_name(doc, self.cfg.aliases)
+            marker = short_reg.get_marker(doc, 'plotly')
+            short_label = short_reg.get_short_label(doc)
+            display = short_reg.get_full_display(doc, self.cfg.aliases)
             fig.add_trace(go.Scatter(
                 x=[None], y=[None],
                 mode='markers',
                 marker=dict(symbol=marker, size=10, color='#1e40af'),
-                name=display,
+                name=f"{short_label} {display[:25]}{'...' if len(display) > 25 else ''}",
                 showlegend=True
             ))
 
         fig.update_layout(
-            title="Temporal Distribution of Quantities by Document (Unique Markers)",
+            title="Temporal Distribution of Quantities by Document (Short Labels)",
             xaxis_title="Estimated Year",
             yaxis_title="Physical Quantity",
             font=dict(family=self.font_family, size=self.font_size),
@@ -4381,17 +4606,18 @@ class PublicationVisualizationEngine:
         )
         return fig
 
+
     def plot_retrieval_sankey(self, query: str, relevant_docs, retrieved_nodes, extracted_items):
         if not relevant_docs and not retrieved_nodes: 
             return go.Figure().update_layout(title="No retrieval data available")
 
+        # v17.3 FIX: Use short labels [A], [B]... for all document nodes
+        doc_ids = [d for d, _ in relevant_docs]
+        short_reg = _get_or_create_short_registry(doc_ids, self.marker_registry)
+
         labels = ["Query"]
         label_index = {"Query": 0}
         doc_nodes = []
-
-        # v17.2 FIX: Register docs for consistent color assignment
-        doc_ids = [d for d, _ in relevant_docs]
-        self.marker_registry.register_documents(doc_ids)
 
         # v17.2 FIX: Generate distinct colors for each document
         n_docs = len(relevant_docs)
@@ -4401,7 +4627,9 @@ class PublicationVisualizationEngine:
             doc_colors.append(mcolors.to_hex(plt.cm.tab20(hue)))
 
         for i, (doc_name, score) in enumerate(relevant_docs):
-            doc_label = f"{Path(doc_name).stem}\n({score:.2f})"
+            # v17.3 FIX: Use short label [A], [B]... instead of long DOI stem
+            short_label = short_reg.get_short_label(doc_name)
+            doc_label = f"{short_label}\n({score:.2f})"
             label_index[doc_name] = len(labels)
             labels.append(doc_label)
             doc_nodes.append(doc_name)
@@ -4413,7 +4641,9 @@ class PublicationVisualizationEngine:
             key = f"{doc_id}:{node_id}"
             if key not in label_index:
                 label_index[key] = len(labels)
-                labels.append(f"{Path(doc_id).stem}:{node_id[:15]}")
+                # v17.3 FIX: Use short label for retrieved node labels too
+                short = short_reg.get_short_label(doc_id) if doc_id in short_reg._doc_to_short else "[?]"
+                labels.append(f"{short}:{node_id[:10]}")
             node_labels_list.append(key)
 
         pq_groups = defaultdict(list)
@@ -4484,7 +4714,6 @@ class PublicationVisualizationEngine:
                 link_colors.append("rgba(30, 58, 95, 0.25)")
             elif s <= len(doc_nodes):  # From Document
                 c = doc_colors[s - 1] if (s - 1) < len(doc_colors) else "#2563eb"
-                # Convert hex to rgba
                 r, g, b = tuple(int(c.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
                 link_colors.append(f"rgba({r}, {g}, {b}, 0.3)")
             else:
@@ -4507,19 +4736,21 @@ class PublicationVisualizationEngine:
             )
         )])
 
-        # v17.2 FIX: Add annotation legend for document colors and markers
+        # v17.3 FIX: Add annotation legend for short labels -> full DOI mapping
         annotations = []
         for i, (doc_name, _) in enumerate(relevant_docs):
-            marker = self.marker_registry.get_marker(doc_name, 'matplotlib')
-            display = get_display_name(doc_name, self.cfg.aliases)
+            short = short_reg.get_short_label(doc_name)
+            marker = short_reg.get_marker(doc_name, 'matplotlib')
+            display = short_reg.get_full_display(doc_name, self.cfg.aliases)
+            uni = _marker_to_unicode(marker)
             annotations.append(dict(
                 x=1.15, 
                 y=1.0 - (i * 0.05),
                 xref="paper",
                 yref="paper",
-                text=f"◆ {display} [{marker}]",
+                text=f"<b>{short}</b> {uni} {display[:30]}{'...' if len(display) > 30 else ''}",
                 showarrow=False,
-                font=dict(size=10, color=doc_colors[i]),
+                font=dict(size=9, color=doc_colors[i]),
                 align="left"
             ))
 
@@ -4530,10 +4761,12 @@ class PublicationVisualizationEngine:
             plot_bgcolor="white",
             height=650, 
             width=1100,
-            margin=dict(l=40, r=200, t=80, b=40),  # v17.2 FIX: Increased right margin for legend
+            margin=dict(l=40, r=250, t=80, b=40),  # v17.3 FIX: Increased right margin for legend
             annotations=annotations
         )
         return fig
+
+
     def plot_page_coverage_heatmap(self, doc_trees, retrieved_nodes):
         if not doc_trees or not retrieved_nodes: return go.Figure().update_layout(title="No coverage data")
         doc_names = sorted(list(set(t.get("doc_id", t.get("doc_name", "unknown")) for t in doc_trees)))

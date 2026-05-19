@@ -3248,27 +3248,36 @@ class DocumentShortLabelRegistry:
     Unified short-label system for all chart types.
 
     Maps each document to:
-      - A short letter label: [A], [B], [C]...
-      - A unique marker shape (matplotlib/plotly/pyvis)
+      - A short letter label: [A], [B], [C]... (or user-defined custom labels)
+      - A unique marker shape (matplotlib/plotly/pyvis) - UNCHANGED by custom labels
       - The full DOI/display name for legend tables
 
     This replaces long DOI filenames in all visualizations with compact markers,
     while preserving full provenance via legend lookup tables.
+
+    USER CUSTOMIZATION: Users can override default [A], [B]... labels via
+    custom_labels dict: {"doc_id": "MyLabel"}. Marker shapes remain unchanged.
     """
 
-    def __init__(self, marker_registry: Optional[DocumentMarkerRegistry] = None):
+    def __init__(self, marker_registry: Optional[DocumentMarkerRegistry] = None, 
+                 custom_labels: Optional[Dict[str, str]] = None):
         self._doc_to_short: Dict[str, str] = {}
         self._short_to_doc: Dict[str, str] = {}
         self._doc_to_marker: Dict[str, str] = {}
         self._marker_registry = marker_registry or DocumentMarkerRegistry()
         self._registered: List[str] = []
+        self._custom_labels: Dict[str, str] = custom_labels or {}
+        self._default_labels: Dict[str, str] = {}  # Store default [A], [B]... for reset
 
     def register_documents(self, doc_ids: List[str]) -> None:
         """Register documents and assign [A], [B], [C]... labels with markers."""
         for doc_id in doc_ids:
             if doc_id not in self._doc_to_short:
                 idx = len(self._registered)
-                label = f"[{chr(65 + idx)}]"  # [A], [B], [C]...
+                default_label = f"[{chr(65 + idx)}]"  # [A], [B], [C]...
+                self._default_labels[doc_id] = default_label
+                # Use custom label if provided, else default
+                label = self._custom_labels.get(doc_id, default_label)
                 self._doc_to_short[doc_id] = label
                 self._short_to_doc[label] = doc_id
                 self._registered.append(doc_id)
@@ -3277,14 +3286,46 @@ class DocumentShortLabelRegistry:
         for doc_id in doc_ids:
             self._doc_to_marker[doc_id] = self._marker_registry.get_marker(doc_id, 'matplotlib')
 
+    def set_custom_label(self, doc_id: str, custom_label: str) -> None:
+        """Set a user-defined custom label for a document. Marker shape unchanged."""
+        if doc_id in self._doc_to_short:
+            old_label = self._doc_to_short[doc_id]
+            if old_label in self._short_to_doc:
+                del self._short_to_doc[old_label]
+        self._custom_labels[doc_id] = custom_label
+        self._doc_to_short[doc_id] = custom_label
+        self._short_to_doc[custom_label] = doc_id
+
+    def reset_to_default(self, doc_id: Optional[str] = None) -> None:
+        """Reset label(s) to default [A], [B]... format."""
+        if doc_id:
+            if doc_id in self._default_labels:
+                self.set_custom_label(doc_id, self._default_labels[doc_id])
+            if doc_id in self._custom_labels:
+                del self._custom_labels[doc_id]
+        else:
+            # Reset all
+            self._custom_labels.clear()
+            for doc_id, default in self._default_labels.items():
+                if doc_id in self._doc_to_short:
+                    old_label = self._doc_to_short[doc_id]
+                    if old_label in self._short_to_doc:
+                        del self._short_to_doc[old_label]
+                self._doc_to_short[doc_id] = default
+                self._short_to_doc[default] = doc_id
+
     def get_short_label(self, doc_id: str) -> str:
-        """Get [A], [B], etc. label for a document."""
+        """Get [A], [B], etc. label (or custom label) for a document."""
         if doc_id not in self._doc_to_short:
             self.register_documents([doc_id])
         return self._doc_to_short.get(doc_id, doc_id[:15])
 
+    def get_default_label(self, doc_id: str) -> str:
+        """Get the default [A], [B]... label for a document."""
+        return self._default_labels.get(doc_id, self.get_short_label(doc_id))
+
     def get_marker(self, doc_id: str, backend: str = 'matplotlib') -> str:
-        """Get marker shape for a document."""
+        """Get marker shape for a document. Unaffected by custom labels."""
         return self._marker_registry.get_marker(doc_id, backend)
 
     def get_full_display(self, doc_id: str, aliases: Optional[Dict[str, str]] = None) -> str:
@@ -3316,6 +3357,14 @@ class DocumentShortLabelRegistry:
     def get_registered_docs(self) -> List[str]:
         return list(self._registered)
 
+    def get_custom_labels(self) -> Dict[str, str]:
+        """Get all user-defined custom labels."""
+        return self._custom_labels.copy()
+
+    def is_custom(self, doc_id: str) -> bool:
+        """Check if a document has a user-defined custom label."""
+        return doc_id in self._custom_labels
+
 
 def render_short_label_legend(
     ax,
@@ -3323,15 +3372,27 @@ def render_short_label_legend(
     aliases: Optional[Dict[str, str]] = None,
     title: str = "Document Legend",
     loc: str = "upper left",
-    bbox_to_anchor: Tuple[float, float] = (1.02, 1.0),
+    bbox_to_anchor: Tuple[float, float] = (1.15, 1.0),
     ncol: int = 1,
     fontsize: int = 8,
-    padding: float = 1.0,
+    padding: float = 1.2,
     frameon: bool = True,
+    borderpad: float = 1.0,
+    labelspacing: float = 0.6,
+    handletextpad: float = 0.4,
+    handlelength: float = 2.0,
+    columnspacing: float = 1.0,
+    edge_color: str = '#cbd5e1',
+    face_color: str = '#f8fafc',
+    text_color: str = '#1e293b',
+    title_color: str = '#1e40af',
 ) -> None:
     """
     Render a matplotlib legend table mapping [A], [B]... -> marker -> full DOI.
     Replaces long DOI labels with compact short labels + legend table.
+
+    ENHANCED: Configurable distance/padding to prevent overlap with main diagram.
+    Default bbox_to_anchor=(1.15, 1.0) places legend outside plot area with gap.
     """
     from matplotlib.lines import Line2D
 
@@ -3365,26 +3426,44 @@ def render_short_label_legend(
             fontsize=fontsize,
             title_fontsize=fontsize + 1,
             frameon=frameon,
-            borderpad=padding,
-            labelspacing=0.5,
-            handletextpad=0.3,
+            borderpad=borderpad,
+            labelspacing=labelspacing,
+            handletextpad=handletextpad,
+            handlelength=handlelength,
+            columnspacing=columnspacing,
         )
         if leg:
-            leg.get_frame().set_facecolor('#f8fafc')
-            leg.get_frame().set_edgecolor('#cbd5e1')
+            leg.get_frame().set_facecolor(face_color)
+            leg.get_frame().set_edgecolor(edge_color)
             leg.get_frame().set_linewidth(0.8)
+            # Set title color
+            for text in leg.get_texts():
+                text.set_color(text_color)
+            if leg.get_title():
+                leg.get_title().set_color(title_color)
+                leg.get_title().set_fontweight('bold')
 
 
 def create_short_label_legend_html(
     registry: DocumentShortLabelRegistry,
     aliases: Optional[Dict[str, str]] = None,
-    title: str = "Document Legend"
+    title: str = "Document Legend",
+    max_width: str = "520px",
+    margin: str = "16px 0",
+    padding: str = "16px",
+    border_radius: str = "10px",
+    font_size: str = "11px",
+    title_font_size: str = "14px",
+    row_spacing: str = "6px",
 ) -> str:
-    """Create HTML legend table for PyVis/Plotly interactive charts."""
-    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:12px; margin:8px 0; max-width:500px; font-family:system-ui,sans-serif;">']
-    html_parts.append(f'<h4 style="margin:0 0 8px 0; color:#1e293b; font-size:13px;">{title}</h4>')
-    html_parts.append('<table style="width:100%; border-collapse:collapse; font-size:11px;">')
-    html_parts.append('<tr style="color:#64748b; border-bottom:1px solid #e2e8f0;"><th style="text-align:left;padding:4px;">ID</th><th style="text-align:left;padding:4px;">Marker</th><th style="text-align:left;padding:4px;">Publication</th></tr>')
+    """Create HTML legend table for PyVis/Plotly interactive charts.
+
+    ENHANCED: Configurable spacing to prevent overlap with diagrams.
+    """
+    html_parts = [f'<div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:{border_radius}; padding:{padding}; margin:{margin}; max-width:{max_width}; font-family:system-ui,sans-serif; box-shadow:0 2px 8px rgba(0,0,0,0.08);">']
+    html_parts.append(f'<h4 style="margin:0 0 12px 0; color:#1e293b; font-size:{title_font_size}; font-weight:600;">{title}</h4>')
+    html_parts.append(f'<table style="width:100%; border-collapse:collapse; font-size:{font_size};">')
+    html_parts.append(f'<tr style="color:#64748b; border-bottom:2px solid #e2e8f0;"><th style="text-align:left;padding:{row_spacing};">ID</th><th style="text-align:left;padding:{row_spacing};">Marker</th><th style="text-align:left;padding:{row_spacing};">Publication</th></tr>')
 
     for doc_id in registry.get_registered_docs():
         short = registry.get_short_label(doc_id)
@@ -3392,9 +3471,9 @@ def create_short_label_legend_html(
         display = registry.get_full_display(doc_id, aliases)
         uni = _marker_to_unicode(marker)
         html_parts.append(f'<tr style="border-bottom:1px solid #f1f5f9;">')
-        html_parts.append(f'<td style="padding:4px; font-weight:600; color:#1e40af;">{short}</td>')
-        html_parts.append(f'<td style="padding:4px; color:#1e40af; font-size:14px;">{uni}</td>')
-        html_parts.append(f'<td style="padding:4px; color:#334155;">{display}</td>')
+        html_parts.append(f'<td style="padding:{row_spacing}; font-weight:600; color:#1e40af;">{short}</td>')
+        html_parts.append(f'<td style="padding:{row_spacing}; color:#1e40af; font-size:14px;">{uni}</td>')
+        html_parts.append(f'<td style="padding:{row_spacing}; color:#334155;">{display}</td>')
         html_parts.append('</tr>')
 
     html_parts.append('</table></div>')
@@ -3406,10 +3485,17 @@ def create_short_label_legend_html(
 # ============================================================================
 
 def _get_or_create_short_registry(doc_ids: List[str], 
-                                   existing_registry: Optional[DocumentMarkerRegistry] = None
+                                   existing_registry: Optional[DocumentMarkerRegistry] = None,
+                                   custom_labels: Optional[Dict[str, str]] = None
                                    ) -> DocumentShortLabelRegistry:
-    """Helper to get/create a unified short-label registry."""
-    reg = DocumentShortLabelRegistry(existing_registry)
+    """Helper to get/create a unified short-label registry.
+
+    Args:
+        doc_ids: List of document IDs to register
+        existing_registry: Optional existing marker registry
+        custom_labels: Optional dict of user-defined custom labels {doc_id: "CustomLabel"}
+    """
+    reg = DocumentShortLabelRegistry(existing_registry, custom_labels=custom_labels)
     reg.register_documents(doc_ids)
     return reg
 
@@ -3420,17 +3506,26 @@ def render_matplotlib_legend(
     registry: Optional[Any] = None,
     title: str = "Publications",
     loc: str = "upper left",
-    bbox_to_anchor: Tuple[float, float] = (1.02, 1.0),
+    bbox_to_anchor: Tuple[float, float] = (1.18, 1.0),
     ncol: int = 1,
     fontsize: int = 9,
     marker_size: int = 10,
-    padding: float = 1.0,
+    padding: float = 1.2,
     frameon: bool = True,
     shadow: bool = False,
+    borderpad: float = 1.0,
+    labelspacing: float = 0.6,
+    handletextpad: float = 0.4,
+    handlelength: float = 2.0,
+    edge_color: str = '#cbd5e1',
+    face_color: str = '#f8fafc',
 ) -> None:
     """
     Render a matplotlib legend showing document-to-marker assignments.
     Uses Unicode symbols in legend text for maximum compatibility.
+
+    ENHANCED: Default bbox_to_anchor=(1.18, 1.0) ensures legend is placed
+    outside plot area with sufficient gap to prevent overlap.
     """
     if registry is None:
         registry = DocumentMarkerRegistry()
@@ -3468,13 +3563,14 @@ def render_matplotlib_legend(
             title_fontsize=fontsize + 1,
             frameon=frameon,
             shadow=shadow,
-            borderpad=padding,
-            labelspacing=0.6,
-            handletextpad=0.4,
+            borderpad=borderpad,
+            labelspacing=labelspacing,
+            handletextpad=handletextpad,
+            handlelength=handlelength,
         )
         if leg:
-            leg.get_frame().set_facecolor('#f8fafc')
-            leg.get_frame().set_edgecolor('#cbd5e1')
+            leg.get_frame().set_facecolor(face_color)
+            leg.get_frame().set_edgecolor(edge_color)
             leg.get_frame().set_linewidth(0.8)
 
 @dataclass
@@ -3511,6 +3607,20 @@ class VisConfig:
     default_colormap: str = "viridis"
     label_style: str = "doi"
     aliases: Optional[Dict[str, str]] = None
+    # Advanced Style Controls - additional parameters
+    legend_bbox_x: float = 1.18  # Legend horizontal offset
+    legend_bbox_y: float = 1.0   # Legend vertical offset
+    legend_borderpad: float = 1.0
+    legend_labelspacing: float = 0.6
+    legend_handletextpad: float = 0.4
+    legend_handlelength: float = 2.0
+    legend_fontsize: int = 8
+    legend_frameon: bool = True
+    legend_edge_color: str = '#cbd5e1'
+    legend_face_color: str = '#f8fafc'
+    sankey_right_margin: int = 320
+    sankey_width: int = 1200
+    custom_doc_labels: Optional[Dict[str, str]] = None  # User-defined custom labels
 
 # =============================================================================
 # PUBLICATION VISUALIZATION ENGINE (EXPANDED)
@@ -3532,16 +3642,56 @@ class PublicationVisualizationEngine:
         "phase_stability": "#10b981", "stacking_fault_energy": "#a855f7", "sauter_mean_diameter": "#f97316"
     }
     COLORMAP_OPTIONS = {
+        # Sequential colormaps
         "viridis": "viridis", "plasma": "plasma", "inferno": "inferno", "magma": "magma",
         "cividis": "cividis", "Blues": "Blues", "Greens": "Greens", "Oranges": "Oranges",
-        "Reds": "Reds", "RdBu": "RdBu", "Spectral": "Spectral", "coolwarm": "coolwarm",
-        "Set1": "Set1", "Set2": "Set2", "Set3": "Set3", "tab10": "tab10", "tab20": "tab20"
+        "Reds": "Reds", "Purples": "Purples", "Greys": "Greys", "YlOrBr": "YlOrBr",
+        "YlOrRd": "YlOrRd", "YlGnBu": "YlGnBu", "YlGn": "YlGn",
+        "PuBuGn": "PuBuGn", "PuBu": "PuBu", "PuRd": "PuRd", "GnBu": "GnBu",
+        "BuGn": "BuGn", "BuPu": "BuPu", "RdPu": "RdPu", "OrRd": "OrRd",
+        # Diverging colormaps
+        "RdBu": "RdBu", "Spectral": "Spectral", "coolwarm": "coolwarm", "seismic": "seismic",
+        "bwr": "bwr", "RdYlBu": "RdYlBu", "RdYlGn": "RdYlGn", "PiYG": "PiYG",
+        "PRGn": "PRGn", "BrBG": "BrBG", "RdGy": "RdGy",
+        # Qualitative colormaps
+        "Set1": "Set1", "Set2": "Set2", "Set3": "Set3", "tab10": "tab10", "tab20": "tab20",
+        "tab20b": "tab20b", "tab20c": "tab20c", "Pastel1": "Pastel1", "Pastel2": "Pastel2",
+        "Paired": "Paired", "Accent": "Accent", "Dark2": "Dark2",
+        # Perceptually uniform sequential
+        "twilight": "twilight", "twilight_shifted": "twilight_shifted", "hsv": "hsv",
+        # Scientific/Engineering
+        "jet": "jet", "rainbow": "rainbow", "turbo": "turbo", "nipy_spectral": "nipy_spectral",
+        "gist_ncar": "gist_ncar", "gist_rainbow": "gist_rainbow", "gist_earth": "gist_earth",
+        "terrain": "terrain", "ocean": "ocean", "gnuplot": "gnuplot", "gnuplot2": "gnuplot2",
+        "CMRmap": "CMRmap", "cubehelix": "cubehelix", "brg": "brg", "gist_stern": "gist_stern",
+        # Plotly-specific scales
+        "plotly_aggrnyl": "aggrnyl", "plotly_agsunset": "agsunset", "plotly_blackbody": "blackbody",
+        "plotly_bluered": "bluered", "plotly_blugrn": "blugrn", "plotly_bluyl": "bluyl",
+        "plotly_brwnyl": "brwnyl", "plotly_bugn": "bugn", "plotly_bupu": "bupu",
+        "plotly_burg": "burg", "plotly_burgyl": "burgyl", "plotly_darkmint": "darkmint",
+        "plotly_electric": "electric", "plotly_emrld": "emrld", "plotly_gnbu": "gnbu",
+        "plotly_haline": "haline", "plotly_ice": "ice", "plotly_matter": "matter",
+        "plotly_mint": "mint", "plotly_orrd": "orrd", "plotly_oryel": "oryel",
+        "plotly_peach": "peach", "plotly_pinkyl": "pinkyl", "plotly_plotly3": "plotly3",
+        "plotly_pubu": "pubu", "plotly_pubugn": "pubugn", "plotly_purd": "purd",
+        "plotly_purp": "purp", "plotly_purpor": "purpor", "plotly_solar": "solar",
+        "plotly_speed": "speed", "plotly_sunset": "sunset", "plotly_sunsetdark": "sunsetdark",
+        "plotly_teal": "teal", "plotly_tealgrn": "tealgrn", "plotly_tempo": "tempo",
+        "plotly_temps": "temps", "plotly_thermal": "thermal", "plotly_turbid": "turbid",
+        "plotly_deep": "deep", "plotly_dense": "dense", "plotly_gray": "gray",
+        "plotly_algae": "algae", "plotly_amp": "amp", "plotly_balance": "balance",
+        "plotly_curl": "curl", "plotly_delta": "delta", "plotly_edge": "edge",
+        "plotly_phase": "phase", "plotly_icefire": "icefire", "plotly_mrybm": "mrybm",
+        "plotly_mygbm": "mygbm", "plotly_fall": "fall", "plotly_geyser": "geyser",
+        "plotly_picnic": "picnic", "plotly_portland": "portland", "plotly_armyrose": "armyrose",
+        "plotly_tealrose": "tealrose", "plotly_tropic": "tropic"
     }
 
     def __init__(self, kgraph: QuantitativeKnowledgeGraph, config: Optional[VisConfig] = None):
         self.kgraph = kgraph
         self.cfg = config or VisConfig()
         self.marker_registry = DocumentMarkerRegistry()
+        # Apply ALL Advanced Style Controls globally
         plt.rcParams['font.family'] = self.cfg.font_family
         plt.rcParams['font.size'] = self.cfg.font_size
         plt.rcParams['axes.titlesize'] = self.cfg.title_font_size
@@ -3549,6 +3699,18 @@ class PublicationVisualizationEngine:
         plt.rcParams['figure.dpi'] = self.cfg.figure_dpi
         plt.rcParams['savefig.dpi'] = self.cfg.figure_dpi
         plt.rcParams['lines.linewidth'] = self.cfg.line_width
+        # Additional style controls
+        plt.rcParams['axes.linewidth'] = self.cfg.edge_width
+        plt.rcParams['grid.linewidth'] = self.cfg.edge_width * 0.5
+        plt.rcParams['xtick.major.width'] = self.cfg.edge_width
+        plt.rcParams['ytick.major.width'] = self.cfg.edge_width
+        plt.rcParams['legend.frameon'] = self.cfg.legend_frameon
+        plt.rcParams['legend.edgecolor'] = self.cfg.legend_edge_color
+        plt.rcParams['legend.facecolor'] = self.cfg.legend_face_color
+        plt.rcParams['legend.borderpad'] = self.cfg.legend_borderpad
+        plt.rcParams['legend.labelspacing'] = self.cfg.legend_labelspacing
+        plt.rcParams['legend.handletextpad'] = self.cfg.legend_handletextpad
+        plt.rcParams['legend.handlelength'] = self.cfg.legend_handlelength
 
     @property
     def font_family(self): return self.cfg.font_family
@@ -3572,11 +3734,36 @@ class PublicationVisualizationEngine:
 
     def _get_plotly_colorscale(self, name: Optional[str] = None) -> str:
         name = name or self.default_colormap
-        mapping = {"coolwarm": "RdBu", "RdBu": "RdBu", "seismic": "RdBu", "bwr": "RdBu"}
-        plotly_builtins = ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'blues', 'greens', 'oranges', 'reds']
+        # Matplotlib -> Plotly mapping for diverging/perceptually uniform
+        mapping = {
+            "coolwarm": "RdBu", "RdBu": "RdBu", "seismic": "RdBu", "bwr": "RdBu",
+            "Spectral": "spectral", "RdYlBu": "RdYlBu", "RdYlGn": "RdYlGn",
+            "PiYG": "PiYG", "PRGn": "PRGn", "BrBG": "BrBG", "RdGy": "RdGy",
+            "jet": "jet", "rainbow": "rainbow", "turbo": "turbo",
+            "nipy_spectral": "nipy_spectral", "gist_ncar": "gist_ncar",
+            "gist_rainbow": "gist_rainbow", "gist_earth": "gist_earth",
+            "terrain": "terrain", "ocean": "ocean", "gnuplot": "gnuplot",
+            "gnuplot2": "gnuplot2", "CMRmap": "CMRmap", "cubehelix": "cubehelix",
+            "brg": "brg", "gist_stern": "gist_stern", "twilight": "twilight",
+            "twilight_shifted": "twilight_shifted", "hsv": "hsv"
+        }
+        # Plotly native scales (plotly_ prefix)
+        if name.startswith("plotly_"):
+            return name.replace("plotly_", "")
+        # Standard plotly built-ins (lowercase)
+        plotly_builtins = [
+            'viridis', 'plasma', 'inferno', 'magma', 'cividis',
+            'blues', 'greens', 'oranges', 'reds', 'purples', 'greys',
+            'ylorbr', 'ylorrd', 'ylgnbu', 'ylgn', 'pubugn', 'pubu',
+            'purd', 'gnbu', 'bugn', 'bupu', 'rdpu', 'orrd'
+        ]
         lowered = name.lower()
         if lowered in plotly_builtins: return lowered
-        return mapping.get(lowered, 'viridis')
+        # Check mapping
+        if name in mapping: return mapping[name]
+        if lowered in mapping: return mapping[lowered]
+        # Default fallback
+        return 'viridis' 
 
     def extract_dataframe(self, aliases: Optional[Dict[str, str]] = None, label_style: str = "doi") -> pd.DataFrame:
         rows = []
@@ -3642,7 +3829,7 @@ class PublicationVisualizationEngine:
 
         # v17.3 FIX: Use short label registry for all document labels
         all_docs = list(query_ctx.relevant_doc_ids)
-        short_reg = _get_or_create_short_registry(all_docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(all_docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         for doc_id in query_ctx.relevant_doc_ids:
             short_label = short_reg.get_short_label(doc_id)
@@ -3701,11 +3888,18 @@ class PublicationVisualizationEngine:
         nx.draw_networkx_labels(G, pos, labels, font_size=9, font_family=self.font_family, ax=ax, font_weight='bold')
 
         # v17.3 FIX: Add short-label legend with full DOI mapping
+        # ENHANCED: Increased bbox_to_anchor x-offset to prevent overlap
         render_short_label_legend(
             ax, short_reg, self.cfg.aliases,
             title="Documents", loc="upper left",
-            bbox_to_anchor=(1.02, 1.0), ncol=1, fontsize=8,
-            padding=1.3
+            bbox_to_anchor=(self.cfg.legend_bbox_x, self.cfg.legend_bbox_y), 
+            ncol=1, fontsize=self.cfg.legend_fontsize,
+            padding=1.2, borderpad=self.cfg.legend_borderpad, 
+            labelspacing=self.cfg.legend_labelspacing,
+            handletextpad=self.cfg.legend_handletextpad, 
+            handlelength=self.cfg.legend_handlelength,
+            edge_color=self.cfg.legend_edge_color,
+            face_color=self.cfg.legend_face_color
         )
 
         ax.set_title(f"Query-Focused Knowledge Graph\n{query_ctx.query[:70]}...", fontsize=15, fontweight='bold', pad=20)
@@ -3720,7 +3914,7 @@ class PublicationVisualizationEngine:
 
         # v17.3 FIX: Use short labels [A], [B]... for all document nodes
         all_docs = list(query_ctx.relevant_doc_ids)
-        short_reg = _get_or_create_short_registry(all_docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(all_docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         net = Network(height="780px", width="100%", bgcolor="#ffffff", font_color="#1e293b", cdn_resources='remote')
         net.barnes_hut(gravity=-2800, spring_length=140, damping=0.92)
@@ -3770,7 +3964,13 @@ class PublicationVisualizationEngine:
         html = net.generate_html()
 
         # v17.3 FIX: Inject short-label legend table instead of marker-only legend
-        legend_html = create_short_label_legend_html(short_reg, self.cfg.aliases, "Document Legend")
+        legend_html = create_short_label_legend_html(
+            short_reg, self.cfg.aliases, "Document Legend",
+            max_width="520px", margin="20px 0 0 0", padding="16px",
+            border_radius="10px", font_size=f"{self.cfg.legend_fontsize}px",
+            title_font_size=f"{self.cfg.legend_fontsize + 3}px",
+            row_spacing="6px"
+        )
         if "</body>" in html:
             html = html.replace("</body>", legend_html + "</body>")
         else:
@@ -3975,7 +4175,7 @@ class PublicationVisualizationEngine:
 
         # v17.3 FIX: Use short labels for documents
         docs = list(merged["doc_stem"].unique())
-        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         fig = go.Figure()
 
@@ -4043,7 +4243,7 @@ class PublicationVisualizationEngine:
 
         # v17.3 FIX: Use short labels for documents
         docs = pivot.index.tolist()
-        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         fig = go.Figure()
         cmap = plt.get_cmap(self._get_colormap(colormap))
@@ -4178,7 +4378,7 @@ class PublicationVisualizationEngine:
         docs = list(self.kgraph.doc_graphs.keys())
 
         # v17.3 FIX: Use short label registry
-        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         for doc_id in docs:
             short_label = short_reg.get_short_label(doc_id)
@@ -4235,11 +4435,18 @@ class PublicationVisualizationEngine:
             nx.draw_networkx_labels(G, pos, font_size=self.label_font_size, ax=ax, font_family=self.font_family, font_weight='bold')
 
         # v17.3 FIX: Add short-label legend with full DOI mapping
+        # ENHANCED: Increased bbox_to_anchor x-offset to prevent overlap
         render_short_label_legend(
             ax, short_reg, aliases,
             title="Documents", loc="upper left",
-            bbox_to_anchor=(1.02, 1.0), ncol=1, fontsize=8,
-            padding=1.2
+            bbox_to_anchor=(self.cfg.legend_bbox_x, self.cfg.legend_bbox_y), 
+            ncol=1, fontsize=self.cfg.legend_fontsize,
+            padding=1.2, borderpad=self.cfg.legend_borderpad, 
+            labelspacing=self.cfg.legend_labelspacing,
+            handletextpad=self.cfg.legend_handletextpad, 
+            handlelength=self.cfg.legend_handlelength,
+            edge_color=self.cfg.legend_edge_color,
+            face_color=self.cfg.legend_face_color
         )
 
         # Add domain color legend
@@ -4263,7 +4470,7 @@ class PublicationVisualizationEngine:
 
         # v17.3 FIX: Use short label registry for all document nodes
         docs = list(self.kgraph.doc_graphs.keys())
-        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         G = nx.Graph()
         for doc in docs:
@@ -4317,7 +4524,13 @@ class PublicationVisualizationEngine:
         html = net.generate_html()
 
         # v17.3 FIX: Inject short-label legend table
-        legend_html = create_short_label_legend_html(short_reg, aliases, "Document Legend")
+        legend_html = create_short_label_legend_html(
+            short_reg, aliases, "Document Legend",
+            max_width="520px", margin="20px 0 0 0", padding="16px",
+            border_radius="10px", font_size=f"{self.cfg.legend_fontsize}px",
+            title_font_size=f"{self.cfg.legend_fontsize + 3}px",
+            row_spacing="6px"
+        )
         if "</body>" in html:
             html = html.replace("</body>", legend_html + "</body>")
         else:
@@ -4556,7 +4769,7 @@ class PublicationVisualizationEngine:
 
         # v17.3 FIX: Use short labels for documents
         docs = list(df_top["doc_stem"].unique())
-        short_reg = _get_or_create_short_registry(docs, self.marker_registry)
+        short_reg = _get_or_create_short_registry(docs, self.marker_registry, custom_labels=self.cfg.custom_doc_labels)
 
         fig = go.Figure()
 
@@ -4760,8 +4973,8 @@ class PublicationVisualizationEngine:
             paper_bgcolor="white", 
             plot_bgcolor="white",
             height=650, 
-            width=1100,
-            margin=dict(l=40, r=250, t=80, b=40),  # v17.3 FIX: Increased right margin for legend
+            width=self.cfg.sankey_width,  # ENHANCED: Configurable width
+            margin=dict(l=40, r=self.cfg.sankey_right_margin, t=80, b=40),  # ENHANCED: Configurable right margin
             annotations=annotations
         )
         return fig
@@ -4905,19 +5118,67 @@ def render_sidebar():
         st.selectbox("Document label style", ["doi", "number", "alias", "short"], index=0, key="viz_label_style")
         st.slider("Top N concepts", 5, 100, 25, key="viz_top_n")
         st.multiselect("Filter domains", options=["laser_power","scan_speed","yield_strength","tensile_strength","hardness","temperature","energy_density","lewis_number","jackson_parameter","phase_field_method","molecular_dynamics","pinn","unet","convlstm","calphad","digital_twin","xai","uncertainty_quantification"], default=["laser_power","scan_speed","yield_strength"], key="viz_domains")
+
+        # Custom Document Labels Section
+        with st.expander("Custom Document Labels", expanded=False):
+            st.markdown("Override default [A], [B]... labels with custom names. Marker shapes remain unchanged.")
+            if "custom_doc_labels" not in st.session_state:
+                st.session_state.custom_doc_labels = {}
+            if st.session_state.get("knowledge_graph") and st.session_state.knowledge_graph.doc_graphs:
+                doc_list = sorted(list(st.session_state.knowledge_graph.doc_graphs.keys()))
+                for i, doc_id in enumerate(doc_list[:10]):  # Limit to first 10 for UI
+                    cols = st.columns([3, 2])
+                    with cols[0]:
+                        st.caption(f"Doc {i+1}: {Path(doc_id).stem[:30]}...")
+                    with cols[1]:
+                        default_label = f"[{chr(65 + i)}]"
+                        current = st.session_state.custom_doc_labels.get(doc_id, default_label)
+                        new_label = st.text_input(f"Label {i}", value=current, 
+                                                  placeholder=f"e.g. Paper{i+1}", 
+                                                  label_visibility="collapsed",
+                                                  key=f"custom_label_{doc_id}")
+                        if new_label and new_label != default_label:
+                            st.session_state.custom_doc_labels[doc_id] = new_label
+                        elif doc_id in st.session_state.custom_doc_labels and new_label == default_label:
+                            del st.session_state.custom_doc_labels[doc_id]
+                if st.button("Reset All Labels"):
+                    st.session_state.custom_doc_labels = {}
+                    st.rerun()
+            else:
+                st.info("Upload and index documents to customize labels.")
+
         with st.expander("Advanced Style Controls", expanded=False):
+            st.markdown("**Typography**")
             st.slider("Base font size", 6, 40, 10, key="viz_font_size")
             st.slider("Title font size", 8, 60, 14, key="viz_title_font_size")
             st.slider("Label font size", 6, 36, 9, key="viz_label_font_size")
             st.slider("Figure DPI", 100, 1200, 300, 50, key="viz_figure_dpi")
+
+            st.markdown("**Network/Graph**")
             st.slider("Node size factor", 0.1, 6.0, 1.0, 0.1, key="viz_node_size_factor")
             st.slider("Edge alpha", 0.05, 2.0, 0.25, 0.05, key="viz_edge_alpha")
             st.slider("Edge width", 0.1, 10.0, 0.8, 0.1, key="viz_edge_width")
             st.slider("Line width", 0.5, 10.0, 1.5, 0.5, key="viz_line_width")
             st.slider("Marker size", 20, 400, 80, 10, key="viz_marker_size")
+
+            st.markdown("**Legend Spacing**")
+            st.slider("Legend horizontal offset", 1.0, 2.0, 1.18, 0.02, key="viz_legend_bbox_x")
+            st.slider("Legend vertical offset", 0.0, 1.5, 1.0, 0.05, key="viz_legend_bbox_y")
+            st.slider("Legend border padding", 0.5, 3.0, 1.0, 0.1, key="viz_legend_borderpad")
+            st.slider("Legend label spacing", 0.2, 2.0, 0.6, 0.1, key="viz_legend_labelspacing")
+            st.slider("Legend handle text pad", 0.1, 2.0, 0.4, 0.1, key="viz_legend_handletextpad")
+            st.slider("Legend handle length", 1.0, 4.0, 2.0, 0.1, key="viz_legend_handlelength")
+            st.slider("Legend font size", 6, 16, 8, 1, key="viz_legend_fontsize")
+
+            st.markdown("**PyVis Physics**")
             st.checkbox("PyVis physics enabled", value=True, key="viz_pyvis_physics")
             st.slider("PyVis gravity", -10000, -100, -1800, 100, key="viz_pyvis_gravity")
             st.slider("PyVis spring length", 50, 600, 140, 10, key="viz_pyvis_spring_length")
+
+            st.markdown("**Sankey/Flow**")
+            st.slider("Sankey right margin", 150, 500, 320, 10, key="viz_sankey_right_margin")
+            st.slider("Sankey width", 800, 1600, 1200, 50, key="viz_sankey_width")
+
             st.caption(f"GPU: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
             if st.button("Clear Cache & Reset", use_container_width=True):
                 for key in list(st.session_state.keys()):
@@ -5356,6 +5617,22 @@ def run_streamlit():
                 pyvis_physics_enabled=st.session_state.get("viz_pyvis_physics", True),
                 pyvis_gravity=st.session_state.get("viz_pyvis_gravity", -1800),
                 pyvis_spring_length=st.session_state.get("viz_pyvis_spring_length", 140),
+                # Advanced Style Controls - Legend spacing
+                legend_bbox_x=st.session_state.get("viz_legend_bbox_x", 1.18),
+                legend_bbox_y=st.session_state.get("viz_legend_bbox_y", 1.0),
+                legend_borderpad=st.session_state.get("viz_legend_borderpad", 1.0),
+                legend_labelspacing=st.session_state.get("viz_legend_labelspacing", 0.6),
+                legend_handletextpad=st.session_state.get("viz_legend_handletextpad", 0.4),
+                legend_handlelength=st.session_state.get("viz_legend_handlelength", 2.0),
+                legend_fontsize=st.session_state.get("viz_legend_fontsize", 8),
+                legend_frameon=True,
+                legend_edge_color='#cbd5e1',
+                legend_face_color='#f8fafc',
+                # Sankey/Flow
+                sankey_right_margin=st.session_state.get("viz_sankey_right_margin", 320),
+                sankey_width=st.session_state.get("viz_sankey_width", 1200),
+                # Custom labels
+                custom_doc_labels=st.session_state.get("custom_doc_labels", None),
                 aliases=aliases,
                 label_style=label_style
             )

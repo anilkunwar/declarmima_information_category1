@@ -1,4 +1,4 @@
-# Information fusion for unraveling laser-microstructure information
+# Information fusion for unraveling laser-microstructure interaction
 
 ![Image of LAMAMI Concept Graph](images/concept-graph26.png)
 

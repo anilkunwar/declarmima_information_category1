@@ -5,7 +5,7 @@
 
 # LLM Names:
 
-Model A: Falcon 10B
+Model A: Falcon3 10B
 
 Model B: Mistral 7B
 

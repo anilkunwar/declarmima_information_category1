@@ -9,6 +9,8 @@
 
 [![meaningtowords](https://img.shields.io/badge/physicalquantities-v3.0-violet)](https://physical-quantities-retrieval-performance3.streamlit.app/) (Comparison among different LLM models, Figure Customization)
 
+[![meaningtowords](https://img.shields.io/badge/physicalquantities-v4.0-violet)](https://physical-quantities-retrieval-performance4.streamlit.app/) (Comparison among different LLM models, Figure Customization and Enhancement)
+
 # LLM Names:
 
 Model A: Falcon3 10B

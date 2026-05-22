@@ -206,6 +206,16 @@ with st.sidebar:
         exclude_unknown = st.checkbox("Exclude \"unknown\" terms", value=True, key="excl_unknown")
         custom_exclude = st.text_input("Exclude terms (comma-separated)", "", key="custom_excl",
                                      help="e.g. unknown, time, duration")
+
+        # -- X-Axis Label Renaming --
+        st.markdown("<div class=\"section-title\">🏷️ X-Axis Label Renaming</div>", unsafe_allow_html=True)
+        enable_rename = st.checkbox("Enable custom term labels", value=False, key="enbl_rn")
+        rename_map = st.text_area("Term → Label map (one per line)", 
+                                  "laser_power → Laser Power\ncurrent_density → Current Density\nlewis_number → Lewis Number",
+                                  height=120, key="rn_map",
+                                  help="Format: original_term → Display Label")
+        xlabel_rotation = st.slider("X-label rotation", 0, 90, 40, key="xlrot")
+        xlabel_ha = st.selectbox("X-label horizontal align", ["right", "center", "left"], index=0, key="xlha")
         
         # -- Figure Dimensions --
         st.markdown('<div class="section-title">📐 Figure Dimensions</div>', unsafe_allow_html=True)
@@ -225,6 +235,17 @@ with st.sidebar:
         xlabel_font = st.slider("X-axis label size", 6, 40, 16, key="xlf")
         ylabel_font = st.slider("Y-axis label size", 6, 40, 16, key="ylf")
         xtick_font = st.slider("X-tick label size", 5, 32, 11, key="xtf")
+        
+        # -- X-Axis Label Editor --
+        st.markdown("<div class=\"section-title\">✏️ X-Axis Label Editor</div>", unsafe_allow_html=True)
+        st.markdown("<small>Enter custom labels as JSON: {\"original\": \"replacement\"}</small>", unsafe_allow_html=True)
+        label_editor_json = st.text_area("Custom label map (JSON)",
+            '{"laser_power": "Laser Power (W)", "current_density": "Current Density (A/m²)", "lewis_number": "Le"}',
+            height=80, key="lej")
+        use_custom_labels = st.checkbox("Use custom labels", value=False, key="ucl")
+        xlabel_case = st.selectbox("Label case transformation",
+            ["Title Case (default)", "UPPERCASE", "lowercase", "Sentence case", "Keep original"], index=0, key="xlc")
+        xlabel_underscore = st.checkbox("Replace underscores with spaces", value=True, key="xlu")
         ytick_font = st.slider("Y-tick label size", 5, 32, 11, key="ytf")
         ynum_font = st.slider("Y-axis number size", 5, 32, 11, key="ynf")
         title_font = st.slider("Title size", 8, 48, 18, key="tf")
@@ -258,6 +279,17 @@ with st.sidebar:
         show_cat_bg = st.checkbox("Show category backgrounds", value=True, key="scb")
         cat_bg_alpha = st.slider("Background alpha", 0.0, 1.0, 0.45, 0.05, key="cba")
         cat_label_contrast = st.checkbox("Auto-adjust category label color", value=True, key="clc")
+        
+        # -- Category Label Layout --
+        st.markdown("<div class=\"section-title\">📝 Category Label Layout</div>", unsafe_allow_html=True)
+        cat_label_layout = st.selectbox("Label layout",
+            ["Single horizontal line", "Two horizontal lines", "Vertical (90°)"], index=0, key="cll")
+        cat_label_rotation = st.slider("Label rotation (°)", 0, 90, 0, 5, key="clr")
+        cat_label_yoffset = st.slider("Label Y offset", 0.80, 1.10, 0.97, 0.01, key="clyo")
+        cat_label_fontstyle = st.selectbox("Label font style",
+            ["italic", "normal", "oblique"], index=0, key="clfs")
+        cat_label_weight = st.selectbox("Label font weight",
+            ["bold", "normal", "heavy", "light"], index=0, key="clfw")
         
         # -- Spines & Box --
         st.markdown('<div class="section-title">📦 Figure Box</div>', unsafe_allow_html=True)
@@ -439,8 +471,33 @@ if show_figB and len(main_models) >= 2:
         values_b = {m: [] for m in main_models}
         label_cats = []
         
+        # Parse custom label map
+        custom_label_map = {}
+        if use_custom_labels and label_editor_json.strip():
+            try:
+                import json
+                custom_label_map = json.loads(label_editor_json)
+            except:
+                st.warning("Invalid JSON in custom label map. Using defaults.")
+
         for cat, term, vals, _ in term_info:
-            labels.append(term.replace("_", " ").title())
+            # Apply custom label if provided
+            if term in custom_label_map:
+                display_label = custom_label_map[term]
+            else:
+                # Apply underscore replacement
+                display_label = term.replace("_", " ") if xlabel_underscore else term
+                # Apply case transformation
+                if xlabel_case == "Title Case (default)":
+                    display_label = display_label.title()
+                elif xlabel_case == "UPPERCASE":
+                    display_label = display_label.upper()
+                elif xlabel_case == "lowercase":
+                    display_label = display_label.lower()
+                elif xlabel_case == "Sentence case":
+                    display_label = display_label.capitalize()
+                # else keep original
+            labels.append(display_label)
             label_cats.append(cat)
             for m in main_models:
                 values_b[m].append(vals[m])
@@ -488,30 +545,53 @@ if show_figB and len(main_models) >= 2:
                                  f"{int(val)}", ha="center", va="bottom", 
                                  fontsize=bar_label_size, fontweight="bold")
         
-        # Category labels on top with auto-contrast color
+        # Category labels on top with layout options
         if labels:
             start_idx = 0
             current_cat = label_cats[0]
             ymax = ax_b.get_ylim()[1]
+            y_pos_cat = ymax * cat_label_yoffset
+            y_pos_cat = ymax * cat_label_yoffset
+
             for i in range(1, len(label_cats)):
                 if label_cats[i] != current_cat:
                     mid = (start_idx + i - 1) / 2
                     bg_hex = CATEGORY_COLORS.get(current_cat, "#FFFFFF")
                     text_color = get_contrast_text_color(bg_hex) if cat_label_contrast else "#555555"
-                    ax_b.text(mid, ymax * 0.97, current_cat, ha="center", va="top", 
-                             fontsize=cat_label_font, fontweight="bold", 
-                             style="italic", color=text_color)
+
+                    # Format label based on layout choice
+                    if cat_label_layout == "Single horizontal line":
+                        cat_display = current_cat
+                    elif cat_label_layout == "Two horizontal lines":
+                        cat_display = current_cat.replace(" / ", "\n").replace(" ", "\n")
+                    else:  # Vertical
+                        cat_display = "\n".join(list(current_cat.replace(" / ", "")))
+
+                    ax_b.text(mid, y_pos_cat, cat_display, ha="center", va="top", 
+                             fontsize=cat_label_font, fontweight=cat_label_weight, 
+                             style=cat_label_fontstyle, color=text_color,
+                             rotation=cat_label_rotation)
                     start_idx = i
                     current_cat = label_cats[i]
+
             mid = (start_idx + len(labels) - 1) / 2
             bg_hex = CATEGORY_COLORS.get(current_cat, "#FFFFFF")
             text_color = get_contrast_text_color(bg_hex) if cat_label_contrast else "#555555"
-            ax_b.text(mid, ymax * 0.97, current_cat, ha="center", va="top", 
-                     fontsize=cat_label_font, fontweight="bold", 
-                     style="italic", color=text_color)
+
+            if cat_label_layout == "Single horizontal line":
+                cat_display = current_cat
+            elif cat_label_layout == "Two horizontal lines":
+                cat_display = current_cat.replace(" / ", "\n").replace(" ", "\n")
+            else:  # Vertical
+                cat_display = "\n".join(list(current_cat.replace(" / ", "")))
+
+            ax_b.text(mid, y_pos_cat, cat_display, ha="center", va="top", 
+                     fontsize=cat_label_font, fontweight=cat_label_weight, 
+                     style=cat_label_fontstyle, color=text_color,
+                     rotation=cat_label_rotation)
         
         ax_b.set_xticks(x)
-        ax_b.set_xticklabels(labels, rotation=40, ha="right", fontsize=xtick_font)
+        ax_b.set_xticklabels(labels, rotation=xlabel_rotation, ha=xlabel_ha, fontsize=xtick_font)
         ax_b.set_ylabel("Occurrence Count", fontsize=ylabel_font, fontweight="bold")
         
         # Y-axis number font size

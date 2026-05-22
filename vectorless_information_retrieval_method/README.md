@@ -2,6 +2,8 @@
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.e-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel88e.streamlit.app/) (v88e is v88d with more finetuning on the postprocessing part)
 
+# Physical Quantities 
+[![meaningtowords](https://img.shields.io/badge/physicalquantities-v1.0-violet)](https://physical-quantities-retrieval-performance1.streamlit.app/) (Comparison among different LLM models)
 
 # LLM Names:
 

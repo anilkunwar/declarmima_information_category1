@@ -148,15 +148,20 @@ with st.sidebar:
         dataC = read_uploaded(fC)
         dataRef = read_uploaded(fRef)
     else:
-        dataB = load_csv("physical_quantities_detection_llm_modelB.csv")
-        dataD = load_csv("physical_quantities_detection_llm_modelD.csv")
-        dataC = load_csv("physical_quantities_detection_llm_modelC.csv")
-        dataRef = load_csv("physical_quantities_detection_llm_reference.csv")
+        # Auto-detect from physical_quantities subdirectory
+        SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+        PHYSICAL_QUANTITIES_DIR = os.path.join(SCRIPT_DIR, "physical_quantities")
+        os.makedirs(PHYSICAL_QUANTITIES_DIR, exist_ok=True)
+        
+        dataB = load_csv(os.path.join(PHYSICAL_QUANTITIES_DIR, "physical_quantities_detection_llm_modelB.csv"))
+        dataD = load_csv(os.path.join(PHYSICAL_QUANTITIES_DIR, "physical_quantities_detection_llm_modelD.csv"))
+        dataC = load_csv(os.path.join(PHYSICAL_QUANTITIES_DIR, "physical_quantities_detection_llm_modelC.csv"))
+        dataRef = load_csv(os.path.join(PHYSICAL_QUANTITIES_DIR, "physical_quantities_detection_llm_reference.csv"))
         
         st.markdown("---")
         st.markdown("**Expected filenames:**")
-        st.code("physical_quantities_detection_llm_modelB.csv\nphysical_quantities_detection_llm_modelD.csv\nphysical_quantities_detection_llm_modelC.csv")
-        st.markdown("*Optional:* `physical_quantities_detection_llm_reference.csv`")
+        st.code("physical_quantities/\n  physical_quantities_detection_llm_modelB.csv\n  physical_quantities_detection_llm_modelD.csv\n  physical_quantities_detection_llm_modelC.csv")
+        st.markdown("*Optional:* `physical_quantities/physical_quantities_detection_llm_reference.csv`")
     
     st.markdown("---")
     st.markdown("## ⚙️ View Options")

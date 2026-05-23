@@ -66,7 +66,6 @@ st.markdown("""
     .caption { font-size: 0.9rem; color: #666; font-style: italic; margin-bottom: 1rem; }
     .control-section { background: linear-gradient(180deg, #f5f7fa 0%, #eef1f5 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem; border: 1px solid #dde2e8; }
     .section-title { font-size: 1.1rem; font-weight: 700; color: #2c3e50; margin-bottom: 0.8rem; border-bottom: 2px solid #3498db; padding-bottom: 0.3rem; }
-    .doi-legend { font-family: 'Courier New', monospace; font-size: 0.82rem; color: #2c3e50; background: #f8f9fa; padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid #dde2e8; margin-bottom: 0.25rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -403,13 +402,20 @@ def draw_bipartite_chord(paper_counts, material_counts, connections,
     return fig
 
 # ------------------------------------------------------------------
-# SANKEY (Plotly)
+# SANKEY (CORRECTED — rgba instead of 8-digit hex)
 # ------------------------------------------------------------------
+def hex_to_rgba(hex_color, alpha=0.25):
+    hex_color = hex_color.lstrip('#')
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
 def draw_sankey(paper_materials, model_name, model_color):
     if not HAS_PLOTLY:
         return None
     papers = list(paper_materials.keys())
     materials = sorted({m for mats in paper_materials.values() for m in mats})
+    if not papers or not materials:
+        return None
     node_labels = [get_alias(p) for p in papers] + materials
     node_colors = [model_color] * len(papers) + ['#2C3E50'] * len(materials)
 
@@ -425,7 +431,7 @@ def draw_sankey(paper_materials, model_name, model_color):
         node=dict(label=node_labels, color=node_colors, pad=18, thickness=22,
                   line=dict(color='black', width=0.6)),
         link=dict(source=sources, target=targets, value=values,
-                  color=[c + '40' for c in link_colors])
+                  color=[hex_to_rgba(c, 0.25) for c in link_colors])
     )])
     fig.update_layout(
         title_text=f"{model_name} — Paper → Material Flow",
@@ -487,6 +493,8 @@ def draw_pyvis_network(all_models_data):
 def draw_heatmap(all_models_data):
     all_papers = sorted({d for data in all_models_data.values() for d in data})
     all_materials = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
+    if not all_papers or not all_materials:
+        return None
 
     matrix = np.zeros((len(all_papers), len(all_materials)))
     for data in all_models_data.values():
@@ -523,7 +531,7 @@ def draw_heatmap(all_models_data):
     return fig
 
 # ------------------------------------------------------------------
-# CIRCOS RADIAL HISTOGRAM (NEW)
+# CIRCOS RADIAL HISTOGRAM
 # ------------------------------------------------------------------
 def draw_circos_radial(all_models_data, figsize=(14, 14), inner_r=1.0,
                        track_h=0.5, gap_deg=2.0, fs=9, show_labels=True,
@@ -555,13 +563,11 @@ def draw_circos_radial(all_models_data, figsize=(14, 14), inner_r=1.0,
         sec = (len(mats) / n_mats) * avail
         mid = theta_cursor + sec / 2
 
-        # Background taxonomy sector
         ax.bar(mid, inner_r + len(MODEL_META) * track_h + 0.35,
                width=sec, bottom=0,
                color=CATEGORY_COLORS.get(cat, '#FFFFFF'), alpha=0.18,
                edgecolor='none', zorder=0)
 
-        # Category label
         rot_deg = np.degrees(mid)
         ax.text(mid, inner_r + len(MODEL_META) * track_h + 0.45,
                 cat.replace(' / ', '/\n'), ha='center', va='center',
@@ -605,7 +611,7 @@ def draw_circos_radial(all_models_data, figsize=(14, 14), inner_r=1.0,
     return fig
 
 # ------------------------------------------------------------------
-# 3D UMAP CLUSTERING (NEW)
+# 3D UMAP CLUSTERING
 # ------------------------------------------------------------------
 def build_umap_features(all_models_data):
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
@@ -677,7 +683,7 @@ def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean
     return fig, None
 
 # ------------------------------------------------------------------
-# ANIMATED TRANSITIONS (NEW)
+# ANIMATED TRANSITIONS
 # ------------------------------------------------------------------
 def build_animation_data(all_models_data):
     rows = []
@@ -948,6 +954,8 @@ if show_sankey:
                 fig = draw_sankey(raw_data[key], meta['name'], meta['color'])
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info(f"No data for {meta['short']} Sankey.")
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -976,16 +984,19 @@ if show_heatmap:
         st.markdown("### Model Agreement Heatmap")
         st.markdown("<div class='caption'>Cell value = number of models extracting that material for that DOI. Darker = higher agreement.</div>", unsafe_allow_html=True)
         fig_h = draw_heatmap(raw_data)
-        st.pyplot(fig_h)
-        buf = BytesIO()
-        fig_h.savefig(buf, format="png", dpi=download_dpi, bbox_inches='tight', facecolor='white')
-        st.download_button("⬇️ Download Heatmap PNG", buf.getvalue(),
-                           "agreement_heatmap.png", "image/png")
-        plt.close(fig_h)
+        if fig_h:
+            st.pyplot(fig_h)
+            buf = BytesIO()
+            fig_h.savefig(buf, format="png", dpi=download_dpi, bbox_inches='tight', facecolor='white')
+            st.download_button("⬇️ Download Heatmap PNG", buf.getvalue(),
+                               "agreement_heatmap.png", "image/png")
+            plt.close(fig_h)
+        else:
+            st.info("Not enough data for heatmap.")
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 5: CIRCOS (NEW)
+# TAB 5: CIRCOS
 # ------------------------------------------------------------------
 if show_circos:
     with tabs[t_idx]:
@@ -1008,7 +1019,7 @@ if show_circos:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 6: 3D UMAP (NEW)
+# TAB 6: 3D UMAP
 # ------------------------------------------------------------------
 if show_umap:
     with tabs[t_idx]:
@@ -1023,14 +1034,13 @@ if show_umap:
                 st.error(err)
             elif fig_umap:
                 st.plotly_chart(fig_umap, use_container_width=True)
-                # Export HTML
                 html_str = fig_umap.to_html(include_plotlyjs='cdn')
                 st.download_button("⬇️ Download UMAP HTML", html_str.encode('utf-8'),
                                    "umap_3d.html", "text/html")
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 7: ANIMATION (NEW)
+# TAB 7: ANIMATION
 # ------------------------------------------------------------------
 if show_animation:
     with tabs[t_idx]:
@@ -1042,28 +1052,38 @@ if show_animation:
             cat_color_map = {k: CATEGORY_COLORS.get(k, '#cccccc') for k in list(TAXONOMY.keys()) + ['Other']}
             if anim_type == "Model Sweep":
                 df_anim = build_animation_data(raw_data)
-                fig_anim = px.scatter(df_anim, x='Material', y='Count', animation_frame='Frame',
-                                      color='Category', size='Count',
-                                      color_discrete_map=cat_color_map,
-                                      range_y=[0, df_anim['Count'].max() * 1.15],
-                                      title='Model Extraction Landscape',
-                                      height=650)
-                fig_anim.update_traces(marker=dict(line=dict(width=1, color='black')))
-                fig_anim.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = anim_speed
-                fig_anim.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = anim_speed // 2
-                st.plotly_chart(fig_anim, use_container_width=True)
+                if df_anim.empty:
+                    st.info("No animation data available.")
+                else:
+                    ymax = max(1, df_anim['Count'].max() * 1.15)
+                    fig_anim = px.scatter(df_anim, x='Material', y='Count', animation_frame='Frame',
+                                          color='Category', size='Count',
+                                          color_discrete_map=cat_color_map,
+                                          range_y=[0, ymax],
+                                          title='Model Extraction Landscape',
+                                          height=650)
+                    fig_anim.update_traces(marker=dict(line=dict(width=1, color='black')))
+                    if fig_anim.layout.updatemenus:
+                        fig_anim.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = anim_speed
+                        fig_anim.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = anim_speed // 2
+                    st.plotly_chart(fig_anim, use_container_width=True)
             else:
                 df_cons = build_consensus_animation_data(raw_data)
-                fig_cons = px.scatter(df_cons, x='Material', y='MaxCount', animation_frame='Frame',
-                                      color='Category', size='MaxCount',
-                                      color_discrete_map=cat_color_map,
-                                      range_y=[0, df_cons['MaxCount'].max() * 1.15],
-                                      title='Consensus Buildup',
-                                      height=650)
-                fig_cons.update_traces(marker=dict(line=dict(width=1, color='black')))
-                fig_cons.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = anim_speed
-                fig_cons.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = anim_speed // 2
-                st.plotly_chart(fig_cons, use_container_width=True)
+                if df_cons.empty:
+                    st.info("No consensus animation data available.")
+                else:
+                    ymax = max(1, df_cons['MaxCount'].max() * 1.15)
+                    fig_cons = px.scatter(df_cons, x='Material', y='MaxCount', animation_frame='Frame',
+                                          color='Category', size='MaxCount',
+                                          color_discrete_map=cat_color_map,
+                                          range_y=[0, ymax],
+                                          title='Consensus Buildup',
+                                          height=650)
+                    fig_cons.update_traces(marker=dict(line=dict(width=1, color='black')))
+                    if fig_cons.layout.updatemenus:
+                        fig_cons.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = anim_speed
+                        fig_cons.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = anim_speed // 2
+                    st.plotly_chart(fig_cons, use_container_width=True)
     t_idx += 1
 
 # ------------------------------------------------------------------

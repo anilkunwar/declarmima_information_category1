@@ -162,6 +162,14 @@ def get_contrast_text_color(hex_color: str) -> str:
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
     return "white" if luminance < 0.5 else "#2C3E50"
 
+def hex_to_rgba(hex_color: str, alpha: float = 0.25) -> str:
+    """Convert #RRGGBB to rgba(R,G,B,A) for Plotly compatibility."""
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
 # ------------------------------------------------------------------
 # DATA PARSERS (robust to all 3 model formats)
 # ------------------------------------------------------------------
@@ -416,7 +424,7 @@ def draw_bipartite_chord(paper_counts, material_counts, connections,
     return fig
 
 # ------------------------------------------------------------------
-# SANKEY (Plotly)
+# SANKEY (Plotly)  — FIXED: use rgba() instead of 8-digit hex
 # ------------------------------------------------------------------
 def draw_sankey(paper_materials, model_name, model_color):
     if not HAS_PLOTLY:
@@ -438,7 +446,7 @@ def draw_sankey(paper_materials, model_name, model_color):
         node=dict(label=node_labels, color=node_colors, pad=18, thickness=22,
                   line=dict(color='black', width=0.6)),
         link=dict(source=sources, target=targets, value=values,
-                  color=[c + '40' for c in link_colors])  # add alpha hex
+                  color=[hex_to_rgba(c, alpha=0.25) for c in link_colors])
     )])
     fig.update_layout(
         title_text=f"{model_name} — Paper → Material Flow",

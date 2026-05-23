@@ -1,11 +1,10 @@
-Materials/Alloys per document:
-
-10.1007_s00366-025-02117-z.pdf: laser_power, yield_strength, cu–mn
-10.1016_j.commatsci.2025.113875.pdf: ti3au, yield_strength
-10.1016_j.engappai.2024.107902.pdf: cr0.4w0.5(zrhfnb)0.1, heas_mpeas, cr0.5w0.3(vnbta)0.2, mo0.1ti0.8(vnbta)0.1, ti0.7(zrhfnb)0.3
-10.1016_j.ijsolstr.2024.112894.pdf: nanoindentation, al, al2cu, al, al2cu, yield_strength
-10.1016_j.jallcom.2024.174876.pdf: cu6sn5
-10.1016_j.jestch.2023.101413.pdf: ti3au
-10.1016_j.matdes.2024.113312.pdf: ti6al4v, ti6al4v matrix, lewis_number, ti6al4v alloy, ti2cu imc, ti6al4v matrix, ti2cu imc/ti6al4v matrix, yield_strength
-10.1016_j.surfin.2023.102728.pdf: cu6sn5
-10.1080_17452759.2024.2416518.pdf: alsimgzr, metallic_glass
+DOI,Materials_Alloys
+10.1007/s00366-025-02117-z,"laser_power, yield_strength, cu–mn"
+10.1016/j.commatsci.2025.113875,"ti3au, yield_strength"
+10.1016/j.engappai.2024.107902,"cr0.4w0.5(zrhfnb)0.1, heas_mpeas, cr0.5w0.3(vnbta)0.2, mo0.1ti0.8(vnbta)0.1, ti0.7(zrhfnb)0.3"
+10.1016/j.ijsolstr.2024.112894,"nanoindentation, al, al2cu, yield_strength"
+10.1016/j.jallcom.2024.174876,"cu6sn5"
+10.1016/j.jestch.2023.101413,"ti3au"
+10.1016/j.matdes.2024.113312,"ti6al4v, ti6al4v matrix, lewis_number, ti6al4v alloy, ti2cu imc, ti2cu imc/ti6al4v matrix, yield_strength"
+10.1016/j.surfin.2023.102728,"cu6sn5"
+10.1080/17452759.2024.2416518,"alsimgzr, metallic_glass"

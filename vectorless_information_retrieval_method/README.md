@@ -13,7 +13,10 @@
 
 # Alloys Materials 
 
-[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v1.0-violet)](https://alloys-materials-retrieval-performance1.streamlit.app/) (Comparison among different LLM models)
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v1.0-green)](https://alloys-materials-retrieval-performance1.streamlit.app/) (Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v2.0-green)](https://alloys-materials-retrieval-performance2.streamlit.app/) (Comparison among different LLM models, a document for a given model is given a unique label)
+
 
 # LLM Names:
 

@@ -1483,21 +1483,11 @@ gc.collect()
 # FOOTER
 # ------------------------------------------------------------------
 st.markdown("---")
-st.markdown("""
-<div style="text-align:center; color:#666; font-size:0.88rem; padding:1rem 0; font-family:serif;">
-    <strong>v2.0 Upgrades:</strong> 
-    ✅ Diagnostic panel for real-time memory monitoring | 
-    ✅ Alias edits now require explicit Save button (prevents session bloat) | 
-    ✅ UMAP sliders use step=2 to limit cache variants | 
-    ✅ Resource caches limited to max_entries=3<br><br>
-    <strong>Hybrid Validator:</strong> Periodic-table regex engine auto-tags materials (alloys, ceramics, intermetallics)
-    and filters process parameters. Replace <code>llm_validate_material()</code> with a
-    <code>transformers</code> pipeline (GPT-2 / Qwen-0.5B) for neural refinement.<br><br>
-    <strong>Memory Hardening:</strong> All expensive operations are <code>@st.cache_data</code> or 
-    <code>@st.cache_resource(max_entries=3)</code> wrapped. Matplotlib figures are force-closed via 
-    <code>plt.close()</code> + <code>gc.collect()</code> after every render. Use the 🧹 Clear Memory button 
-    or the 🩺 Diagnostic panel for emergency cleanup.<br><br>
-    <strong>Publication Defaults:</strong> Serif typography, 600 DPI export, colorblind-safe palettes,
-    editable DOI & material aliases, and consensus-aware unified chord diagrams.
+# ✅ REPLACE the old st.markdown diagnostic block with this:
+st.markdown(f"""
+<div style="font-family:monospace; font-size:0.85rem;">
+    <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
+    <span class="diag-metric">🔑 Session Keys: {len(st.session_state)}</span>
+    <span class="diag-metric">📦 Cache: Managed automatically by Streamlit</span>
 </div>
 """, unsafe_allow_html=True)

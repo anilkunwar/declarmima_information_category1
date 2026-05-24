@@ -32,7 +32,7 @@
 
 [![meaningtowords](https://img.shields.io/badge/alloysmaterials-v9.0-green)](https://alloys-materials-retrieval-performance9.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
 
-[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v10.0-green)](https://alloys-materials-retrieval-performance10.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v10.0-green)](https://alloys-materials-retrieval-performance10.streamlit.app/) (Number of Labels is Equal to the Number of Nodes in Chord Diagram, Previous versions have labels less than the number of nodes in chord diagram, Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
 
 
 # LLM Names:

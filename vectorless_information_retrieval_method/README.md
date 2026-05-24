@@ -24,6 +24,16 @@
 
 [![meaningtowords](https://img.shields.io/badge/alloysmaterials-v5.0-green)](https://alloys-materials-retrieval-performance5.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
 
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v6.0-green)](https://alloys-materials-retrieval-performance6.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v7.0-green)](https://alloys-materials-retrieval-performance7.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v8.0-green)](https://alloys-materials-retrieval-performance8.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v9.0-green)](https://alloys-materials-retrieval-performance9.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v10.0-green)](https://alloys-materials-retrieval-performance10.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
 
 # LLM Names:
 

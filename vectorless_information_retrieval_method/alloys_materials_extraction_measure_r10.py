@@ -1,6 +1,11 @@
 """
-AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization v2.5
-+ v2.5: Radial label placement aligned to node positions — labels radiate outward from arcs
+AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization v2.4
+Unified Chord · Sankey · Network · Heatmap · Circos · 3D UMAP · Animation
+Hybrid Material Validator · Editable Aliases (Data Editor) · Aggressive Caching & GC
++ Diagnostic Panel · Limited Cache Entries · Capped Figure Sizes
++ 50+ Color Colormaps (Turbo/Jet/Inferno/Rainbow/etc.) · Interactive Category Toggling (Morphology Control)
++ v2.3: Fixed Chord & Circos spatial arrangement, label padding, and text orientation
++ v2.4: Configurable label modes (parallel/vertical/inclined/radial), Chord legend/model toggles, enhanced Circos padding
 """
 
 import streamlit as st
@@ -14,8 +19,12 @@ from matplotlib.path import Path
 from io import BytesIO
 import os, json, re, gc, tempfile, psutil
 from collections import defaultdict
+from functools import lru_cache
 from itertools import combinations
 
+# ------------------------------------------------------------------
+# Optional backends
+# ------------------------------------------------------------------
 try:
     import plotly.graph_objects as go
     import plotly.express as px
@@ -41,6 +50,9 @@ try:
 except Exception:
     HAS_SKLEARN = False
 
+# ------------------------------------------------------------------
+# GLOBAL PUBLICATION DEFAULTS + MEMORY GUARD
+# ------------------------------------------------------------------
 plt.rcParams.update({
     'font.family': 'serif',
     'font.serif': ['Times New Roman', 'DejaVu Serif', 'Computer Modern Roman'],
@@ -62,9 +74,18 @@ plt.rcParams.update({
     'ytick.color': '#2C3E50',
     'figure.max_open_warning': 0,
 })
+
 plt.switch_backend('Agg')
 
-st.set_page_config(page_title="AlloyExtraction Nexus — v2.5", page_icon="🔬", layout="wide", initial_sidebar_state="expanded")
+# ------------------------------------------------------------------
+# PAGE CONFIG
+# ------------------------------------------------------------------
+st.set_page_config(
+    page_title="AlloyExtraction Nexus — Memory-Hardened v2.4",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 st.markdown("""
 <style>
@@ -74,22 +95,38 @@ st.markdown("""
     .highlight-red { border-left-color: #c0392b; }
     .highlight-green { border-left-color: #27ae60; }
     .highlight-blue { border-left-color: #2980b9; }
+    .highlight-gold { border-left-color: #f39c12; }
+    .highlight-purple { border-left-color: #8e44ad; }
     .caption { font-size: 0.95rem; color: #555; font-style: italic; margin-bottom: 1rem; }
+    .control-section { background: linear-gradient(180deg, #f5f7fa 0%, #eef1f5 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem; border: 1px solid #dde2e8; }
+    .section-title { font-size: 1.15rem; font-weight: 700; color: #2c3e50; margin-bottom: 0.8rem; border-bottom: 2px solid #3498db; padding-bottom: 0.3rem; }
+    .memory-btn { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; font-weight: bold; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; }
+    .memory-btn:hover { background: linear-gradient(135deg, #c0392b 0%, #a93226 100%); }
     .diag-metric { display: inline-block; margin: 0.3rem 0.5rem 0.3rem 0; padding: 0.4rem 0.8rem; background: #f8f9fa; border-radius: 4px; font-size: 0.9rem; }
     .diag-warn { color: #c0392b; font-weight: 600; }
     .diag-ok { color: #27ae60; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
+# ------------------------------------------------------------------
+# MEMORY EMERGENCY BUTTON (Sidebar top)
+# ------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🚨 Memory Management")
     if st.button("🧹 Clear All Memory & Cache", type="primary", key="clear_mem"):
-        plt.close('all'); gc.collect(); st.cache_data.clear(); st.cache_resource.clear()
+        plt.close('all')
+        gc.collect()
+        st.cache_data.clear()
+        st.cache_resource.clear()
         for key in list(st.session_state.keys()):
-            if key not in ['doi_aliases', 'material_aliases', 'validation_cache']:
+            if key not in ['doi_aliases', 'material_aliases', 'validation_cache', 'alias_temp_doi', 'alias_temp_mat']:
                 del st.session_state[key]
-        st.success("Memory cleared! Rerunning..."); st.rerun()
+        st.success("Memory cleared! Rerunning...")
+        st.rerun()
 
+# ------------------------------------------------------------------
+# PERIODIC TABLE & METADATA
+# ------------------------------------------------------------------
 PERIODIC_TABLE = {
     'H','He','Li','Be','B','C','N','O','F','Ne','Na','Mg','Al','Si','P','S','Cl','Ar',
     'K','Ca','Sc','Ti','V','Cr','Mn','Fe','Co','Ni','Cu','Zn','Ga','Ge','As','Se','Br',
@@ -154,32 +191,68 @@ CATEGORY_COLORS = {
 }
 
 SYNONYM_MAP = {
-    'al–si–mg–zr alloy': 'alsimgzr', 'al-si-mg-zr alloy': 'alsimgzr',
-    'tib2/al–si–mg–zr alloy': 'tib2_alsimgzr', 'ti–au': 'ti-au', 'au-ti': 'ti-au',
-    'aln ceramics': 'aln', 'cu6sn5 imc': 'cu6sn5', 'ti6al4v matrix': 'ti6al4v',
-    'ti6al4v alloy': 'ti6al4v', 'ti2cu imc': 'ti2cu',
-    'ti2cu imc/ti6al4v matrix': 'ti2cu_ti6al4v', 'cu–mn': 'cu-mn',
-    'strontium titanate': 'strontium_titanate', 'steel sheet': 'steel_sheet',
-    'solder interconnects': 'solder_interconnects', 'b0.3er0.5al0.2n': 'b0.3er0.5al0.2n',
-    'heas_mpeas': 'heas_mpeas', 'metallic_glass': 'metallic_glass',
-    'lpbf': 'lpbf', 'sdss_2507': 'sdss_2507', 'sdss': 'sdss', 'nt_cu': 'nt_cu',
-    'yield_strength': 'yield_strength', 'nanoindentation': 'nanoindentation',
-    'lewis_number': 'lewis_number', 'laser_power': 'laser_power',
-    'ti-cr alloy': 'ti-cr', 'gold': 'au', 'tib2_al-si-mg-zr': 'tib2_alsimgzr',
+    'al–si–mg–zr alloy': 'alsimgzr',
+    'al-si-mg-zr alloy': 'alsimgzr',
+    'tib2/al–si–mg–zr alloy': 'tib2_alsimgzr',
+    'ti–au': 'ti-au',
+    'au-ti': 'ti-au',
+    'aln ceramics': 'aln',
+    'cu6sn5 imc': 'cu6sn5',
+    'ti6al4v matrix': 'ti6al4v',
+    'ti6al4v alloy': 'ti6al4v',
+    'ti2cu imc': 'ti2cu',
+    'ti2cu imc/ti6al4v matrix': 'ti2cu_ti6al4v',
+    'cu–mn': 'cu-mn',
+    'strontium titanate': 'strontium_titanate',
+    'steel sheet': 'steel_sheet',
+    'solder interconnects': 'solder_interconnects',
+    'b0.3er0.5al0.2n': 'b0.3er0.5al0.2n',
+    'heas_mpeas': 'heas_mpeas',
+    'metallic_glass': 'metallic_glass',
+    'lpbf': 'lpbf',
+    'sdss_2507': 'sdss_2507',
+    'sdss': 'sdss',
+    'nt_cu': 'nt_cu',
+    'yield_strength': 'yield_strength',
+    'nanoindentation': 'nanoindentation',
+    'lewis_number': 'lewis_number',
+    'laser_power': 'laser_power',
+    'ti-cr alloy': 'ti-cr',
+    'gold': 'au',
+    'tib2_al-si-mg-zr': 'tib2_alsimgzr',
 }
 
+# ------------------------------------------------------------------
+# 50+ COLORMAP CATALOG (v2.3+)
+# ------------------------------------------------------------------
 COLORMAP_CATALOG = {
-    "Perceptually Uniform": ["viridis", "plasma", "inferno", "magma", "cividis"],
-    "Sequential": ["turbo", "jet", "rainbow", "gist_rainbow", "gist_ncar", "nipy_spectral",
-                   "gnuplot", "gnuplot2", "CMRmap", "cubehelix", "brg", "afmhot",
-                   "hot", "cool", "spring", "summer", "autumn", "winter", "copper",
-                   "bone", "pink", "terrain", "ocean"],
-    "Diverging": ["coolwarm", "bwr", "seismic", "RdYlBu", "RdYlGn", "Spectral"],
-    "Cyclic": ["twilight", "twilight_shifted", "hsv", "flag", "prism"],
-    "Qualitative (≤20)": ["tab10", "tab20", "Set1", "Set2", "Set3", "Paired", "Dark2", "Accent", "Pastel1", "Pastel2"]
+    "Perceptually Uniform": [
+        "viridis", "plasma", "inferno", "magma", "cividis"
+    ],
+    "Sequential": [
+        "turbo", "jet", "rainbow", "gist_rainbow", "gist_ncar", "nipy_spectral",
+        "gnuplot", "gnuplot2", "CMRmap", "cubehelix", "brg", "afmhot",
+        "hot", "cool", "spring", "summer", "autumn", "winter", "copper",
+        "bone", "pink", "terrain", "ocean"
+    ],
+    "Diverging": [
+        "coolwarm", "bwr", "seismic", "RdYlBu", "RdYlGn", "Spectral"
+    ],
+    "Cyclic": [
+        "twilight", "twilight_shifted", "hsv", "flag", "prism"
+    ],
+    "Qualitative (≤20)": [
+        "tab10", "tab20", "Set1", "Set2", "Set3", "Paired", "Dark2", "Accent", "Pastel1", "Pastel2"
+    ]
 }
-ALL_COLORMAPS = sorted(list(set([c for grp in COLORMAP_CATALOG.values() for c in grp])))
+ALL_COLORMAPS = []
+for group, cmaps in COLORMAP_CATALOG.items():
+    ALL_COLORMAPS.extend(cmaps)
+ALL_COLORMAPS = sorted(list(set(ALL_COLORMAPS)))
 
+# ------------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------------
 def normalize_term(term: str) -> str:
     t = term.strip().lower()
     t = t.replace('–', '-').replace('—', '-')
@@ -200,13 +273,22 @@ def get_contrast_text_color(hex_color: str) -> str:
 
 def prettify_material(name: str) -> str:
     overrides = {
-        'heas_mpeas': 'HEAs / MPEAs', 'metallic_glass': 'Metallic Glass',
-        'strontium_titanate': 'SrTiO₃', 'steel_sheet': 'Steel Sheet',
-        'solder_interconnects': 'Solder Interconnects', 'nanoindentation': 'Nanoindentation',
-        'yield_strength': 'Yield Strength', 'laser_power': 'Laser Power',
-        'lewis_number': 'Lewis Number', 'lpbf': 'LPBF', 'sdss_2507': 'SDSS 2507',
-        'sdss': 'SDSS', 'nt_cu': 'NT Cu', 'tib2_alsimgzr': 'TiB₂/Al-Si-Mg-Zr',
-        'ti2cu_ti6al4v': 'Ti₂Cu / Ti-6Al-4V', 'b0.3er0.5al0.2n': 'B₀.₃Er₀.₅Al₀.₂N',
+        'heas_mpeas': 'HEAs / MPEAs',
+        'metallic_glass': 'Metallic Glass',
+        'strontium_titanate': 'SrTiO₃',
+        'steel_sheet': 'Steel Sheet',
+        'solder_interconnects': 'Solder Interconnects',
+        'nanoindentation': 'Nanoindentation',
+        'yield_strength': 'Yield Strength',
+        'laser_power': 'Laser Power',
+        'lewis_number': 'Lewis Number',
+        'lpbf': 'LPBF',
+        'sdss_2507': 'SDSS 2507',
+        'sdss': 'SDSS',
+        'nt_cu': 'NT Cu',
+        'tib2_alsimgzr': 'TiB₂/Al-Si-Mg-Zr',
+        'ti2cu_ti6al4v': 'Ti₂Cu / Ti-6Al-4V',
+        'b0.3er0.5al0.2n': 'B₀.₃Er₀.₅Al₀.₂N',
     }
     if name in overrides:
         return overrides[name]
@@ -218,13 +300,18 @@ def prettify_material(name: str) -> str:
         if i + 1 < len(s):
             two_check = s[i].upper() + s[i+1].lower()
             if two_check in PERIODIC_TABLE:
-                parts.append(two_check); i += 2; matched = True
+                parts.append(two_check)
+                i += 2
+                matched = True
         if not matched:
             one = s[i].upper()
             if one in PERIODIC_TABLE and s[i].isalpha():
-                parts.append(one); i += 1; matched = True
+                parts.append(one)
+                i += 1
+                matched = True
         if not matched:
-            parts.append(s[i]); i += 1
+            parts.append(s[i])
+            i += 1
     result = []
     for j, p in enumerate(parts):
         if j > 0 and p in PERIODIC_TABLE and parts[j-1] in PERIODIC_TABLE:
@@ -235,7 +322,13 @@ def prettify_material(name: str) -> str:
         pretty = pretty[0].upper() + pretty[1:]
     return pretty if pretty != name else name.replace('_', ' ').title()
 
-def validate_material(term: str, use_llm: bool = False) -> dict:
+# ------------------------------------------------------------------
+# HYBRID MATERIAL VALIDATOR
+# ------------------------------------------------------------------
+def llm_validate_material(term: str) -> dict:
+    return {'is_material': None, 'method': 'llm_stub', 'reason': 'No LLM loaded'}
+
+def regex_validate_material(term: str) -> dict:
     t = term.lower()
     if t in [x.lower() for x in TAXONOMY['Alloy / Composition']]:
         return {'is_material': True, 'method': 'taxonomy', 'reason': 'Listed in Alloy/Composition taxonomy'}
@@ -243,13 +336,16 @@ def validate_material(term: str, use_llm: bool = False) -> dict:
         if cat != 'Alloy / Composition' and t in [x.lower() for x in terms]:
             return {'is_material': False, 'method': 'taxonomy', 'reason': f'Listed in {cat} taxonomy'}
     found_elements = set()
-    s = t; i = 0
+    s = t
+    i = 0
     while i < len(s):
         matched = False
         if i + 1 < len(s):
             two = s[i].upper() + s[i+1].lower()
             if two in PERIODIC_TABLE:
-                found_elements.add(two); i += 2; matched = True
+                found_elements.add(two)
+                i += 2
+                matched = True
         if not matched:
             one = s[i].upper()
             if one in PERIODIC_TABLE and s[i].isalpha():
@@ -264,6 +360,16 @@ def validate_material(term: str, use_llm: bool = False) -> dict:
         return {'is_material': True, 'method': 'regex+periodic_table', 'reason': f'Element symbol: {list(found_elements)[0]}'}
     return {'is_material': False, 'method': 'regex', 'reason': 'No material signatures detected'}
 
+def validate_material(term: str, use_llm: bool = False) -> dict:
+    if use_llm:
+        llm_res = llm_validate_material(term)
+        if llm_res['is_material'] is not None:
+            return llm_res
+    return regex_validate_material(term)
+
+# ------------------------------------------------------------------
+# CACHED DATA LOADING
+# ------------------------------------------------------------------
 DEFAULT_DATA_B = """DOI,Materials_Alloys
 10.1007/s40195-025-01825-1,"al–si–mg–zr alloy, lpbf, alsimgzr, tib2/al–si–mg–zr alloy"
 10.1016/j.apenergy.2024.122901,"b0.3er0.5al0.2n"
@@ -365,12 +471,16 @@ def load_data_from_disk_or_default():
             loaded[key] = parse_alloys_csv_cached(default, MODEL_META[key]['name'])
     return loaded
 
+# ------------------------------------------------------------------
+# ALIAS MANAGEMENT
+# ------------------------------------------------------------------
 def init_aliases(all_dois, all_materials):
     if 'doi_aliases' not in st.session_state:
         st.session_state.doi_aliases = {}
     for i, doi in enumerate(sorted(all_dois)):
         if doi not in st.session_state.doi_aliases:
             st.session_state.doi_aliases[doi] = f"[{chr(65 + i)}]" if i < 26 else f"[{i+1}]"
+
     if 'material_aliases' not in st.session_state:
         st.session_state.material_aliases = {}
     for mat in sorted(all_materials):
@@ -383,6 +493,9 @@ def get_alias(doi):
 def get_mat_label(mat):
     return st.session_state.material_aliases.get(mat, mat)
 
+# ------------------------------------------------------------------
+# CACHED FILTERING
+# ------------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner="Validating materials...")
 def filter_data_by_validation_cached(data_dict_tuple, materials_only, enable_validator):
     data_dict = {k: dict(v) for k, v in data_dict_tuple}
@@ -402,6 +515,9 @@ def filter_data_by_validation_cached(data_dict_tuple, materials_only, enable_val
         filtered[mk] = fdata
     return filtered
 
+# ------------------------------------------------------------------
+# CACHED UMAP EMBEDDING
+# ------------------------------------------------------------------
 @st.cache_resource(ttl=600, max_entries=3, show_spinner="Computing UMAP embedding...")
 def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric):
     features = np.array(features_tuple)
@@ -416,26 +532,34 @@ def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric)
     emb = reducer.fit_transform(X)
     return emb.tolist()
 
+# ------------------------------------------------------------------
+# CACHED PYVIS NETWORK
+# ------------------------------------------------------------------
 @st.cache_resource(ttl=300, max_entries=3, show_spinner="Building network graph...")
 def get_network_html_cached(display_data_json):
     if not HAS_PYVIS:
         return None, ""
     import json
     display_data = json.loads(display_data_json)
+
     net = Network(height='720px', width='100%', bgcolor='white', font_color='black', heading='')
     net.barnes_hut(gravity=-9000, central_gravity=0.35, spring_length=140,
                    spring_strength=0.04, damping=0.09)
+
     all_papers = set()
     all_materials = set()
     for data in display_data.values():
         all_papers.update(data.keys())
         for mats in data.values():
             all_materials.update(mats.keys())
+
     for doi in sorted(all_papers):
         alias = get_alias(doi)
         net.add_node(doi, label=alias, title=f"DOI: {doi}", shape='box',
                      color={'background': '#E8F4FD', 'border': '#2980B9'},
-                     borderWidth=2, font={'size': 14, 'face': 'arial', 'color': '#1a1a2e'}, size=18)
+                     borderWidth=2, font={'size': 14, 'face': 'arial', 'color': '#1a1a2e'},
+                     size=18)
+
     for mat in sorted(all_materials):
         cat = get_category(mat)
         fill = CATEGORY_COLORS.get(cat, '#FFFFFF')
@@ -443,18 +567,22 @@ def get_network_html_cached(display_data_json):
                      color={'background': fill, 'border': '#555555'},
                      borderWidth=2, font={'size': 12, 'color': '#2c3e50'}, size=14,
                      title=f"Category: {cat}")
+
     for model_key, data in display_data.items():
         meta = MODEL_META[model_key]
         for doi, mats in data.items():
             for mat, cnt in mats.items():
                 net.add_edge(doi, mat, width=min(cnt, 4), color=meta['color'],
                              title=f"{meta['name']}: {cnt}x", smooth={'type': 'continuous'})
+
     net.set_options('{"physics": {"stabilization": {"iterations": 200}}, "interaction": {"hover": true, "tooltipDelay": 100}}')
+
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
         net.save_graph(f.name)
         with open(f.name, 'r', encoding='utf-8') as hf:
             html = hf.read()
         os.remove(f.name)
+
     legend_html = """
     <div style="margin-top:8px; padding:10px; background:#f8f9fa; border:1px solid #dde2e8; border-radius:6px; font-family:serif;">
     <strong style="font-size:1.05rem;">Model Edge Legend</strong><br>
@@ -466,6 +594,9 @@ def get_network_html_cached(display_data_json):
     """
     return html, legend_html
 
+# ------------------------------------------------------------------
+# FIGURE RENDERING WITH GUARANTEED CLEANUP
+# ------------------------------------------------------------------
 def render_matplotlib_figure(fig, filename, dpi):
     if fig is None:
         return
@@ -483,21 +614,24 @@ def render_matplotlib_figure(fig, filename, dpi):
         if fig:
             plt.close(fig)
 
-
 # ------------------------------------------------------------------
-# v2.5 UNIFIED CHORD — RADIAL LABELS ALIGNED TO NODE POSITIONS
+# v2.4 UNIFIED CHORD — Label Modes + Legend/Model Toggles
 # ------------------------------------------------------------------
 def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                        node_width=0.08, ribbon_alpha=0.55, font_size=10,
                        paper_span=np.pi * 0.80, material_span=np.pi * 0.80,
                        min_ribbon_width=0.8, max_ribbon_width=6.0,
                        cmap_name='turbo', gap_padding=0.015,
-                       label_offset=0.14, curve_tension=0.35,
+                       label_offset=0.20, curve_tension=0.35,
                        label_mode='radial',
                        show_models=None):
     """
-    v2.5 Chord — CRITICAL FIX: labels placed at exact node angle, radiating outward.
-    Each label sits on the radial line through its node arc midpoint.
+    v2.4 Chord diagram with:
+    - 4 label modes: radial, parallel, vertical, inclined
+    - Per-model & consensus/DOI visibility toggles
+    - Dynamic label padding & gap separation
+    - Auto colormap fallback for >20 materials
+    - FIXED: Label alignment logic to prevent bunching in center.
     """
     if show_models is None:
         show_models = {'modelB': True, 'modelC': True, 'modelD': True,
@@ -505,6 +639,7 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
 
     figsize = (min(figsize[0], 24), min(figsize[1], 24))
 
+    # Filter data by selected models
     filtered_data = {}
     for mk, data in all_models_data.items():
         if show_models.get(mk, True):
@@ -546,9 +681,11 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
     for (doi, mat), models in pair_models.items():
         total_cnt = sum(c for d, m, c, k in connections if d == doi and m == mat)
         consensus = len(models)
+        if consensus >= 2 and not show_models.get('consensus', True):
+            pass
         unique_connections.append((doi, mat, total_cnt, consensus, models))
 
-    # PAPER ARC (top half)
+    # --- PAPER ARC (top half) ---
     p_total = sum(doi_counts.values())
     n_dois = len(all_dois)
     total_gap = gap_padding * n_dois
@@ -562,10 +699,10 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
         p_angles[doi] = {'start': cur, 'end': cur - w, 'mid': cur - w / 2, 'width': w}
         cur -= (w + gap_padding)
 
-    # MATERIAL ARC (bottom half)
+    # --- MATERIAL ARC (bottom half) ---
     m_total = sum(mat_counts.values())
-    n_mats_count = len(all_mats)
-    total_mgap = gap_padding * n_mats_count
+    n_mats = len(all_mats)
+    total_mgap = gap_padding * n_mats
     available_mat = material_span - total_mgap
     m_start = -np.pi / 2 - available_mat / 2 - total_mgap / 2
     m_angles = {}
@@ -579,110 +716,119 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
     fig, ax = plt.subplots(figsize=figsize, facecolor='white')
     ax.set_facecolor('white')
 
-    # ================================================================
-    # v2.5 CRITICAL FIX: place_label_at_node_angle
-    # Each label is placed ON the radial line at the node's midpoint angle,
-    # at distance label_r from center. Text rotation ensures readability.
-    # ================================================================
-    def place_label_at_node_angle(ax, angle_rad, text, label_r, font_size,
-                                   text_color, is_paper, label_mode='radial',
-                                   font_weight='bold'):
-        x = label_r * np.cos(angle_rad)
-        y = label_r * np.sin(angle_rad)
-        rot_deg = np.degrees(angle_rad)
-        rot_norm = rot_deg % 360
-
-        if label_mode == 'radial':
-            # Text points along radius outward; flip left side
-            if 90 < rot_norm < 270:
-                text_rot = rot_norm - 180
+    # --- Helper: compute label transform for a given angle ---
+    def compute_label_transform(angle_rad, mode, is_paper=True):
+        """Returns (rotation_deg, ha, va, offset_x, offset_y)"""
+        deg = np.degrees(angle_rad)
+        deg_norm = deg % 360  # Normalize to 0-360 range
+        
+        # Default offsets
+        offset_x, offset_y = 0, 0
+        
+        if mode == 'radial':
+            # Text points away from center
+            if 90 < deg_norm < 270:
+                # Left side: Text should go Left (ha='right')
+                text_rot = deg_norm - 180
                 ha = 'right'
-                va = 'center'
             else:
-                text_rot = rot_norm
+                # Right side: Text should go Right (ha='left')
+                text_rot = deg_norm
                 ha = 'left'
-                va = 'center'
-            # Top/bottom center overrides
-            if 80 <= rot_norm <= 100:
-                ha = 'center'; va = 'bottom'; text_rot = 0
-            elif 260 <= rot_norm <= 280:
-                ha = 'center'; va = 'top'; text_rot = 0
-
-        elif label_mode == 'parallel':
-            tangent = (rot_norm + 90) % 360
-            if 90 < tangent < 270:
-                tangent = (tangent + 180) % 360
-            text_rot = tangent
+                
+            # Vertical alignment based on top/bottom arc
             if is_paper:
-                if 45 <= rot_norm <= 135:
-                    ha, va = 'center', 'bottom'
-                elif rot_norm < 45:
-                    ha, va = 'left', 'center'
-                else:
-                    ha, va = 'right', 'center'
+                # Top arc: Text should be Above (va='bottom')
+                va = 'bottom'
+                if 80 < deg_norm < 100: ha = 'center' 
             else:
-                if 225 <= rot_norm <= 315:
-                    ha, va = 'center', 'top'
-                elif rot_norm > 315 or rot_norm < 45:
-                    ha, va = 'left', 'center'
-                else:
-                    ha, va = 'right', 'center'
+                # Bottom arc: Text should be Below (va='top')
+                va = 'top'
+                if 260 < deg_norm < 280: ha = 'center'
 
-        elif label_mode == 'vertical':
+        elif mode == 'parallel':
+            # Tangent to the circle
+            text_rot = deg_norm + 90
+            if text_rot > 180: text_rot -= 360
+            
+            # Ensure text is upright
+            if text_rot > 90 or text_rot < -90:
+                 text_rot += 180
+                 if text_rot > 180: text_rot -= 360
+            
+            ha = 'center'
+            va = 'center'
+            # Push out slightly
+            if is_paper:
+                 va = 'bottom'
+            else:
+                 va = 'top'
+
+        elif mode == 'vertical':
             text_rot = 0
-            if is_paper:
-                if 80 <= rot_norm <= 100:
-                    ha, va = 'center', 'bottom'
-                elif 90 < rot_norm < 270:
-                    ha, va = 'right', 'center'
-                else:
-                    ha, va = 'left', 'center'
+            ha = 'center'
+            va = 'bottom' if is_paper else 'top'
+            # To prevent crossing center for long labels on sides:
+            if 90 < deg_norm < 270:
+                ha = 'right' # Push left
             else:
-                if 260 <= rot_norm <= 280:
-                    ha, va = 'center', 'top'
-                elif 90 < rot_norm < 270:
-                    ha, va = 'right', 'center'
-                else:
-                    ha, va = 'left', 'center'
+                ha = 'left' # Push right
 
-        elif label_mode == 'inclined':
+        elif mode == 'inclined':
+            # 45 degree slant
             if is_paper:
-                if rot_norm < 90:
-                    text_rot = 30; ha, va = 'left', 'bottom'
-                elif rot_norm > 90:
-                    text_rot = -30; ha, va = 'right', 'bottom'
+                if deg_norm < 90: # Top Right
+                    text_rot = 30
+                    ha = 'left'
+                    va = 'bottom'
+                elif deg_norm > 90: # Top Left
+                    text_rot = -30
+                    ha = 'right'
+                    va = 'bottom'
                 else:
-                    text_rot = 0; ha, va = 'center', 'bottom'
+                    text_rot = 0
+                    ha = 'center'
+                    va = 'bottom'
             else:
-                if rot_norm < 270:
-                    text_rot = 30; ha, va = 'left', 'top'
-                else:
-                    text_rot = -30; ha, va = 'right', 'top'
+                # Bottom
+                if deg_norm < 270: # Bottom Left
+                     text_rot = 30
+                     ha = 'right'
+                     va = 'top'
+                else: # Bottom Right
+                     text_rot = -30
+                     ha = 'left'
+                     va = 'top'
+
         else:
-            text_rot = 0; ha, va = 'center', 'center'
+            text_rot = 0
+            ha = 'center'
+            va = 'center'
 
-        ax.text(x, y, text, ha=ha, va=va, fontsize=font_size,
-                fontweight=font_weight, color=text_color, zorder=6,
-                clip_on=False, rotation=text_rot, rotation_mode='anchor')
+        return text_rot, ha, va, offset_x, offset_y
 
-    # DRAW PAPER NODES
+    # --- DRAW PAPER NODES (top arc) ---
     if show_models.get('doi_nodes', True):
         doi_color = '#34495E'
-        label_r_paper = radius + node_width + label_offset
         for doi, ang in p_angles.items():
             wdg = Wedge((0, 0), radius,
                         np.degrees(ang['end']), np.degrees(ang['start']),
                         width=node_width, facecolor=doi_color, edgecolor='black',
                         linewidth=0.8, alpha=0.9, zorder=5)
             ax.add_patch(wdg)
-            alias = get_alias(doi)
-            place_label_at_node_angle(
-                ax, ang['mid'], alias, label_r_paper, font_size,
-                '#1a1a2e', is_paper=True, label_mode=label_mode
-            )
 
-    # DRAW MATERIAL NODES
-    label_r_mat = radius + node_width + label_offset
+            lr = radius + node_width + label_offset
+            x = lr * np.cos(ang['mid'])
+            y = lr * np.sin(ang['mid'])
+            alias = get_alias(doi)
+
+            text_rot, ha, va, _, _ = compute_label_transform(ang['mid'], label_mode, is_paper=True)
+
+            ax.text(x, y, alias, ha=ha, va=va, fontsize=font_size,
+                    fontweight='bold', color='#1a1a2e', zorder=6,
+                    clip_on=False, rotation=text_rot, rotation_mode='anchor')
+
+    # --- DRAW MATERIAL NODES (bottom arc) ---
     for mat, ang in m_angles.items():
         fill = mat_colors[mat]
         wdg = Wedge((0, 0), radius,
@@ -690,14 +836,20 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                     width=node_width, facecolor=fill, edgecolor='black',
                     linewidth=0.8, alpha=0.9, zorder=5)
         ax.add_patch(wdg)
+
+        lr = radius + node_width + label_offset
+        x = lr * np.cos(ang['mid'])
+        y = lr * np.sin(ang['mid'])
+
+        text_rot, ha, va, _, _ = compute_label_transform(ang['mid'], label_mode, is_paper=False)
+
         txt_color = get_contrast_text_color(fill)
         label = get_mat_label(mat)
-        place_label_at_node_angle(
-            ax, ang['mid'], label, label_r_mat, font_size - 1,
-            txt_color, is_paper=False, label_mode=label_mode
-        )
+        ax.text(x, y, label, ha=ha, va=va, fontsize=font_size - 1,
+                fontweight='bold', color=txt_color, zorder=6,
+                clip_on=False, rotation=text_rot, rotation_mode='anchor')
 
-    # DRAW RIBBONS
+    # --- DRAW RIBBONS ---
     max_count = max([c for _, _, c, _, _ in unique_connections]) if unique_connections else 1
     for doi, mat, count, consensus, models in unique_connections:
         if doi not in p_angles or mat not in m_angles:
@@ -707,14 +859,22 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
         visible_models = [m for m in models if show_models.get(m, True)]
         if not visible_models:
             continue
-        pa = p_angles[doi]; ma = m_angles[mat]
+
+        pa = p_angles[doi]
+        ma = m_angles[mat]
         r_rib = radius - node_width / 2
-        x1 = r_rib * np.cos(pa['mid']); y1 = r_rib * np.sin(pa['mid'])
-        x2 = r_rib * np.cos(ma['mid']); y2 = r_rib * np.sin(ma['mid'])
+        x1 = r_rib * np.cos(pa['mid'])
+        y1 = r_rib * np.sin(pa['mid'])
+        x2 = r_rib * np.cos(ma['mid'])
+        y2 = r_rib * np.sin(ma['mid'])
         a1, a2 = pa['mid'], ma['mid']
+
         if abs(a1 - a2) > np.pi:
-            if a1 > a2: a2 += 2 * np.pi
-            else: a1 += 2 * np.pi
+            if a1 > a2:
+                a2 += 2 * np.pi
+            else:
+                a1 += 2 * np.pi
+
         cp_r = r_rib * curve_tension
         cp1_a = a1 * 0.70 + a2 * 0.30
         cp2_a = a1 * 0.30 + a2 * 0.70
@@ -725,23 +885,26 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
         path = Path(verts, codes)
 
         if consensus >= 2 and show_models.get('consensus', True):
-            color = '#F39C12'; alpha = 0.9
+            color = '#F39C12'
+            alpha = 0.9
         else:
-            color = MODEL_META[visible_models[0]]['color']; alpha = ribbon_alpha
+            color = MODEL_META[visible_models[0]]['color']
+            alpha = ribbon_alpha
 
         lw = min_ribbon_width + (max_ribbon_width - min_ribbon_width) * (count / max_count)
         patch = PathPatch(path, facecolor='none', edgecolor=color,
                           linewidth=lw, alpha=alpha, zorder=2, capstyle='round')
         ax.add_patch(patch)
 
-    # AXIS & LEGEND
-    pad = radius + node_width + label_offset + 0.35
+    # --- AXIS & LEGEND ---
+    pad = radius + node_width + label_offset + 0.30
     ax.set_xlim(-pad, pad)
     ax.set_ylim(-pad, pad)
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title("Unified Cross-Model Extraction Chord", fontsize=18, fontweight='bold', pad=20, color='#1a1a2e')
 
+    # Build legend only for visible items
     legend_elements = []
     if show_models.get('modelB', True):
         legend_elements.append(mpatches.Patch(facecolor=MODEL_META['modelB']['color'], edgecolor='black', label=MODEL_META['modelB']['name']))
@@ -777,6 +940,7 @@ def draw_sankey(paper_materials, model_name, model_color):
         return None
     node_labels = [get_alias(p) for p in papers] + materials
     node_colors = [model_color] * len(papers) + ['#2C3E50'] * len(materials)
+
     sources, targets, values, link_colors = [], [], [], []
     for i, doi in enumerate(papers):
         for mat, cnt in paper_materials[doi].items():
@@ -784,6 +948,7 @@ def draw_sankey(paper_materials, model_name, model_color):
             targets.append(len(papers) + materials.index(mat))
             values.append(cnt)
             link_colors.append(model_color)
+
     fig = go.Figure(data=[go.Sankey(
         node=dict(label=node_labels, color=node_colors, pad=18, thickness=22,
                   line=dict(color='black', width=0.6)),
@@ -812,24 +977,29 @@ def draw_heatmap(all_models_data):
             for mat in mats:
                 j = all_materials.index(mat)
                 matrix[i, j] += 1
+
     width = min(max(14, len(all_materials) * 0.5), 24)
     height = min(max(8, len(all_papers) * 0.4), 18)
     fig, ax = plt.subplots(figsize=(width, height))
     im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=3)
+
     ax.set_xticks(np.arange(len(all_materials)))
     ax.set_xticklabels([get_mat_label(m) for m in all_materials], rotation=55, ha='right', fontsize=10)
     ax.set_yticks(np.arange(len(all_papers)))
     ax.set_yticklabels([get_alias(d) for d in all_papers], fontsize=10)
+
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label('Model Agreement Count', fontsize=12, fontweight='bold')
     cbar.set_ticks([0, 1, 2, 3])
     cbar.set_ticklabels(['0', '1', '2', '3'])
+
     for i in range(len(all_papers)):
         for j in range(len(all_materials)):
             if matrix[i, j] > 0:
                 ax.text(j, i, int(matrix[i, j]), ha="center", va="center",
                         color="white" if matrix[i, j] > 1.5 else "black",
                         fontweight='bold', fontsize=9)
+
     ax.set_title("Model Agreement Heatmap: Document × Material", fontsize=16, fontweight='bold', pad=12)
     ax.set_xlabel("Material / Concept", fontsize=13, fontweight='bold')
     ax.set_ylabel("Document Alias", fontsize=13, fontweight='bold')
@@ -837,16 +1007,19 @@ def draw_heatmap(all_models_data):
     return fig
 
 # ------------------------------------------------------------------
-# v2.5 CIRCOS — RADIAL LABELS ALIGNED TO SECTOR POSITIONS
+# v2.4 CIRCOS — Enhanced Padding + Smart Label Rotation
 # ------------------------------------------------------------------
 def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
                       track_h=0.5, gap_deg=1.5, fs=9, show_labels=True,
                       max_bar_scale=1.0, cmap_name='viridis',
-                      label_padding=0.40, label_buffer=0.20,
+                      label_padding=0.40, label_buffer=0.15,
                       label_rotation_mode='auto'):
     """
-    v2.5 Circos — labels placed on radial lines through sector centers,
-    radiating outward from outer rim. Never clustered in center.
+    v2.4 Circos with:
+    - Enhanced label padding + buffer to prevent overlap
+    - Smart rotation: text always readable (never upside down)
+    - Better gap distribution
+    - Auto colormap fallback
     """
     figsize = (min(figsize[0], 24), min(figsize[1], 24))
 
@@ -875,7 +1048,7 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
     step = avail / n_mats if n_mats > 0 else 0
 
     n_tracks = len(MODEL_META)
-    outer_extent = inner_r + n_tracks * track_h + label_padding + label_buffer + 0.20
+    outer_extent = inner_r + n_tracks * track_h + label_padding + label_buffer + 0.15
 
     fig = plt.figure(figsize=figsize, facecolor='white')
     ax = fig.add_subplot(111, polar=True)
@@ -899,49 +1072,33 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
                         ha='center', va='center', fontsize=max(fs - 2, 7),
                         color='white', fontweight='bold', zorder=4)
 
-        # Outer rim
+        # Outer rim indicator
         rim_bottom = inner_r + n_tracks * track_h + 0.04
         ax.bar(ma, 0.08, width=step * 0.88, bottom=rim_bottom,
                color=rim_colors[mat], alpha=0.9, edgecolor='black', linewidth=0.3, zorder=5)
 
-        # ================================================================
-        # v2.5 CRITICAL FIX: label on radial line through sector center
-        # Label at (ma, label_r) where label_r = rim + padding
-        # ================================================================
+        # Improved label positioning with enhanced padding
         if show_labels:
             lbl = get_mat_label(mat)
             label_r = inner_r + n_tracks * track_h + label_padding
 
             rot_deg = np.degrees(ma)
-            rot_norm = rot_deg % 360
+            rot_deg_norm = rot_deg % 360
 
+            # Smart rotation: always keep text readable
             if label_rotation_mode == 'auto':
-                if 90 < rot_norm < 270:
-                    text_rot = rot_norm - 180
-                    if rot_norm < 180:
-                        ha = 'right'; va = 'top'
-                    else:
-                        ha = 'left'; va = 'top'
+                if 90 < rot_deg_norm < 270:
+                    text_rot = rot_deg_norm - 180
+                    ha = 'right' # Push text outward to the left
+                    va = 'center'
                 else:
-                    text_rot = rot_norm
-                    if rot_norm < 90:
-                        ha = 'left'; va = 'bottom'
-                    else:
-                        ha = 'right'; va = 'bottom'
-                if 85 <= rot_norm <= 95:
-                    text_rot = 0; ha = 'center'; va = 'bottom'
-                elif 265 <= rot_norm <= 275:
-                    text_rot = 0; ha = 'center'; va = 'top'
+                    text_rot = rot_deg_norm
+                    ha = 'left' # Push text outward to the right
+                    va = 'center'
             else:
                 text_rot = 0
-                if 80 <= rot_norm <= 100:
-                    ha, va = 'center', 'bottom'
-                elif 260 <= rot_norm <= 280:
-                    ha, va = 'center', 'top'
-                elif 90 < rot_norm < 270:
-                    ha, va = 'right', 'center'
-                else:
-                    ha, va = 'left', 'center'
+                ha = 'center'
+                va = 'center'
 
             ax.text(ma, label_r, lbl,
                     ha=ha, va=va, fontsize=fs - 1,
@@ -960,7 +1117,6 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
               fontsize=fs, framealpha=0.95, title='Model Track', title_fontsize=fs + 1,
               edgecolor='black', fancybox=True)
     return fig
-
 
 # ------------------------------------------------------------------
 # UMAP FEATURE BUILDER
@@ -1005,6 +1161,7 @@ def build_umap_features_cached(all_models_data_json):
 def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean'):
     if not HAS_UMAP or not HAS_SKLEARN:
         return None, "UMAP or scikit-learn not installed."
+
     import json
     data_json = json.dumps(all_models_data)
     cached = build_umap_features_cached(data_json)
@@ -1014,16 +1171,19 @@ def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean
     presence = cached['presence']
     totals = cached['totals']
     doi_counts = cached['doi_counts']
+
     n_samples = len(labels)
     if n_samples < 3:
         return None, "Need ≥3 materials for UMAP."
     nn = min(n_neighbors, n_samples - 1)
     if nn < 2:
         return None, "Not enough samples for UMAP neighbors."
+
     emb_list = compute_umap_embedding_cached(tuple(map(tuple, features)), nn, min_dist, metric)
     if emb_list is None:
         return None, "UMAP embedding failed."
     emb = np.array(emb_list)
+
     df = pd.DataFrame({
         'UMAP1': emb[:, 0], 'UMAP2': emb[:, 1], 'UMAP3': emb[:, 2],
         'Material': [get_mat_label(m) for m in labels],
@@ -1064,7 +1224,9 @@ def build_animation_data(all_models_data):
         for doi, mats in data.items():
             for mat, cnt in mats.items():
                 mat_totals[mat] += cnt
+
     top_mats = sorted(mat_totals.keys(), key=lambda x: mat_totals[x], reverse=True)[:50]
+
     for mk, meta in MODEL_META.items():
         data = all_models_data.get(mk, {})
         mat_counts = defaultdict(int)
@@ -1087,6 +1249,7 @@ def build_animation_data(all_models_data):
 
 def build_consensus_animation_data(all_models_data):
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
+
     mat_totals = defaultdict(int)
     for mk, data in all_models_data.items():
         for doi, mats in data.items():
@@ -1094,6 +1257,7 @@ def build_consensus_animation_data(all_models_data):
                 mat_totals[mat] += cnt
     top_mats = sorted(mat_totals.keys(), key=lambda x: mat_totals[x], reverse=True)[:50]
     all_mats = [m for m in all_mats if m in top_mats]
+
     mat_agreement = {}
     mat_maxcnt = {}
     for mat in all_mats:
@@ -1106,6 +1270,7 @@ def build_consensus_animation_data(all_models_data):
             max_cnt = max(max_cnt, cnt)
         mat_agreement[mat] = len(models_found)
         mat_maxcnt[mat] = max_cnt
+
     rows = []
     for level in [1, 2, 3]:
         for mat, ag in mat_agreement.items():
@@ -1161,7 +1326,9 @@ with st.sidebar:
     st.markdown("<small>When enabled, non-material nodes/edges are erased, dynamically altering diagram morphology.</small>", unsafe_allow_html=True)
 
     st.markdown("---")
+
     st.markdown("## 🏷️ Alias Editors")
+
     with st.expander("✏️ DOI Aliases", expanded=False):
         alias_search = st.text_input("Filter DOIs", "", key="alias_filter")
         filtered_dois = [d for d in all_dois if not alias_search or alias_search.lower() in d.lower()]
@@ -1176,6 +1343,7 @@ with st.sidebar:
                     st.session_state.doi_aliases[row["DOI"]] = row["Alias"]
                 st.success("✅ DOI Alias changes saved!")
                 st.rerun()
+
     with st.expander("✏️ Material Labels", expanded=False):
         mat_search = st.text_input("Filter materials", "", key="mat_filter")
         filtered_mats = [m for m in all_materials if not mat_search or mat_search.lower() in m.lower()]
@@ -1214,16 +1382,23 @@ with st.sidebar:
         chord_min_lw = st.slider("Min ribbon width", 0.2, 6.0, 0.8, 0.1, key="chord_mlw")
         chord_max_lw = st.slider("Max ribbon width", 1.0, 20.0, 6.0, 0.2, key="chord_Mlw")
 
+        # v2.4: Label alignment mode
         chord_label_mode = st.selectbox(
             "📐 Label alignment",
             ["radial", "parallel", "vertical", "inclined"],
-            index=0, key="chord_lbl_mode",
+            index=0,
+            key="chord_lbl_mode",
             help="Radial = points outward. Parallel = follows arc tangent. Vertical = always upright. Inclined = 30° slant."
         )
-        chord_gap = st.slider("Arc gap padding", 0.0, 0.08, 0.015, 0.005, key="chord_gap")
-        chord_lbl_off = st.slider("Label offset", 0.05, 0.40, 0.14, 0.01, key="chord_lo")
-        chord_tension = st.slider("Curve tension", 0.15, 0.60, 0.35, 0.05, key="chord_ten")
 
+        chord_gap = st.slider("Arc gap padding", 0.0, 0.08, 0.015, 0.005, key="chord_gap",
+                              help="Gap between adjacent arc segments.")
+        chord_lbl_off = st.slider("Label offset", 0.10, 0.60, 0.20, 0.01, key="chord_lo",
+                                  help="Radial distance of labels from arc edge. Increase if labels overlap.")
+        chord_tension = st.slider("Curve tension", 0.15, 0.60, 0.35, 0.05, key="chord_ten",
+                                  help="Bezier control-point radius factor.")
+
+        # v2.4: Model / Consensus / DOI legend toggles
         st.markdown("<small><b>Chord Legend & Visibility</b></small>", unsafe_allow_html=True)
         show_chord_modelB = st.checkbox("Show Model B", value=True, key="chord_show_b")
         show_chord_modelC = st.checkbox("Show Model C", value=True, key="chord_show_c")
@@ -1231,17 +1406,23 @@ with st.sidebar:
         show_chord_consensus = st.checkbox("Show Consensus", value=True, key="chord_show_cons")
         show_chord_doi = st.checkbox("Show DOI Nodes", value=True, key="chord_show_doi")
 
+        # Category Filter
         all_cats = sorted(list(TAXONOMY.keys()) + ['Other'])
         selected_cats = st.multiselect(
-            "📂 Toggle Categories", options=all_cats, default=all_cats,
-            key="chord_cat_filter", help="Deselecting erases nodes and links."
+            "📂 Toggle Categories",
+            options=all_cats,
+            default=all_cats,
+            key="chord_cat_filter",
+            help="Deselecting erases nodes and links."
         )
 
+        # 50+ Colormap
         chord_cmap = st.selectbox(
-            "🎨 Material Colormap", ALL_COLORMAPS,
+            "🎨 Material Colormap", 
+            ALL_COLORMAPS,
             index=ALL_COLORMAPS.index('turbo') if 'turbo' in ALL_COLORMAPS else 0,
             key="chord_cmap",
-            help="Continuous maps support unlimited colors. Qualitative auto-fallback to turbo if N>20."
+            help="Continuous maps support unlimited colors. Qualitative maps auto-fallback to turbo if N>20."
         )
 
     st.markdown("## 🧬 Circos Style")
@@ -1253,17 +1434,23 @@ with st.sidebar:
         circos_fs = st.slider("Font size", 5, 32, 9, key="circos_font")
         circos_scale = st.slider("Bar scale", 0.5, 4.0, 1.0, key="circos_scale")
 
+        # v2.4: Enhanced padding controls
         circos_lbl_pad = st.slider("Label padding", 0.15, 1.0, 0.40, 0.05, key="circos_lp",
                                    help="Radial distance from outer rim to label baseline.")
-        circos_lbl_buf = st.slider("Label buffer", 0.05, 0.50, 0.20, 0.05, key="circos_lb",
-                                   help="Extra clearance for figure bounds to prevent text clipping.")
+        circos_lbl_buf = st.slider("Label buffer", 0.05, 0.50, 0.15, 0.05, key="circos_lb",
+                                   help="Extra clearance added to figure bounds to prevent text clipping.")
         circos_rot_mode = st.selectbox(
-            "Label rotation", ["auto", "horizontal"], index=0, key="circos_rot",
+            "Label rotation",
+            ["auto", "horizontal"],
+            index=0,
+            key="circos_rot",
             help="Auto = radial rotation (readable from outside). Horizontal = always upright."
         )
 
+        # 50+ Colormap
         circos_cmap = st.selectbox(
-            "🎨 Material Colormap", ALL_COLORMAPS,
+            "🎨 Material Colormap", 
+            ALL_COLORMAPS,
             index=ALL_COLORMAPS.index('viridis') if 'viridis' in ALL_COLORMAPS else 0,
             key="circos_cmap",
             help="Outer rim colormap."
@@ -1288,6 +1475,7 @@ with st.sidebar:
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
         mem_warn = mem_mb > 1500
+
         st.markdown(f"""
         <div style="font-family:monospace; font-size:0.85rem;">
             <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
@@ -1295,12 +1483,17 @@ with st.sidebar:
             <span class="diag-metric">💾 Cache: Auto-managed (TTL + max_entries)</span>
         </div>
         """, unsafe_allow_html=True)
+
         if mem_warn:
             st.warning("⚠️ Memory usage high! Consider clearing cache or reducing dataset size.")
-        if st.button("🗑️ Force GC + Clear Caches", key="diag_clear"):
-            plt.close('all'); gc.collect(); st.cache_data.clear(); st.cache_resource.clear()
-            st.success("Caches cleared! Rerunning..."); st.rerun()
 
+        if st.button("🗑️ Force GC + Clear Caches", key="diag_clear"):
+            plt.close('all')
+            gc.collect()
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("Caches cleared! Rerunning...")
+            st.rerun()
 
 # ------------------------------------------------------------------
 # FILTER DATA
@@ -1316,8 +1509,8 @@ display_data = filter_data_by_validation_cached(
 # ------------------------------------------------------------------
 # MAIN HEADER
 # ------------------------------------------------------------------
-st.markdown('<div class="main-header">AlloyExtraction Nexus v2.5</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Memory-Hardened • 50+ Colormaps • Radial Labels Aligned to Nodes</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">AlloyExtraction Nexus v2.4</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Memory-Hardened • 50+ Colormaps • Configurable Label Modes • Enhanced Padding</div>', unsafe_allow_html=True)
 
 cols = st.columns(len(MODEL_META))
 for i, (key, meta) in enumerate(MODEL_META.items()):
@@ -1357,13 +1550,14 @@ tabs = st.tabs(tab_labels)
 t_idx = 0
 
 # ------------------------------------------------------------------
-# TAB 1: UNIFIED CHORD (v2.5)
+# TAB 1: UNIFIED CHORD (v2.4 — Label Modes + Legend Toggles)
 # ------------------------------------------------------------------
 if show_chord:
     with tabs[t_idx]:
         st.markdown("### Unified Multi-Model Chord Diagram")
-        st.markdown("<div class='caption'>v2.5: labels placed on radial lines through node arc midpoints — each label radiates outward from its corresponding node. Never clustered in center.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>v2.4: 4 label modes (radial/parallel/vertical/inclined) + per-model/consensus/DOI visibility toggles.</div>", unsafe_allow_html=True)
 
+        # Category Filter
         chord_data = {}
         for mk, data in display_data.items():
             fdata = {}
@@ -1374,6 +1568,7 @@ if show_chord:
             if fdata:
                 chord_data[mk] = fdata
 
+        # Build show_models dict from toggles
         show_models_dict = {
             'modelB': show_chord_modelB,
             'modelC': show_chord_modelC,
@@ -1456,12 +1651,12 @@ if show_heatmap:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 5: CIRCOS (v2.5)
+# TAB 5: CIRCOS (v2.4 — Enhanced Padding)
 # ------------------------------------------------------------------
 if show_circos:
     with tabs[t_idx]:
         st.markdown("### Circos-Style Radial Histogram")
-        st.markdown("<div class='caption'>v2.5: labels on radial lines through sector centers — radiate outward from outer rim. Enhanced padding + buffer prevents overlap.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>v2.4: enhanced label padding + buffer prevents text-image overlap. Smart rotation keeps labels readable.</div>", unsafe_allow_html=True)
         fig_circ = draw_circos_clean(
             display_data, figsize=(circos_size, circos_size), inner_r=circos_inner,
             track_h=circos_track, gap_deg=circos_gap, fs=circos_fs,
@@ -1619,11 +1814,10 @@ gc.collect()
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; color:#666; font-size:0.88rem; padding:1rem 0; font-family:serif;">
-    <strong>v2.5 Upgrades:</strong> 
-    ✅ Radial Labels Aligned to Nodes — each label sits on the radial line through its arc midpoint, radiating outward |
-    ✅ 4 Label Modes (radial / parallel / vertical / inclined) with <code>rotation_mode='anchor'</code> |
-    ✅ Chord Legend Toggles (per-model + consensus + DOI nodes, all default ON) |
-    ✅ Enhanced Circos Padding (label_padding + label_buffer prevents overlap) |
+    <strong>v2.4 Upgrades:</strong> 
+    ✅ 4 Label Modes (radial / parallel / vertical / inclined) with <code>rotation_mode='anchor'</code> | 
+    ✅ Chord Legend Toggles (per-model + consensus + DOI nodes, all default ON) | 
+    ✅ Enhanced Circos Padding (label_padding + label_buffer prevents overlap) | 
     ✅ 50+ Colormaps (turbo, jet, inferno, rainbow, plasma, magma, cividis, etc.)<br><br>
     <strong>Memory Hardening:</strong> All expensive operations remain wrapped in <code>@st.cache_data</code> or 
     <code>@st.cache_resource(max_entries=3)</code>. Matplotlib figures are force-closed via 

@@ -18,6 +18,13 @@
 [![meaningtowords](https://img.shields.io/badge/alloysmaterials-v2.0-green)](https://alloys-materials-retrieval-performance2.streamlit.app/) (Comparison among different LLM models, a document for a given model is given a unique label)
 
 
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v3.0-green)](https://alloys-materials-retrieval-performance3.streamlit.app/) (Unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v4.0-green)](https://alloys-materials-retrieval-performance4.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v5.0-green)](https://alloys-materials-retrieval-performance5.streamlit.app/) (Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+
+
 # LLM Names:
 
 Model A: Falcon3 10B

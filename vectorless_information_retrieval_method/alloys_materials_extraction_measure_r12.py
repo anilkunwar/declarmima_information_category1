@@ -1433,7 +1433,8 @@ with st.sidebar:
 
     st.markdown("## 🧬 Circos Style")
     with st.expander("Controls", expanded=False):
-        circos_size = st.slider("Figure size", 8, 24, 14, key="circos_fs")
+        #circos_size = st.slider("Figure size", 8, 24, 14, key="circos_fs")
+        circos_size = st.slider("Figure size", 4, 24, 14, key="circos_fs")
         circos_inner = st.slider("Inner radius", 0.5, 4.0, 1.0, key="circos_ir")
         circos_track = st.slider("Track height", 0.2, 3.0, 0.5, key="circos_th")
         circos_gap = st.slider("Gap (°)", 0.0, 20.0, 1.5, key="circos_gap")

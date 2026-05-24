@@ -1,8 +1,8 @@
 """
-AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization v2.0
+AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization v2.1
 Unified Chord · Sankey · Network · Heatmap · Circos · 3D UMAP · Animation
-Hybrid Material Validator · Editable Aliases (Save-Button) · Aggressive Caching & GC
-+ Diagnostic Panel · Limited Cache Entries · Reduced Slider Sensitivity
+Hybrid Material Validator · Editable Aliases (Data Editor) · Aggressive Caching & GC
++ Diagnostic Panel · Limited Cache Entries · Capped Figure Sizes
 """
 
 import streamlit as st
@@ -78,7 +78,7 @@ plt.switch_backend('Agg')
 # PAGE CONFIG
 # ------------------------------------------------------------------
 st.set_page_config(
-    page_title="AlloyExtraction Nexus — Memory-Hardened v2.0",
+    page_title="AlloyExtraction Nexus — Memory-Hardened v2.1",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -337,7 +337,7 @@ def validate_material(term: str, use_llm: bool = False) -> dict:
     return regex_validate_material(term)
 
 # ------------------------------------------------------------------
-# CACHED DATA LOADING
+# CACHED DATA LOADING (FIX #6: Limited cache entries)
 # ------------------------------------------------------------------
 DEFAULT_DATA_B = '''DOI,Materials_Alloys
 10.1007/s40195-025-01825-1,"al–si–mg–zr alloy, lpbf, alsimgzr, tib2/al–si–mg–zr alloy"
@@ -379,7 +379,7 @@ DEFAULT_DATA_D = '''DOI,Materials_Alloys
 10.1080/17452759.2024.2416518,"metallic_glass, alsimgzr"
 10.26434/chemrxiv-2025-sk6h5,"lewis_number, nanoindentation, sdss_2507, laser_power, sdss"'''
 
-@st.cache_data(ttl=600, show_spinner="Parsing CSV data...")
+@st.cache_data(ttl=600, max_entries=3, show_spinner="Parsing CSV data...")
 def parse_alloys_csv_cached(filepath_or_content, model_name):
     try:
         if os.path.exists(filepath_or_content):
@@ -421,7 +421,7 @@ def parse_alloys_csv_cached(filepath_or_content, model_name):
                 data[doi][m] += 1
     return dict(data)
 
-@st.cache_data(ttl=600, show_spinner="Loading data...")
+@st.cache_data(ttl=600, max_entries=1, show_spinner="Loading data...")
 def load_data_from_disk_or_default():
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     ALLOYS_DIR = os.path.join(SCRIPT_DIR, "alloys_materials")
@@ -441,45 +441,27 @@ def load_data_from_disk_or_default():
     return loaded
 
 # ------------------------------------------------------------------
-# ALIAS MANAGEMENT — SAVE-BUTTON PATTERN (FIX #1)
+# ALIAS MANAGEMENT
 # ------------------------------------------------------------------
 def init_aliases(all_dois, all_materials):
     if 'doi_aliases' not in st.session_state:
         st.session_state.doi_aliases = {}
     for i, doi in enumerate(sorted(all_dois)):
         if doi not in st.session_state.doi_aliases:
-            st.session_state.doi_aliases[doi] = f"[{chr(65 + i)}]"
+            # Safe fallback for >26 items
+            st.session_state.doi_aliases[doi] = f"[{chr(65 + i)}]" if i < 26 else f"[{i+1}]"
     
     if 'material_aliases' not in st.session_state:
         st.session_state.material_aliases = {}
     for mat in sorted(all_materials):
         if mat not in st.session_state.material_aliases:
             st.session_state.material_aliases[mat] = prettify_material(mat)
-    
-    # Initialize temp storage for alias edits (not committed until Save)
-    if 'alias_temp_doi' not in st.session_state:
-        st.session_state.alias_temp_doi = {}
-    if 'alias_temp_mat' not in st.session_state:
-        st.session_state.alias_temp_mat = {}
 
 def get_alias(doi):
     return st.session_state.doi_aliases.get(doi, doi[:20])
 
 def get_mat_label(mat):
     return st.session_state.material_aliases.get(mat, mat)
-
-def commit_alias_changes():
-    """Commit temporary alias edits to permanent session state."""
-    for doi, temp_val in st.session_state.alias_temp_doi.items():
-        if temp_val is not None:
-            st.session_state.doi_aliases[doi] = temp_val
-    for mat, temp_val in st.session_state.alias_temp_mat.items():
-        if temp_val is not None:
-            st.session_state.material_aliases[mat] = temp_val
-    # Clear temp storage after commit
-    st.session_state.alias_temp_doi.clear()
-    st.session_state.alias_temp_mat.clear()
-    st.success("✅ Alias changes saved!")
 
 # ------------------------------------------------------------------
 # CACHED FILTERING
@@ -504,7 +486,7 @@ def filter_data_by_validation_cached(data_dict_tuple, materials_only, enable_val
     return filtered
 
 # ------------------------------------------------------------------
-# CACHED UMAP EMBEDDING — max_entries=3 (FIX #4)
+# CACHED UMAP EMBEDDING
 # ------------------------------------------------------------------
 @st.cache_resource(ttl=600, max_entries=3, show_spinner="Computing UMAP embedding...")
 def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric):
@@ -521,7 +503,7 @@ def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric)
     return emb.tolist()
 
 # ------------------------------------------------------------------
-# CACHED PYVIS NETWORK — max_entries=3 (FIX #4)
+# CACHED PYVIS NETWORK
 # ------------------------------------------------------------------
 @st.cache_resource(ttl=300, max_entries=3, show_spinner="Building network graph...")
 def get_network_html_cached(display_data_json):
@@ -583,7 +565,7 @@ def get_network_html_cached(display_data_json):
     return html, legend_html
 
 # ------------------------------------------------------------------
-# FIGURE RENDERING WITH GUARANTEED CLEANUP
+# FIGURE RENDERING WITH GUARANTEED CLEANUP (FIX #2: Zero-Copy Download)
 # ------------------------------------------------------------------
 def render_matplotlib_figure(fig, filename, dpi):
     """Render figure to Streamlit, save to buffer, then force close and GC."""
@@ -594,24 +576,28 @@ def render_matplotlib_figure(fig, filename, dpi):
         st.pyplot(fig)
         buf = BytesIO()
         fig.savefig(buf, format="png", dpi=dpi, bbox_inches='tight', facecolor='white')
-        st.download_button(f"⬇️ Download {filename}", buf.getvalue(),
-                           filename, "image/png", key=f"dl_{filename.replace('.', '_')}")
+        buf.seek(0)
+        # Passing BytesIO directly prevents duplicating the byte string in memory
+        st.download_button(f"⬇️ Download {filename}", buf,
+                           file_name=filename, mime="image/png", key=f"dl_{filename.replace('.', '_')}")
     except Exception as e:
         st.error(f"Figure render failed: {e}")
     finally:
         if fig:
             plt.close(fig)
-        if buf:
-            buf.close()
-        # gc.collect() deferred to end of script for efficiency
+        # Note: buf is kept alive by Streamlit for the download button, 
+        # but capped figure sizes ensure it remains small (<20MB).
 
 # ------------------------------------------------------------------
-# UNIFIED CHORD (stateless, no caching due to many params)
+# UNIFIED CHORD (FIX #1: Capped Figure Size)
 # ------------------------------------------------------------------
 def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                        node_width=0.08, ribbon_alpha=0.55, font_size=10,
                        paper_span=np.pi * 0.85, material_span=np.pi * 0.85,
                        min_ribbon_width=0.8, max_ribbon_width=6.0):
+    # Hard cap figure size to prevent OOM
+    figsize = (min(figsize[0], 24), min(figsize[1], 24))
+    
     all_dois = sorted({d for data in all_models_data.values() for d in data})
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
     if not all_dois or not all_mats:
@@ -791,7 +777,7 @@ def draw_sankey(paper_materials, model_name, model_color):
     return fig
 
 # ------------------------------------------------------------------
-# HEATMAP
+# HEATMAP (FIX #1: Capped Figure Size)
 # ------------------------------------------------------------------
 def draw_heatmap(all_models_data):
     all_papers = sorted({d for data in all_models_data.values() for d in data})
@@ -806,7 +792,10 @@ def draw_heatmap(all_models_data):
                 j = all_materials.index(mat)
                 matrix[i, j] += 1
 
-    fig, ax = plt.subplots(figsize=(max(14, len(all_materials) * 0.7), max(8, len(all_papers) * 0.55)))
+    # Hard cap dimensions to prevent memory bombs
+    width = min(max(14, len(all_materials) * 0.5), 24)
+    height = min(max(8, len(all_papers) * 0.4), 18)
+    fig, ax = plt.subplots(figsize=(width, height))
     im = ax.imshow(matrix, cmap='YlOrRd', aspect='auto', vmin=0, vmax=3)
 
     ax.set_xticks(np.arange(len(all_materials)))
@@ -833,11 +822,14 @@ def draw_heatmap(all_models_data):
     return fig
 
 # ------------------------------------------------------------------
-# CIRCOS — CLEAN
+# CIRCOS — CLEAN (FIX #1: Capped Figure Size)
 # ------------------------------------------------------------------
 def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
                       track_h=0.5, gap_deg=1.0, fs=9, show_labels=True,
                       max_bar_scale=1.0):
+    # Hard cap figure size
+    figsize = (min(figsize[0], 24), min(figsize[1], 24))
+    
     mat_model = defaultdict(lambda: defaultdict(int))
     for mk, data in all_models_data.items():
         for doi, mats in data.items():
@@ -1001,18 +993,29 @@ def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean
     return fig, None
 
 # ------------------------------------------------------------------
-# ANIMATION DATA BUILDERS
+# ANIMATION DATA BUILDERS (FIX #5: Limited to Top 50 to prevent JSON explosion)
 # ------------------------------------------------------------------
 def build_animation_data(all_models_data):
     rows = []
+    mat_totals = defaultdict(int)
+    for mk, meta in MODEL_META.items():
+        data = all_models_data.get(mk, {})
+        for doi, mats in data.items():
+            for mat, cnt in mats.items():
+                mat_totals[mat] += cnt
+                
+    # Limit to top 50 materials to prevent Plotly JSON explosion
+    top_mats = sorted(mat_totals.keys(), key=lambda x: mat_totals[x], reverse=True)[:50]
+    
     for mk, meta in MODEL_META.items():
         data = all_models_data.get(mk, {})
         mat_counts = defaultdict(int)
         mat_cats = {}
         for doi, mats in data.items():
             for mat, cnt in mats.items():
-                mat_counts[mat] += cnt
-                mat_cats[mat] = get_category(mat)
+                if mat in top_mats:
+                    mat_counts[mat] += cnt
+                    mat_cats[mat] = get_category(mat)
         for mat, cnt in mat_counts.items():
             rows.append({
                 'Frame': meta['short'],
@@ -1026,6 +1029,15 @@ def build_animation_data(all_models_data):
 
 def build_consensus_animation_data(all_models_data):
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
+    
+    mat_totals = defaultdict(int)
+    for mk, data in all_models_data.items():
+        for doi, mats in data.items():
+            for mat, cnt in mats.items():
+                mat_totals[mat] += cnt
+    top_mats = sorted(mat_totals.keys(), key=lambda x: mat_totals[x], reverse=True)[:50]
+    all_mats = [m for m in all_mats if m in top_mats]
+    
     mat_agreement = {}
     mat_maxcnt = {}
     for mat in all_mats:
@@ -1095,43 +1107,38 @@ with st.sidebar:
 
     st.markdown("---")
     
-    # ✅ FIX #1: Alias Editors with Save Button Pattern
+    # ✅ FIX #3: Alias Editors using st.data_editor to prevent widget bloat
     st.markdown("## 🏷️ Alias Editors")
     
     with st.expander("✏️ DOI Aliases", expanded=False):
         alias_search = st.text_input("Filter DOIs", "", key="alias_filter")
-        # Use temporary storage for edits
-        for doi in all_dois:
-            if alias_search and alias_search.lower() not in doi.lower():
-                continue
-            current = st.session_state.doi_aliases.get(doi, f"[{doi[:1]}]")
-            # Use temp key for editing; don't update permanent state yet
-            temp_key = f"alias_temp_{doi}"
-            if temp_key not in st.session_state:
-                st.session_state[temp_key] = current
-            new_val = st.text_input(f"{doi[:55]}", value=st.session_state[temp_key], key=f"alias_input_{doi}")
-            st.session_state.alias_temp_doi[doi] = new_val  # Store in temp dict
-        
-        # Save button commits all changes at once
-        if st.button("💾 Save DOI Alias Changes", key="save_doi_aliases", type="primary"):
-            commit_alias_changes()
-            st.rerun()
+        filtered_dois = [d for d in all_dois if not alias_search or alias_search.lower() in d.lower()]
+        if filtered_dois:
+            doi_df = pd.DataFrame({
+                "DOI": filtered_dois,
+                "Alias": [st.session_state.doi_aliases.get(d, f"[{chr(65 + all_dois.index(d))}]" if all_dois.index(d) < 26 else f"[{all_dois.index(d) + 1}]") for d in filtered_dois]
+            })
+            edited_doi_df = st.data_editor(doi_df, hide_index=True, use_container_width=True, key="doi_editor")
+            if st.button("💾 Save DOI Alias Changes", key="save_doi_aliases", type="primary"):
+                for _, row in edited_doi_df.iterrows():
+                    st.session_state.doi_aliases[row["DOI"]] = row["Alias"]
+                st.success("✅ DOI Alias changes saved!")
+                st.rerun()
 
     with st.expander("✏️ Material Labels", expanded=False):
         mat_search = st.text_input("Filter materials", "", key="mat_filter")
-        for mat in all_materials:
-            if mat_search and mat_search.lower() not in mat.lower():
-                continue
-            current = st.session_state.material_aliases.get(mat, prettify_material(mat))
-            temp_key = f"mat_alias_temp_{mat}"
-            if temp_key not in st.session_state:
-                st.session_state[temp_key] = current
-            new_val = st.text_input(f"{mat}", value=st.session_state[temp_key], key=f"mat_alias_input_{mat}")
-            st.session_state.alias_temp_mat[mat] = new_val
-        
-        if st.button("💾 Save Material Label Changes", key="save_mat_aliases", type="primary"):
-            commit_alias_changes()
-            st.rerun()
+        filtered_mats = [m for m in all_materials if not mat_search or mat_search.lower() in m.lower()]
+        if filtered_mats:
+            mat_df = pd.DataFrame({
+                "Raw Material": filtered_mats,
+                "Display Label": [st.session_state.material_aliases.get(m, prettify_material(m)) for m in filtered_mats]
+            })
+            edited_mat_df = st.data_editor(mat_df, hide_index=True, use_container_width=True, key="mat_editor")
+            if st.button("💾 Save Material Label Changes", key="save_mat_aliases", type="primary"):
+                for _, row in edited_mat_df.iterrows():
+                    st.session_state.material_aliases[row["Raw Material"]] = row["Display Label"]
+                st.success("✅ Material Label changes saved!")
+                st.rerun()
 
     st.markdown("---")
     st.markdown("## ⚙️ Diagram Toggles")
@@ -1148,7 +1155,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## 🎨 Unified Chord Style")
     with st.expander("Controls", expanded=False):
-        chord_figsize = st.slider("Figure size", 8, 48, 16, key="chord_fs")
+        chord_figsize = st.slider("Figure size", 8, 24, 16, key="chord_fs")
         chord_radius = st.slider("Radius", 0.6, 2.8, 1.0, 0.05, key="chord_r")
         chord_node_w = st.slider("Node arc width", 0.02, 0.32, 0.08, 0.01, key="chord_nw")
         chord_rib_a = st.slider("Ribbon opacity", 0.1, 1.0, 0.55, 0.05, key="chord_ra")
@@ -1158,7 +1165,7 @@ with st.sidebar:
 
     st.markdown("## 🧬 Circos Style")
     with st.expander("Controls", expanded=False):
-        circos_size = st.slider("Figure size", 8, 48, 14, key="circos_fs")
+        circos_size = st.slider("Figure size", 8, 24, 14, key="circos_fs")
         circos_inner = st.slider("Inner radius", 0.5, 4.0, 1.0, key="circos_ir")
         circos_track = st.slider("Track height", 0.2, 3.0, 0.5, key="circos_th")
         circos_gap = st.slider("Gap (°)", 0.0, 20.0, 1.0, key="circos_gap")
@@ -1167,7 +1174,6 @@ with st.sidebar:
 
     st.markdown("## 🔮 UMAP Style")
     with st.expander("Controls", expanded=False):
-        # ✅ FIX #3: Reduced slider sensitivity with step=2
         umap_neighbors = st.slider("Neighbors", 2, 30, 5, step=2, key="umap_nn")
         umap_dist = st.slider("Min distance", 0.05, 1.8, 0.3, step=0.05, key="umap_md")
         umap_metric = st.selectbox("Metric", ['euclidean', 'cosine', 'correlation'], index=0, key="umap_met")
@@ -1178,11 +1184,9 @@ with st.sidebar:
         anim_speed = st.slider("Frame duration (ms)", 400, 6000, 1000, key="anim_spd")
 
     st.markdown("## 📊 Global Export")
-    download_dpi = st.slider("Figure DPI", 150, 1200, 600, 50)
+    download_dpi = st.slider("Figure DPI", 150, 600, 300, 50)
     
-    # ✅ FIX #1: Diagnostic Panel to monitor resources
     st.markdown("---")
-    # In sidebar (around line 1198)
     with st.expander("🩺 System Diagnostics", expanded=False):
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
@@ -1221,8 +1225,8 @@ display_data = filter_data_by_validation_cached(
 # ------------------------------------------------------------------
 # MAIN HEADER
 # ------------------------------------------------------------------
-st.markdown('<div class="main-header">AlloyExtraction Nexus v2.0</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Memory-Hardened • Save-Button Aliases • Diagnostic Panel</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">AlloyExtraction Nexus v2.1</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Memory-Hardened • Data-Editor Aliases • Diagnostic Panel</div>', unsafe_allow_html=True)
 
 cols = st.columns(len(MODEL_META))
 for i, (key, meta) in enumerate(MODEL_META.items()):
@@ -1262,7 +1266,7 @@ tabs = st.tabs(tab_labels)
 t_idx = 0
 
 # ------------------------------------------------------------------
-# TAB 1: UNIFIED CHORD
+# TAB 1: UNIFIED CHORD (FIX #4: Force GC)
 # ------------------------------------------------------------------
 if show_chord:
     with tabs[t_idx]:
@@ -1274,6 +1278,8 @@ if show_chord:
             min_ribbon_width=chord_min_lw, max_ribbon_width=chord_max_lw
         )
         render_matplotlib_figure(fig, "unified_chord.png", download_dpi)
+        del fig
+        gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1292,6 +1298,8 @@ if show_sankey:
                 fig = draw_sankey(display_data[key], meta['name'], meta['color'])
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
+                    del fig
+                    gc.collect()
                 else:
                     st.info(f"No Sankey data for {meta['short']}.")
     t_idx += 1
@@ -1314,10 +1322,12 @@ if show_network:
                 st.markdown(legend_html, unsafe_allow_html=True)
                 st.download_button("⬇️ Download Network HTML", html.encode('utf-8'),
                                    "alloy_network.html", "text/html")
+                del html
+                gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 4: HEATMAP
+# TAB 4: HEATMAP (FIX #4: Force GC)
 # ------------------------------------------------------------------
 if show_heatmap:
     with tabs[t_idx]:
@@ -1325,10 +1335,12 @@ if show_heatmap:
         st.markdown("<div class='caption'>Cell value = number of models extracting that material for that DOI. Darker = higher agreement.</div>", unsafe_allow_html=True)
         fig_h = draw_heatmap(display_data)
         render_matplotlib_figure(fig_h, "agreement_heatmap.png", download_dpi)
+        del fig_h
+        gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 5: CIRCOS
+# TAB 5: CIRCOS (FIX #4: Force GC)
 # ------------------------------------------------------------------
 if show_circos:
     with tabs[t_idx]:
@@ -1340,6 +1352,8 @@ if show_circos:
             max_bar_scale=circos_scale
         )
         render_matplotlib_figure(fig_circ, "circos_radial.png", download_dpi)
+        del fig_circ
+        gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1361,6 +1375,8 @@ if show_umap:
                 html_str = fig_umap.to_html(include_plotlyjs='cdn')
                 st.download_button("⬇️ Download UMAP HTML", html_str.encode('utf-8'),
                                    "umap_3d.html", "text/html")
+                del fig_umap, html_str
+                gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1369,7 +1385,7 @@ if show_umap:
 if show_animation:
     with tabs[t_idx]:
         st.markdown("### Animated Transitions")
-        st.markdown("<div class='caption'>Press play to sweep across models or watch consensus build up.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>Press play to sweep across models or watch consensus build up. (Limited to Top 50 materials for performance).</div>", unsafe_allow_html=True)
         if not HAS_PLOTLY:
             st.warning("Plotly not installed. `pip install plotly` to enable.")
         else:
@@ -1380,7 +1396,6 @@ if show_animation:
                     st.info("No animation data.")
                 else:
                     ymax = max(1, df_anim['Count'].max() * 1.15)
-                    # Add unique key to force Plotly replacement (prevents browser memory leak)
                     anim_key = f"anim_model_{hash(str(display_data)) % 10000}"
                     fig_anim = px.scatter(df_anim, x='Material', y='Count', animation_frame='Frame',
                                           color='Category', size='Count',
@@ -1482,24 +1497,17 @@ gc.collect()
 # ------------------------------------------------------------------
 # FOOTER
 # ------------------------------------------------------------------
-# ------------------------------------------------------------------
-# FOOTER
-# ------------------------------------------------------------------
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; color:#666; font-size:0.88rem; padding:1rem 0; font-family:serif;">
-    <strong>v2.0 Upgrades:</strong> 
-    ✅ Diagnostic panel for real-time memory monitoring | 
-    ✅ Alias edits now require explicit Save button (prevents session bloat) | 
-    ✅ UMAP sliders use step=2 to limit cache variants | 
-    ✅ Resource caches limited to max_entries=3<br><br>
+    <strong>v2.1 Upgrades:</strong> 
+    ✅ Capped max figure sizes (24x18) & DPI (600) to prevent OOM crashes | 
+    ✅ Replaced 1000s of text inputs with st.data_editor | 
+    ✅ Limited Plotly animations to Top 50 materials | 
+    ✅ Forced Garbage Collection between heavy tabs<br><br>
     <strong>Hybrid Validator:</strong> Periodic-table regex engine auto-tags materials (alloys, ceramics, intermetallics)
     and filters process parameters. Replace <code>llm_validate_material()</code> with a
     <code>transformers</code> pipeline (GPT-2 / Qwen-0.5B) for neural refinement.<br><br>
-    <strong>Memory Hardening:</strong> All expensive operations are <code>@st.cache_data</code> or 
-    <code>@st.cache_resource(max_entries=3)</code> wrapped. Matplotlib figures are force-closed via 
-    <code>plt.close()</code> + <code>gc.collect()</code> after every render. Use the 🧹 Clear Memory button 
-    or the 🩺 Diagnostic panel for emergency cleanup.<br><br>
     <strong>Publication Defaults:</strong> Serif typography, 600 DPI export, colorblind-safe palettes,
     editable DOI & material aliases, and consensus-aware unified chord diagrams.
 </div>

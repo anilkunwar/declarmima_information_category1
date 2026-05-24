@@ -1090,7 +1090,7 @@ with st.sidebar:
     st.markdown("## 🧬 Material Validator")
     st.markdown("<small>Regex + Periodic-Table hybrid. Toggle to filter non-materials.</small>", unsafe_allow_html=True)
     enable_validator = st.checkbox("Enable validation", value=True, key="en_val")
-    materials_only = st.checkbox("Show ONLY validated materials", value=False, key="mat_only")
+    materials_only = st.checkbox('Show ONLY validated materials', value=False, key="mat_only")
     st.markdown("<small>GPT-2/Qwen-0.5B stub ready in <code>llm_validate_material()</code></small>", unsafe_allow_html=True)
 
     st.markdown("---")

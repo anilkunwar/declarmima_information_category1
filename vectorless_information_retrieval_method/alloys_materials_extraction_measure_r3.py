@@ -1482,27 +1482,11 @@ gc.collect()
 # ------------------------------------------------------------------
 # FOOTER
 # ------------------------------------------------------------------
-st.markdown("---")
-with st.expander("🩺 System Diagnostics", expanded=False):
-    process = psutil.Process(os.getpid())
-    mem_mb = process.memory_info().rss / 1024 / 1024
-    mem_warn = mem_mb > 1500  # Warning threshold
-
-    st.markdown(f"""
-    <div style="font-family:monospace; font-size:0.85rem;">
-        <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
-        <span class="diag-metric">🔑 Session Keys: {len(st.session_state)}</span>
-        <span class="diag-metric">📦 Cache Status: Auto-managed (TTL + max_entries)</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if mem_warn:
-        st.warning("⚠️ Memory usage high! Consider clearing cache or reducing dataset size.")
-
-    if st.button("🗑️ Force GC + Clear Caches", key="diag_clear"):
-        plt.close('all')
-        gc.collect()
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.success("Caches cleared! Rerunning...")
-        st.rerun()
+st.markdown(f"""
+<div style="font-family:monospace; font-size:0.85rem;">
+    <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
+    <span class="diag-metric">🔑 Session Keys: {len(st.session_state)}</span>
+    <span class="diag-metric">💾 Cached Data: (N/A)</span>
+    <span class="diag-metric">⚡ Cached Resource: (N/A)</span>
+</div>
+""", unsafe_allow_html=True)

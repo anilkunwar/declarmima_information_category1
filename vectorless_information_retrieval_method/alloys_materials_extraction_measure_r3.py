@@ -1,8 +1,7 @@
 """
-AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization v2.0
+AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization
 Unified Chord · Sankey · Network · Heatmap · Circos · 3D UMAP · Animation
-Hybrid Material Validator · Editable Aliases (Save-Button) · Aggressive Caching & GC
-+ Diagnostic Panel · Limited Cache Entries · Reduced Slider Sensitivity
+Hybrid Material Validator · Editable Aliases · Aggressive Caching & GC
 """
 
 import streamlit as st
@@ -14,7 +13,7 @@ import matplotlib.patches as mpatches
 from matplotlib.patches import Wedge, PathPatch
 from matplotlib.path import Path
 from io import BytesIO
-import os, json, re, gc, tempfile, psutil
+import os, json, re, gc, tempfile
 from collections import defaultdict
 from functools import lru_cache
 from itertools import combinations
@@ -78,7 +77,7 @@ plt.switch_backend('Agg')
 # PAGE CONFIG
 # ------------------------------------------------------------------
 st.set_page_config(
-    page_title="AlloyExtraction Nexus — Memory-Hardened v2.0",
+    page_title="AlloyExtraction Nexus — Memory-Hardened",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -99,27 +98,42 @@ st.markdown("""
     .section-title { font-size: 1.15rem; font-weight: 700; color: #2c3e50; margin-bottom: 0.8rem; border-bottom: 2px solid #3498db; padding-bottom: 0.3rem; }
     .memory-btn { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; font-weight: bold; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; }
     .memory-btn:hover { background: linear-gradient(135deg, #c0392b 0%, #a93226 100%); }
-    .diag-metric { display: inline-block; margin: 0.3rem 0.5rem 0.3rem 0; padding: 0.4rem 0.8rem; background: #f8f9fa; border-radius: 4px; font-size: 0.9rem; }
-    .diag-warn { color: #c0392b; font-weight: 600; }
-    .diag-ok { color: #27ae60; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------
-# MEMORY EMERGENCY BUTTON (Sidebar top)
+# MEMORY MONITOR & EMERGENCY BUTTON (Sidebar top)
 # ------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 🚨 Memory Management")
-    if st.button("🧹 Clear All Memory & Cache", type="primary", key="clear_mem"):
-        plt.close('all')
-        gc.collect()
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        for key in list(st.session_state.keys()):
-            if key not in ['doi_aliases', 'material_aliases', 'validation_cache', 'alias_temp_doi', 'alias_temp_mat']:
-                del st.session_state[key]
-        st.success("Memory cleared! Rerunning...")
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🧹 Clear All Memory & Cache", type="primary", key="clear_mem"):
+            plt.close('all')
+            gc.collect()
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            # Reset session state but keep essential keys
+            keep_keys = {'doi_aliases', 'material_aliases', 'validation_cache', 'umap_embedding'}
+            for key in list(st.session_state.keys()):
+                if key not in keep_keys:
+                    del st.session_state[key]
+            st.success("Memory cleared! Rerunning...")
+            st.rerun()
+    with col2:
+        if st.button("📊 Memory Monitor", key="mem_monitor"):
+            st.session_state.show_mem = not st.session_state.get('show_mem', False)
+    
+    if st.session_state.get('show_mem', False):
+        try:
+            import psutil, os
+            process = psutil.Process(os.getpid())
+            mem_mb = process.memory_info().rss / 1024 / 1024
+            st.metric("Process Memory (MB)", f"{mem_mb:.1f}")
+            st.metric("Session State Keys", len(st.session_state))
+            st.metric("Cached Resources", len(st.cache_resource))
+        except ImportError:
+            st.info("Install psutil for detailed memory stats.")
 
 # ------------------------------------------------------------------
 # PERIODIC TABLE & METADATA
@@ -441,7 +455,7 @@ def load_data_from_disk_or_default():
     return loaded
 
 # ------------------------------------------------------------------
-# ALIAS MANAGEMENT — SAVE-BUTTON PATTERN (FIX #1)
+# ALIAS MANAGEMENT (with save button)
 # ------------------------------------------------------------------
 def init_aliases(all_dois, all_materials):
     if 'doi_aliases' not in st.session_state:
@@ -449,18 +463,11 @@ def init_aliases(all_dois, all_materials):
     for i, doi in enumerate(sorted(all_dois)):
         if doi not in st.session_state.doi_aliases:
             st.session_state.doi_aliases[doi] = f"[{chr(65 + i)}]"
-    
     if 'material_aliases' not in st.session_state:
         st.session_state.material_aliases = {}
     for mat in sorted(all_materials):
         if mat not in st.session_state.material_aliases:
             st.session_state.material_aliases[mat] = prettify_material(mat)
-    
-    # Initialize temp storage for alias edits (not committed until Save)
-    if 'alias_temp_doi' not in st.session_state:
-        st.session_state.alias_temp_doi = {}
-    if 'alias_temp_mat' not in st.session_state:
-        st.session_state.alias_temp_mat = {}
 
 def get_alias(doi):
     return st.session_state.doi_aliases.get(doi, doi[:20])
@@ -468,23 +475,10 @@ def get_alias(doi):
 def get_mat_label(mat):
     return st.session_state.material_aliases.get(mat, mat)
 
-def commit_alias_changes():
-    """Commit temporary alias edits to permanent session state."""
-    for doi, temp_val in st.session_state.alias_temp_doi.items():
-        if temp_val is not None:
-            st.session_state.doi_aliases[doi] = temp_val
-    for mat, temp_val in st.session_state.alias_temp_mat.items():
-        if temp_val is not None:
-            st.session_state.material_aliases[mat] = temp_val
-    # Clear temp storage after commit
-    st.session_state.alias_temp_doi.clear()
-    st.session_state.alias_temp_mat.clear()
-    st.success("✅ Alias changes saved!")
-
 # ------------------------------------------------------------------
-# CACHED FILTERING
+# CACHED FILTERING (with max_entries for safety)
 # ------------------------------------------------------------------
-@st.cache_data(ttl=300, show_spinner="Validating materials...")
+@st.cache_data(ttl=300, show_spinner="Validating materials...", max_entries=10)
 def filter_data_by_validation_cached(data_dict_tuple, materials_only, enable_validator):
     data_dict = {k: dict(v) for k, v in data_dict_tuple}
     if not enable_validator or not materials_only:
@@ -504,9 +498,49 @@ def filter_data_by_validation_cached(data_dict_tuple, materials_only, enable_val
     return filtered
 
 # ------------------------------------------------------------------
-# CACHED UMAP EMBEDDING — max_entries=3 (FIX #4)
+# CACHED UMAP FEATURE BUILDER
 # ------------------------------------------------------------------
-@st.cache_resource(ttl=600, max_entries=3, show_spinner="Computing UMAP embedding...")
+@st.cache_data(ttl=600, show_spinner="Building UMAP features...", max_entries=5)
+def build_umap_features_cached(all_models_data_json):
+    import json
+    all_models_data = json.loads(all_models_data_json)
+    all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
+    cat_list = list(TAXONOMY.keys())
+    features, labels, categories, presence_list, totals, doi_counts = [], [], [], [], [], []
+    for mat in all_mats:
+        vec = []
+        total = 0
+        presence = []
+        for mk in MODEL_META.keys():
+            cnt = sum(data.get(doi, {}).get(mat, 0) for doi, data in all_models_data[mk].items())
+            vec.append(np.log1p(cnt))
+            total += cnt
+            presence.append(1 if cnt > 0 else 0)
+        cat = get_category(mat)
+        for c in cat_list:
+            vec.append(1 if c == cat else 0)
+        n_dois = len({doi for mk, data in all_models_data.items()
+                      for doi, mats in data.items() if mat in mats})
+        vec.append(np.log1p(n_dois))
+        features.append(vec)
+        labels.append(mat)
+        categories.append(cat)
+        presence_list.append(presence)
+        totals.append(total)
+        doi_counts.append(n_dois)
+    return {
+        'features': features,
+        'labels': labels,
+        'categories': categories,
+        'presence': presence_list,
+        'totals': totals,
+        'doi_counts': doi_counts
+    }
+
+# ------------------------------------------------------------------
+# CACHED UMAP EMBEDDING (with max_entries)
+# ------------------------------------------------------------------
+@st.cache_resource(ttl=600, show_spinner="Computing UMAP embedding...", max_entries=5)
 def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric):
     features = np.array(features_tuple)
     n_samples = len(features)
@@ -521,9 +555,9 @@ def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric)
     return emb.tolist()
 
 # ------------------------------------------------------------------
-# CACHED PYVIS NETWORK — max_entries=3 (FIX #4)
+# CACHED PYVIS NETWORK (with max_entries)
 # ------------------------------------------------------------------
-@st.cache_resource(ttl=300, max_entries=3, show_spinner="Building network graph...")
+@st.cache_resource(ttl=300, show_spinner="Building network graph...", max_entries=3)
 def get_network_html_cached(display_data_json):
     if not HAS_PYVIS:
         return None, ""
@@ -569,7 +603,7 @@ def get_network_html_cached(display_data_json):
         net.save_graph(f.name)
         with open(f.name, 'r', encoding='utf-8') as hf:
             html = hf.read()
-        os.remove(f.name)
+        os.unlink(f.name)
 
     legend_html = '''
     <div style="margin-top:8px; padding:10px; background:#f8f9fa; border:1px solid #dde2e8; border-radius:6px; font-family:serif;">
@@ -586,7 +620,6 @@ def get_network_html_cached(display_data_json):
 # FIGURE RENDERING WITH GUARANTEED CLEANUP
 # ------------------------------------------------------------------
 def render_matplotlib_figure(fig, filename, dpi):
-    """Render figure to Streamlit, save to buffer, then force close and GC."""
     if fig is None:
         return
     buf = None
@@ -596,17 +629,15 @@ def render_matplotlib_figure(fig, filename, dpi):
         fig.savefig(buf, format="png", dpi=dpi, bbox_inches='tight', facecolor='white')
         st.download_button(f"⬇️ Download {filename}", buf.getvalue(),
                            filename, "image/png", key=f"dl_{filename.replace('.', '_')}")
-    except Exception as e:
-        st.error(f"Figure render failed: {e}")
     finally:
         if fig:
             plt.close(fig)
         if buf:
             buf.close()
-        # gc.collect() deferred to end of script for efficiency
+        gc.collect()
 
 # ------------------------------------------------------------------
-# UNIFIED CHORD (stateless, no caching due to many params)
+# UNIFIED CHORD
 # ------------------------------------------------------------------
 def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                        node_width=0.08, ribbon_alpha=0.55, font_size=10,
@@ -833,7 +864,7 @@ def draw_heatmap(all_models_data):
     return fig
 
 # ------------------------------------------------------------------
-# CIRCOS — CLEAN
+# CIRCOS
 # ------------------------------------------------------------------
 def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
                       track_h=0.5, gap_deg=1.0, fs=9, show_labels=True,
@@ -906,71 +937,12 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
     return fig
 
 # ------------------------------------------------------------------
-# UMAP FEATURE BUILDER
+# 3D UMAP (with compute button)
 # ------------------------------------------------------------------
-@st.cache_data(ttl=300, show_spinner="Building UMAP features...")
-def build_umap_features_cached(all_models_data_json):
-    import json
-    all_models_data = json.loads(all_models_data_json)
-    all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
-    cat_list = list(TAXONOMY.keys())
-    features, labels, categories, presence_list, totals, doi_counts = [], [], [], [], [], []
-    for mat in all_mats:
-        vec = []
-        total = 0
-        presence = []
-        for mk in MODEL_META.keys():
-            cnt = sum(data.get(doi, {}).get(mat, 0) for doi, data in all_models_data[mk].items())
-            vec.append(np.log1p(cnt))
-            total += cnt
-            presence.append(1 if cnt > 0 else 0)
-        cat = get_category(mat)
-        for c in cat_list:
-            vec.append(1 if c == cat else 0)
-        n_dois = len({doi for mk, data in all_models_data.items()
-                      for doi, mats in data.items() if mat in mats})
-        vec.append(np.log1p(n_dois))
-        features.append(vec)
-        labels.append(mat)
-        categories.append(cat)
-        presence_list.append(presence)
-        totals.append(total)
-        doi_counts.append(n_dois)
-    return {
-        'features': features,
-        'labels': labels,
-        'categories': categories,
-        'presence': presence_list,
-        'totals': totals,
-        'doi_counts': doi_counts
-    }
-
-def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean'):
-    if not HAS_UMAP or not HAS_SKLEARN:
-        return None, "UMAP or scikit-learn not installed."
-    
-    import json
-    data_json = json.dumps(all_models_data)
-    cached = build_umap_features_cached(data_json)
-    features = np.array(cached['features'])
-    labels = cached['labels']
-    categories = cached['categories']
-    presence = cached['presence']
-    totals = cached['totals']
-    doi_counts = cached['doi_counts']
-    
-    n_samples = len(labels)
-    if n_samples < 3:
-        return None, "Need ≥3 materials for UMAP."
-    nn = min(n_neighbors, n_samples - 1)
-    if nn < 2:
-        return None, "Not enough samples for UMAP neighbors."
-
-    emb_list = compute_umap_embedding_cached(tuple(map(tuple, features)), nn, min_dist, metric)
-    if emb_list is None:
-        return None, "UMAP embedding failed."
-    emb = np.array(emb_list)
-
+def draw_umap_3d(embedding, labels, categories, totals, doi_counts, presence):
+    if embedding is None or len(embedding) == 0:
+        return None, "No UMAP embedding available. Click 'Compute UMAP' first."
+    emb = np.array(embedding)
     df = pd.DataFrame({
         'UMAP1': emb[:, 0], 'UMAP2': emb[:, 1], 'UMAP3': emb[:, 2],
         'Material': [get_mat_label(m) for m in labels],
@@ -1022,6 +994,12 @@ def build_animation_data(all_models_data):
                 'Category': mat_cats[mat],
                 'LogCount': np.log1p(cnt)
             })
+    # Limit to top 50 materials by total count to avoid browser overload
+    if rows:
+        df = pd.DataFrame(rows)
+        top_mats = df.groupby('Material')['Count'].sum().nlargest(50).index
+        df = df[df['Material'].isin(top_mats)]
+        return df
     return pd.DataFrame(rows)
 
 def build_consensus_animation_data(all_models_data):
@@ -1050,6 +1028,11 @@ def build_consensus_animation_data(all_models_data):
                     'MaxCount': mat_maxcnt[mat],
                     'Agreement': ag
                 })
+    if rows:
+        df = pd.DataFrame(rows)
+        top_mats = df.groupby('Material')['MaxCount'].sum().nlargest(50).index
+        df = df[df['Material'].isin(top_mats)]
+        return df
     return pd.DataFrame(rows)
 
 # ------------------------------------------------------------------
@@ -1063,8 +1046,11 @@ init_aliases(all_dois, all_materials)
 if 'validation_cache' not in st.session_state:
     st.session_state.validation_cache = {}
 
+if 'umap_embedding' not in st.session_state:
+    st.session_state.umap_embedding = None
+
 # ------------------------------------------------------------------
-# SIDEBAR
+# SIDEBAR (restructured with save buttons)
 # ------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## 📁 Data Source")
@@ -1090,47 +1076,39 @@ with st.sidebar:
     st.markdown("## 🧬 Material Validator")
     st.markdown("<small>Regex + Periodic-Table hybrid. Toggle to filter non-materials.</small>", unsafe_allow_html=True)
     enable_validator = st.checkbox("Enable validation", value=True, key="en_val")
-    materials_only = st.checkbox('Show ONLY validated materials', value=False, key="mat_only")
-    st.markdown("<small>GPT-2/Qwen-0.5B stub ready in <code>llm_validate_material()</code></small>", unsafe_allow_html=True)
+    materials_only = st.checkbox("Show ONLY validated materials", value=False, key="mat_only")
 
     st.markdown("---")
-    
-    # ✅ FIX #1: Alias Editors with Save Button Pattern
-    st.markdown("## 🏷️ Alias Editors")
-    
+    st.markdown("## 🏷️ Alias Editors (Save Required)")
+
+    # DOI aliases editor with save button
     with st.expander("✏️ DOI Aliases", expanded=False):
         alias_search = st.text_input("Filter DOIs", "", key="alias_filter")
-        # Use temporary storage for edits
+        temp_doi_aliases = {}
         for doi in all_dois:
             if alias_search and alias_search.lower() not in doi.lower():
                 continue
             current = st.session_state.doi_aliases.get(doi, f"[{doi[:1]}]")
-            # Use temp key for editing; don't update permanent state yet
-            temp_key = f"alias_temp_{doi}"
-            if temp_key not in st.session_state:
-                st.session_state[temp_key] = current
-            new_val = st.text_input(f"{doi[:55]}", value=st.session_state[temp_key], key=f"alias_input_{doi}")
-            st.session_state.alias_temp_doi[doi] = new_val  # Store in temp dict
-        
-        # Save button commits all changes at once
-        if st.button("💾 Save DOI Alias Changes", key="save_doi_aliases", type="primary"):
-            commit_alias_changes()
+            new_val = st.text_input(f"{doi[:55]}", value=current, key=f"alias_input_{doi}")
+            temp_doi_aliases[doi] = new_val
+        if st.button("💾 Save DOI Aliases", key="save_doi_aliases"):
+            st.session_state.doi_aliases.update(temp_doi_aliases)
+            st.success("DOI aliases saved!")
             st.rerun()
 
+    # Material aliases editor with save button
     with st.expander("✏️ Material Labels", expanded=False):
         mat_search = st.text_input("Filter materials", "", key="mat_filter")
+        temp_mat_aliases = {}
         for mat in all_materials:
             if mat_search and mat_search.lower() not in mat.lower():
                 continue
             current = st.session_state.material_aliases.get(mat, prettify_material(mat))
-            temp_key = f"mat_alias_temp_{mat}"
-            if temp_key not in st.session_state:
-                st.session_state[temp_key] = current
-            new_val = st.text_input(f"{mat}", value=st.session_state[temp_key], key=f"mat_alias_input_{mat}")
-            st.session_state.alias_temp_mat[mat] = new_val
-        
-        if st.button("💾 Save Material Label Changes", key="save_mat_aliases", type="primary"):
-            commit_alias_changes()
+            new_val = st.text_input(f"{mat}", value=current, key=f"mat_alias_input_{mat}")
+            temp_mat_aliases[mat] = new_val
+        if st.button("💾 Save Material Labels", key="save_mat_aliases"):
+            st.session_state.material_aliases.update(temp_mat_aliases)
+            st.success("Material labels saved!")
             st.rerun()
 
     st.markdown("---")
@@ -1165,12 +1143,39 @@ with st.sidebar:
         circos_fs = st.slider("Font size", 5, 32, 9, key="circos_font")
         circos_scale = st.slider("Bar scale", 0.5, 4.0, 1.0, key="circos_scale")
 
-    st.markdown("## 🔮 UMAP Style")
+    st.markdown("## 🔮 UMAP")
     with st.expander("Controls", expanded=False):
-        # ✅ FIX #3: Reduced slider sensitivity with step=2
-        umap_neighbors = st.slider("Neighbors", 2, 30, 5, step=2, key="umap_nn")
-        umap_dist = st.slider("Min distance", 0.05, 1.8, 0.3, step=0.05, key="umap_md")
+        umap_neighbors = st.slider("Neighbors", 2, 30, 5, key="umap_nn")
+        umap_dist = st.slider("Min distance", 0.05, 1.8, 0.3, 0.05, key="umap_md")
         umap_metric = st.selectbox("Metric", ['euclidean', 'cosine', 'correlation'], index=0, key="umap_met")
+        if st.button("🚀 Compute UMAP Embedding", key="compute_umap"):
+            with st.spinner("Computing UMAP (may take a while)..."):
+                import json
+                data_json = json.dumps(display_data)
+                cached = build_umap_features_cached(data_json)
+                features = np.array(cached['features'])
+                n_samples = len(cached['labels'])
+                if n_samples >= 3:
+                    nn = min(umap_neighbors, n_samples - 1)
+                    emb = compute_umap_embedding_cached(tuple(map(tuple, features)), nn, umap_dist, umap_metric)
+                    if emb:
+                        st.session_state.umap_embedding = {
+                            'embedding': emb,
+                            'labels': cached['labels'],
+                            'categories': cached['categories'],
+                            'totals': cached['totals'],
+                            'doi_counts': cached['doi_counts'],
+                            'presence': cached['presence']
+                        }
+                        st.success("UMAP embedding computed and stored.")
+                    else:
+                        st.error("UMAP failed.")
+                else:
+                    st.error(f"Need at least 3 materials, found {n_samples}.")
+        if st.button("🗑️ Clear UMAP Cache", key="clear_umap"):
+            st.session_state.umap_embedding = None
+            st.cache_resource.clear()
+            st.success("UMAP cache cleared.")
 
     st.markdown("## 🎬 Animation Style")
     with st.expander("Controls", expanded=False):
@@ -1179,33 +1184,6 @@ with st.sidebar:
 
     st.markdown("## 📊 Global Export")
     download_dpi = st.slider("Figure DPI", 150, 1200, 600, 50)
-    
-    # ✅ FIX #1: Diagnostic Panel to monitor resources
-    st.markdown("---")
-    with st.expander("🩺 System Diagnostics", expanded=False):
-        process = psutil.Process(os.getpid())
-        mem_mb = process.memory_info().rss / 1024 / 1024
-        mem_warn = mem_mb > 1500  # Warning threshold
-        
-        st.markdown(f"""
-        <div style="font-family:monospace; font-size:0.85rem;">
-            <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
-            <span class="diag-metric">🔑 Session Keys: {len(st.session_state)}</span>
-            <span class="diag-metric">💾 Cached Data: {len(st.cache_data)}</span>
-            <span class="diag-metric">⚡ Cached Resource: {len(st.cache_resource)}</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if mem_warn:
-            st.warning("⚠️ Memory usage high! Consider clearing cache or reducing dataset size.")
-        
-        if st.button("🗑️ Force GC + Clear Caches", key="diag_clear"):
-            plt.close('all')
-            gc.collect()
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.success("Caches cleared! Rerunning...")
-            st.rerun()
 
 # ------------------------------------------------------------------
 # FILTER DATA
@@ -1221,8 +1199,8 @@ display_data = filter_data_by_validation_cached(
 # ------------------------------------------------------------------
 # MAIN HEADER
 # ------------------------------------------------------------------
-st.markdown('<div class="main-header">AlloyExtraction Nexus v2.0</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Memory-Hardened • Save-Button Aliases • Diagnostic Panel</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">AlloyExtraction Nexus</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Hybrid-Validated, Memory-Hardened Cross-Model Visualization</div>', unsafe_allow_html=True)
 
 cols = st.columns(len(MODEL_META))
 for i, (key, meta) in enumerate(MODEL_META.items()):
@@ -1241,7 +1219,7 @@ for i, (key, meta) in enumerate(MODEL_META.items()):
 st.markdown("---")
 
 # ------------------------------------------------------------------
-# TABS
+# TABS (only enabled diagrams)
 # ------------------------------------------------------------------
 tab_labels = []
 if show_chord:      tab_labels.append("🔵 Unified Chord")
@@ -1297,7 +1275,7 @@ if show_sankey:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 3: NETWORK (CACHED)
+# TAB 3: NETWORK
 # ------------------------------------------------------------------
 if show_network:
     with tabs[t_idx]:
@@ -1343,45 +1321,54 @@ if show_circos:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 6: 3D UMAP (CACHED)
+# TAB 6: 3D UMAP (using stored embedding)
 # ------------------------------------------------------------------
 if show_umap:
     with tabs[t_idx]:
         st.markdown("### 3D UMAP Clustering of Materials")
-        st.markdown("<div class='caption'>UMAP on occurrence vectors. Color = taxonomy; size = total count. Black edges for visibility.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>UMAP on occurrence vectors. Color = taxonomy; size = total count. Use the sidebar to compute or clear the embedding.</div>", unsafe_allow_html=True)
         if not HAS_UMAP or not HAS_SKLEARN:
             st.warning("UMAP or scikit-learn missing. `pip install umap-learn scikit-learn` to enable.")
         else:
-            fig_umap, err = draw_umap_3d(display_data, n_neighbors=umap_neighbors,
-                                         min_dist=umap_dist, metric=umap_metric)
-            if err:
-                st.error(err)
-            elif fig_umap:
-                st.plotly_chart(fig_umap, use_container_width=True)
-                html_str = fig_umap.to_html(include_plotlyjs='cdn')
-                st.download_button("⬇️ Download UMAP HTML", html_str.encode('utf-8'),
-                                   "umap_3d.html", "text/html")
+            emb_data = st.session_state.umap_embedding
+            if emb_data is None:
+                st.info("No UMAP embedding computed yet. Please go to the sidebar and click 'Compute UMAP Embedding'.")
+            else:
+                fig_umap, err = draw_umap_3d(
+                    emb_data['embedding'],
+                    emb_data['labels'],
+                    emb_data['categories'],
+                    emb_data['totals'],
+                    emb_data['doi_counts'],
+                    emb_data['presence']
+                )
+                if err:
+                    st.error(err)
+                elif fig_umap:
+                    st.plotly_chart(fig_umap, use_container_width=True)
+                    html_str = fig_umap.to_html(include_plotlyjs='cdn')
+                    st.download_button("⬇️ Download UMAP HTML", html_str.encode('utf-8'),
+                                       "umap_3d.html", "text/html")
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 7: ANIMATION
+# TAB 7: ANIMATION (with unique key)
 # ------------------------------------------------------------------
 if show_animation:
     with tabs[t_idx]:
         st.markdown("### Animated Transitions")
-        st.markdown("<div class='caption'>Press play to sweep across models or watch consensus build up.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>Press play to sweep across models or watch consensus build up. Limited to top 50 materials by count.</div>", unsafe_allow_html=True)
         if not HAS_PLOTLY:
             st.warning("Plotly not installed. `pip install plotly` to enable.")
         else:
             cat_color_map = {k: CATEGORY_COLORS.get(k, '#cccccc') for k in list(TAXONOMY.keys()) + ['Other']}
+            anim_key = f"anim_{anim_type}_{hash(str(display_data)) % 10000}"
             if anim_type == "Model Sweep":
                 df_anim = build_animation_data(display_data)
                 if df_anim.empty:
                     st.info("No animation data.")
                 else:
                     ymax = max(1, df_anim['Count'].max() * 1.15)
-                    # Add unique key to force Plotly replacement (prevents browser memory leak)
-                    anim_key = f"anim_model_{hash(str(display_data)) % 10000}"
                     fig_anim = px.scatter(df_anim, x='Material', y='Count', animation_frame='Frame',
                                           color='Category', size='Count',
                                           color_discrete_map=cat_color_map,
@@ -1401,7 +1388,6 @@ if show_animation:
                     st.info("No consensus animation data.")
                 else:
                     ymax = max(1, df_cons['MaxCount'].max() * 1.15)
-                    anim_key = f"anim_consensus_{hash(str(display_data)) % 10000}"
                     fig_cons = px.scatter(df_cons, x='Material', y='MaxCount', animation_frame='Frame',
                                           color='Category', size='MaxCount',
                                           color_discrete_map=cat_color_map,
@@ -1423,7 +1409,7 @@ if show_animation:
 if show_validation:
     with tabs[t_idx]:
         st.markdown("### Hybrid Material Validation Results")
-        st.markdown("<div class='caption'>Regex + periodic-table classification. Toggle "Show ONLY validated materials" to filter diagrams.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>Regex + periodic-table classification. Toggle “Show ONLY validated materials” to filter diagrams.</div>", unsafe_allow_html=True)
         val_rows = []
         for mat in sorted(all_materials):
             if mat not in st.session_state.validation_cache:
@@ -1445,7 +1431,7 @@ if show_validation:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 9: LEGEND
+# TAB 9: LEGEND PANEL (with alias export/import)
 # ------------------------------------------------------------------
 if show_legend_panel:
     with tabs[t_idx]:
@@ -1485,18 +1471,11 @@ gc.collect()
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; color:#666; font-size:0.88rem; padding:1rem 0; font-family:serif;">
-    <strong>v2.0 Upgrades:</strong> 
-    ✅ Diagnostic panel for real-time memory monitoring | 
-    ✅ Alias edits now require explicit Save button (prevents session bloat) | 
-    ✅ UMAP sliders use step=2 to limit cache variants | 
-    ✅ Resource caches limited to max_entries=3<br><br>
     <strong>Hybrid Validator:</strong> Periodic-table regex engine auto-tags materials (alloys, ceramics, intermetallics)
     and filters process parameters. Replace <code>llm_validate_material()</code> with a
     <code>transformers</code> pipeline (GPT-2 / Qwen-0.5B) for neural refinement.<br><br>
-    <strong>Memory Hardening:</strong> All expensive operations are <code>@st.cache_data</code> or 
-    <code>@st.cache_resource(max_entries=3)</code> wrapped. Matplotlib figures are force-closed via 
-    <code>plt.close()</code> + <code>gc.collect()</code> after every render. Use the 🧹 Clear Memory button 
-    or the 🩺 Diagnostic panel for emergency cleanup.<br><br>
+    <strong>Memory Hardened:</strong> All expensive operations are cached with size limits. Alias editors require explicit save.
+    UMAP is recomputed only on demand. Animations limited to top 50 materials. Use the memory monitor and clear button.<br><br>
     <strong>Publication Defaults:</strong> Serif typography, 600 DPI export, colorblind-safe palettes,
     editable DOI & material aliases, and consensus-aware unified chord diagrams.
 </div>

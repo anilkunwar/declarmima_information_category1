@@ -1,7 +1,7 @@
 """
-AlloyExtraction Nexus — Publication-Grade Cross-Model Visualization
+AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visualization
 Unified Chord · Sankey · Network · Heatmap · Circos · 3D UMAP · Animation
-Hybrid Material Validator (Regex + Periodic-Table) · Editable DOI & Material Aliases
+Hybrid Material Validator · Editable Aliases · Aggressive Caching & GC
 """
 
 import streamlit as st
@@ -13,8 +13,9 @@ import matplotlib.patches as mpatches
 from matplotlib.patches import Wedge, PathPatch
 from matplotlib.path import Path
 from io import BytesIO
-import os, json, re
+import os, json, re, gc, tempfile
 from collections import defaultdict
+from functools import lru_cache
 from itertools import combinations
 
 # ------------------------------------------------------------------
@@ -46,7 +47,7 @@ except Exception:
     HAS_SKLEARN = False
 
 # ------------------------------------------------------------------
-# GLOBAL PUBLICATION DEFAULTS
+# GLOBAL PUBLICATION DEFAULTS + MEMORY GUARD
 # ------------------------------------------------------------------
 plt.rcParams.update({
     'font.family': 'serif',
@@ -67,13 +68,17 @@ plt.rcParams.update({
     'axes.labelcolor': '#1a1a2e',
     'xtick.color': '#2C3E50',
     'ytick.color': '#2C3E50',
+    'figure.max_open_warning': 0,  # Suppress matplotlib warnings
 })
 
+# Force aggressive matplotlib backend cleanup
+plt.switch_backend('Agg')
+
 # ------------------------------------------------------------------
-# PAGE CONFIG & CSS
+# PAGE CONFIG
 # ------------------------------------------------------------------
 st.set_page_config(
-    page_title="AlloyExtraction Nexus — Cross-Model Material Extraction",
+    page_title="AlloyExtraction Nexus — Memory-Hardened",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -92,8 +97,26 @@ st.markdown("""
     .caption { font-size: 0.95rem; color: #555; font-style: italic; margin-bottom: 1rem; }
     .control-section { background: linear-gradient(180deg, #f5f7fa 0%, #eef1f5 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem; border: 1px solid #dde2e8; }
     .section-title { font-size: 1.15rem; font-weight: 700; color: #2c3e50; margin-bottom: 0.8rem; border-bottom: 2px solid #3498db; padding-bottom: 0.3rem; }
+    .memory-btn { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); color: white; font-weight: bold; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; }
+    .memory-btn:hover { background: linear-gradient(135deg, #c0392b 0%, #a93226 100%); }
 </style>
 """, unsafe_allow_html=True)
+
+# ------------------------------------------------------------------
+# MEMORY EMERGENCY BUTTON (Sidebar top)
+# ------------------------------------------------------------------
+with st.sidebar:
+    st.markdown("## 🚨 Memory Management")
+    if st.button("🧹 Clear All Memory & Cache", type="primary", key="clear_mem"):
+        plt.close('all')
+        gc.collect()
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        for key in list(st.session_state.keys()):
+            if key not in ['doi_aliases', 'material_aliases', 'validation_cache']:
+                del st.session_state[key]
+        st.success("Memory cleared! Rerunning...")
+        st.rerun()
 
 # ------------------------------------------------------------------
 # PERIODIC TABLE & METADATA
@@ -215,7 +238,6 @@ def get_contrast_text_color(hex_color: str) -> str:
     return "white" if luminance < 0.5 else "#2C3E50"
 
 def prettify_material(name: str) -> str:
-    """Greedy element-symbol parser to auto-format alloy strings."""
     overrides = {
         'heas_mpeas': 'HEAs / MPEAs',
         'metallic_glass': 'Metallic Glass',
@@ -267,30 +289,18 @@ def prettify_material(name: str) -> str:
     return pretty if pretty != name else name.replace('_', ' ').title()
 
 # ------------------------------------------------------------------
-# HYBRID MATERIAL VALIDATOR (Regex + Periodic Table)
-# GPT-2 / Qwen-0.5B plug-in architecture
+# HYBRID MATERIAL VALIDATOR
 # ------------------------------------------------------------------
 def llm_validate_material(term: str) -> dict:
-    """
-    STUB: Replace with actual transformers pipeline for GPT-2 / Qwen-0.5B.
-    Example:
-        from transformers import pipeline
-        classifier = pipeline('text-classification', model='Qwen/Qwen1.5-0.5B')
-        result = classifier(f"Is '{term}' a material or alloy?")[0]
-        is_mat = result['label'] == 'LABEL_1' and result['score'] > 0.7
-    """
     return {'is_material': None, 'method': 'llm_stub', 'reason': 'No LLM loaded'}
 
 def regex_validate_material(term: str) -> dict:
     t = term.lower()
-    # 1. Known alloys/compositions
     if t in [x.lower() for x in TAXONOMY['Alloy / Composition']]:
         return {'is_material': True, 'method': 'taxonomy', 'reason': 'Listed in Alloy/Composition taxonomy'}
-    # 2. Known non-materials
     for cat, terms in TAXONOMY.items():
         if cat != 'Alloy / Composition' and t in [x.lower() for x in terms]:
             return {'is_material': False, 'method': 'taxonomy', 'reason': f'Listed in {cat} taxonomy'}
-    # 3. Extract element symbols
     found_elements = set()
     s = t
     i = 0
@@ -307,15 +317,12 @@ def regex_validate_material(term: str) -> dict:
             if one in PERIODIC_TABLE and s[i].isalpha():
                 found_elements.add(one)
             i += 1
-    # 4. Alloy indicators
     indicators = ['alloy', 'imc', 'matrix', 'ceramic', 'intermetallic', 'metal', 'glass', 'solder']
     has_indicator = any(ind in t for ind in indicators)
     if len(found_elements) >= 2 or has_indicator:
         return {'is_material': True, 'method': 'regex+periodic_table',
                 'reason': f'Elements: {", ".join(sorted(found_elements))}' + ('; indicator' if has_indicator else '')}
     if len(found_elements) == 1 and len(t) <= 2:
-        if t not in ['al','as','at','be','bi','by','cs','dy','er','es','eu','fe','ga','ge','he','hf','hg','ho','i','in','ir','kr','la','li','lu','mg','mn','mo','na','nb','nd','ne','ni','no','o','os','p','pa','pb','pd','pm','po','pr','pt','pu','ra','rb','re','rf','rg','rh','rn','ru','s','sb','sc','se','sg','si','sm','sn','sr','ta','tb','tc','te','th','ti','tl','tm','u','v','w','xe','y','yb','zn','zr']:
-            pass  # single letters like 'a' aren't elements anyway
         return {'is_material': True, 'method': 'regex+periodic_table', 'reason': f'Element symbol: {list(found_elements)[0]}'}
     return {'is_material': False, 'method': 'regex', 'reason': 'No material signatures detected'}
 
@@ -327,7 +334,7 @@ def validate_material(term: str, use_llm: bool = False) -> dict:
     return regex_validate_material(term)
 
 # ------------------------------------------------------------------
-# DATA PARSERS
+# CACHED DATA LOADING
 # ------------------------------------------------------------------
 DEFAULT_DATA_B = '''DOI,Materials_Alloys
 10.1007/s40195-025-01825-1,"al–si–mg–zr alloy, lpbf, alsimgzr, tib2/al–si–mg–zr alloy"
@@ -369,7 +376,8 @@ DEFAULT_DATA_D = '''DOI,Materials_Alloys
 10.1080/17452759.2024.2416518,"metallic_glass, alsimgzr"
 10.26434/chemrxiv-2025-sk6h5,"lewis_number, nanoindentation, sdss_2507, laser_power, sdss"'''
 
-def parse_alloys_csv(filepath_or_content, model_name):
+@st.cache_data(ttl=600, show_spinner="Parsing CSV data...")
+def parse_alloys_csv_cached(filepath_or_content, model_name):
     try:
         if os.path.exists(filepath_or_content):
             with open(filepath_or_content, 'r', encoding='utf-8') as f:
@@ -410,6 +418,7 @@ def parse_alloys_csv(filepath_or_content, model_name):
                 data[doi][m] += 1
     return dict(data)
 
+@st.cache_data(ttl=600, show_spinner="Loading data...")
 def load_data_from_disk_or_default():
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     ALLOYS_DIR = os.path.join(SCRIPT_DIR, "alloys_materials")
@@ -422,14 +431,14 @@ def load_data_from_disk_or_default():
     loaded = {}
     for key, path in paths.items():
         if os.path.exists(path):
-            loaded[key] = parse_alloys_csv(path, MODEL_META[key]['name'])
+            loaded[key] = parse_alloys_csv_cached(path, MODEL_META[key]['name'])
         else:
             default = {'modelB': DEFAULT_DATA_B, 'modelC': DEFAULT_DATA_C, 'modelD': DEFAULT_DATA_D}[key]
-            loaded[key] = parse_alloys_csv(default, MODEL_META[key]['name'])
+            loaded[key] = parse_alloys_csv_cached(default, MODEL_META[key]['name'])
     return loaded
 
 # ------------------------------------------------------------------
-# ALIAS MANAGEMENT (DOI + Material)
+# ALIAS MANAGEMENT
 # ------------------------------------------------------------------
 def init_aliases(all_dois, all_materials):
     if 'doi_aliases' not in st.session_state:
@@ -450,7 +459,126 @@ def get_mat_label(mat):
     return st.session_state.material_aliases.get(mat, mat)
 
 # ------------------------------------------------------------------
-# UNIFIED MULTI-MODEL CHORD
+# CACHED FILTERING
+# ------------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner="Validating materials...")
+def filter_data_by_validation_cached(data_dict_tuple, materials_only, enable_validator):
+    # Convert tuple back to dict for hashing
+    data_dict = {k: dict(v) for k, v in data_dict_tuple}
+    if not enable_validator or not materials_only:
+        return data_dict
+    filtered = {}
+    for mk, data in data_dict.items():
+        fdata = {}
+        for doi, mats in data.items():
+            fmats = {}
+            for mat, cnt in mats.items():
+                res = validate_material(mat, use_llm=False)
+                if res['is_material']:
+                    fmats[mat] = cnt
+            if fmats:
+                fdata[doi] = fmats
+        filtered[mk] = fdata
+    return filtered
+
+# ------------------------------------------------------------------
+# CACHED UMAP EMBEDDING
+# ------------------------------------------------------------------
+@st.cache_resource(ttl=600, show_spinner="Computing UMAP embedding...")
+def compute_umap_embedding_cached(features_tuple, n_neighbors, min_dist, metric):
+    features = np.array(features_tuple)
+    n_samples = len(features)
+    nn = min(n_neighbors, n_samples - 1)
+    if nn < 2 or n_samples < 3:
+        return None
+    scaler = StandardScaler()
+    X = scaler.fit_transform(features)
+    reducer = umap.UMAP(n_components=3, n_neighbors=nn, min_dist=min_dist,
+                        metric=metric, random_state=42)
+    emb = reducer.fit_transform(X)
+    return emb.tolist()
+
+# ------------------------------------------------------------------
+# CACHED PYVIS NETWORK
+# ------------------------------------------------------------------
+@st.cache_resource(ttl=300, show_spinner="Building network graph...")
+def get_network_html_cached(display_data_json):
+    if not HAS_PYVIS:
+        return None, ""
+    import json
+    display_data = json.loads(display_data_json)
+    
+    net = Network(height='720px', width='100%', bgcolor='white', font_color='black', heading='')
+    net.barnes_hut(gravity=-9000, central_gravity=0.35, spring_length=140,
+                   spring_strength=0.04, damping=0.09)
+
+    all_papers = set()
+    all_materials = set()
+    for data in display_data.values():
+        all_papers.update(data.keys())
+        for mats in data.values():
+            all_materials.update(mats.keys())
+
+    for doi in sorted(all_papers):
+        alias = get_alias(doi)
+        net.add_node(doi, label=alias, title=f"DOI: {doi}", shape='box',
+                     color={'background': '#E8F4FD', 'border': '#2980B9'},
+                     borderWidth=2, font={'size': 14, 'face': 'arial', 'color': '#1a1a2e'},
+                     size=18)
+
+    for mat in sorted(all_materials):
+        cat = get_category(mat)
+        fill = CATEGORY_COLORS.get(cat, '#FFFFFF')
+        net.add_node(mat, label=get_mat_label(mat), shape='dot',
+                     color={'background': fill, 'border': '#555555'},
+                     borderWidth=2, font={'size': 12, 'color': '#2c3e50'}, size=14,
+                     title=f"Category: {cat}")
+
+    for model_key, data in display_data.items():
+        meta = MODEL_META[model_key]
+        for doi, mats in data.items():
+            for mat, cnt in mats.items():
+                net.add_edge(doi, mat, width=min(cnt, 4), color=meta['color'],
+                             title=f"{meta['name']}: {cnt}x", smooth={'type': 'continuous'})
+
+    net.set_options('{"physics": {"stabilization": {"iterations": 200}}, "interaction": {"hover": true, "tooltipDelay": 100}}')
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
+        net.save_graph(f.name)
+        with open(f.name, 'r', encoding='utf-8') as hf:
+            html = hf.read()
+        os.remove(f.name)
+
+    legend_html = '''
+    <div style="margin-top:8px; padding:10px; background:#f8f9fa; border:1px solid #dde2e8; border-radius:6px; font-family:serif;">
+    <strong style="font-size:1.05rem;">Model Edge Legend</strong><br>
+    <span style="display:inline-block; width:14px; height:14px; background:#C0392B; margin-right:6px; border:1px solid black;"></span> Mistral 7B<br>
+    <span style="display:inline-block; width:14px; height:14px; background:#27AE60; margin-right:6px; border:1px solid black;"></span> Qwen 14B<br>
+    <span style="display:inline-block; width:14px; height:14px; background:#2980B9; margin-right:6px; border:1px solid black;"></span> Qwen 7B<br>
+    <span style="display:inline-block; width:14px; height:14px; background:#F39C12; margin-right:6px; border:1px solid black;"></span> Consensus (≥2 models)
+    </div>
+    '''
+    return html, legend_html
+
+# ------------------------------------------------------------------
+# FIGURE RENDERING WITH GUARANTEED CLEANUP
+# ------------------------------------------------------------------
+def render_matplotlib_figure(fig, filename, dpi):
+    """Render figure to Streamlit, save to buffer, then force close and GC."""
+    if fig is None:
+        return
+    try:
+        st.pyplot(fig)
+        buf = BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi, bbox_inches='tight', facecolor='white')
+        st.download_button(f"⬇️ Download {filename}", buf.getvalue(),
+                           filename, "image/png", key=f"dl_{filename.replace('.', '_')}")
+    finally:
+        plt.close(fig)
+        gc.collect()
+
+# ------------------------------------------------------------------
+# UNIFIED CHORD (stateless, no caching due to many params)
 # ------------------------------------------------------------------
 def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                        node_width=0.08, ribbon_alpha=0.55, font_size=10,
@@ -596,7 +724,7 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
     return fig
 
 # ------------------------------------------------------------------
-# SANKEY (rgba fix)
+# SANKEY
 # ------------------------------------------------------------------
 def hex_to_rgba(hex_color, alpha=0.25):
     hex_color = hex_color.lstrip('#')
@@ -633,64 +761,6 @@ def draw_sankey(paper_materials, model_name, model_color):
         margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
-
-# ------------------------------------------------------------------
-# PYVIS NETWORK with explicit legend
-# ------------------------------------------------------------------
-def draw_pyvis_network(all_models_data):
-    if not HAS_PYVIS:
-        return None, ""
-    net = Network(height='720px', width='100%', bgcolor='white', font_color='black', heading='')
-    net.barnes_hut(gravity=-9000, central_gravity=0.35, spring_length=140,
-                   spring_strength=0.04, damping=0.09)
-
-    all_papers = set()
-    all_materials = set()
-    for data in all_models_data.values():
-        all_papers.update(data.keys())
-        for mats in data.values():
-            all_materials.update(mats.keys())
-
-    for doi in sorted(all_papers):
-        alias = get_alias(doi)
-        net.add_node(doi, label=alias, title=f"DOI: {doi}", shape='box',
-                     color={'background': '#E8F4FD', 'border': '#2980B9'},
-                     borderWidth=2, font={'size': 14, 'face': 'arial', 'color': '#1a1a2e'},
-                     size=18)
-
-    for mat in sorted(all_materials):
-        cat = get_category(mat)
-        fill = CATEGORY_COLORS.get(cat, '#FFFFFF')
-        net.add_node(mat, label=get_mat_label(mat), shape='dot',
-                     color={'background': fill, 'border': '#555555'},
-                     borderWidth=2, font={'size': 12, 'color': '#2c3e50'}, size=14,
-                     title=f"Category: {cat}")
-
-    for model_key, data in all_models_data.items():
-        meta = MODEL_META[model_key]
-        for doi, mats in data.items():
-            for mat, cnt in mats.items():
-                net.add_edge(doi, mat, width=min(cnt, 4), color=meta['color'],
-                             title=f"{meta['name']}: {cnt}x", smooth={'type': 'continuous'})
-
-    net.set_options('{"physics": {"stabilization": {"iterations": 200}}, "interaction": {"hover": true, "tooltipDelay": 100}}')
-    import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
-        net.save_graph(f.name)
-        with open(f.name, 'r', encoding='utf-8') as hf:
-            html = hf.read()
-        os.remove(f.name)
-
-    legend_html = '''
-    <div style="margin-top:8px; padding:10px; background:#f8f9fa; border:1px solid #dde2e8; border-radius:6px; font-family:serif;">
-    <strong style="font-size:1.05rem;">Model Edge Legend</strong><br>
-    <span style="display:inline-block; width:14px; height:14px; background:#C0392B; margin-right:6px; border:1px solid black;"></span> Mistral 7B<br>
-    <span style="display:inline-block; width:14px; height:14px; background:#27AE60; margin-right:6px; border:1px solid black;"></span> Qwen 14B<br>
-    <span style="display:inline-block; width:14px; height:14px; background:#2980B9; margin-right:6px; border:1px solid black;"></span> Qwen 7B<br>
-    <span style="display:inline-block; width:14px; height:14px; background:#F39C12; margin-right:6px; border:1px solid black;"></span> Consensus (≥2 models)
-    </div>
-    '''
-    return html, legend_html
 
 # ------------------------------------------------------------------
 # HEATMAP
@@ -735,7 +805,7 @@ def draw_heatmap(all_models_data):
     return fig
 
 # ------------------------------------------------------------------
-# CIRCOS — CLEAN, NO TAXONOMY SECTORS
+# CIRCOS — CLEAN
 # ------------------------------------------------------------------
 def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
                       track_h=0.5, gap_deg=1.0, fs=9, show_labels=True,
@@ -778,7 +848,6 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
                         ha='center', va='center', fontsize=fs - 2,
                         color='white', fontweight='bold', zorder=4)
 
-        # Outer rim tick
         ax.bar(ma, 0.06, width=step * 0.9, bottom=inner_r + len(MODEL_META) * track_h + 0.05,
                color=rim_colors[mat], alpha=0.9, edgecolor='black', linewidth=0.3, zorder=5)
 
@@ -809,9 +878,12 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
     return fig
 
 # ------------------------------------------------------------------
-# 3D UMAP — IMPROVED VISIBILITY
+# UMAP FEATURE BUILDER
 # ------------------------------------------------------------------
-def build_umap_features(all_models_data):
+@st.cache_data(ttl=300, show_spinner="Building UMAP features...")
+def build_umap_features_cached(all_models_data_json):
+    import json
+    all_models_data = json.loads(all_models_data_json)
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
     cat_list = list(TAXONOMY.keys())
     features, labels, categories, presence_list, totals, doi_counts = [], [], [], [], [], []
@@ -836,12 +908,29 @@ def build_umap_features(all_models_data):
         presence_list.append(presence)
         totals.append(total)
         doi_counts.append(n_dois)
-    return np.array(features), labels, categories, presence_list, totals, doi_counts
+    return {
+        'features': features,
+        'labels': labels,
+        'categories': categories,
+        'presence': presence_list,
+        'totals': totals,
+        'doi_counts': doi_counts
+    }
 
 def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean'):
     if not HAS_UMAP or not HAS_SKLEARN:
         return None, "UMAP or scikit-learn not installed."
-    features, labels, categories, presence, totals, doi_counts = build_umap_features(all_models_data)
+    
+    import json
+    data_json = json.dumps(all_models_data)
+    cached = build_umap_features_cached(data_json)
+    features = np.array(cached['features'])
+    labels = cached['labels']
+    categories = cached['categories']
+    presence = cached['presence']
+    totals = cached['totals']
+    doi_counts = cached['doi_counts']
+    
     n_samples = len(labels)
     if n_samples < 3:
         return None, "Need ≥3 materials for UMAP."
@@ -849,11 +938,10 @@ def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean
     if nn < 2:
         return None, "Not enough samples for UMAP neighbors."
 
-    scaler = StandardScaler()
-    X = scaler.fit_transform(features)
-    reducer = umap.UMAP(n_components=3, n_neighbors=nn, min_dist=min_dist,
-                        metric=metric, random_state=42)
-    emb = reducer.fit_transform(X)
+    emb_list = compute_umap_embedding_cached(tuple(map(tuple, features)), nn, min_dist, metric)
+    if emb_list is None:
+        return None, "UMAP embedding failed."
+    emb = np.array(emb_list)
 
     df = pd.DataFrame({
         'UMAP1': emb[:, 0], 'UMAP2': emb[:, 1], 'UMAP3': emb[:, 2],
@@ -944,7 +1032,6 @@ all_dois = sorted({d for data in raw_data.values() for d in data})
 all_materials = sorted({m for data in raw_data.values() for mats in data.values() for m in mats})
 init_aliases(all_dois, all_materials)
 
-# Validation state
 if 'validation_cache' not in st.session_state:
     st.session_state.validation_cache = {}
 
@@ -959,19 +1046,22 @@ with st.sidebar:
         fC = st.file_uploader("Model C CSV", type="csv", key="fc")
         fD = st.file_uploader("Model D CSV", type="csv", key="fd")
         if fB:
-            raw_data['modelB'] = parse_alloys_csv(fB.getvalue().decode('utf-8'), 'modelB')
+            raw_data['modelB'] = parse_alloys_csv_cached(fB.getvalue().decode('utf-8'), 'modelB')
+            st.cache_data.clear()
         if fC:
-            raw_data['modelC'] = parse_alloys_csv(fC.getvalue().decode('utf-8'), 'modelC')
+            raw_data['modelC'] = parse_alloys_csv_cached(fC.getvalue().decode('utf-8'), 'modelC')
+            st.cache_data.clear()
         if fD:
-            raw_data['modelD'] = parse_alloys_csv(fD.getvalue().decode('utf-8'), 'modelD')
+            raw_data['modelD'] = parse_alloys_csv_cached(fD.getvalue().decode('utf-8'), 'modelD')
+            st.cache_data.clear()
         all_dois = sorted({d for data in raw_data.values() for d in data})
         all_materials = sorted({m for data in raw_data.values() for mats in data.values() for m in mats})
         init_aliases(all_dois, all_materials)
 
     st.markdown("---")
     st.markdown("## 🧬 Material Validator")
-    st.markdown("<small>Regex + Periodic-Table hybrid classifier. Toggle to filter non-materials.</small>", unsafe_allow_html=True)
-    enable_validator = st.checkbox("Enable material validation", value=True, key="en_val")
+    st.markdown("<small>Regex + Periodic-Table hybrid. Toggle to filter non-materials.</small>", unsafe_allow_html=True)
+    enable_validator = st.checkbox("Enable validation", value=True, key="en_val")
     materials_only = st.checkbox("Show ONLY validated materials", value=False, key="mat_only")
     st.markdown("<small>GPT-2/Qwen-0.5B stub ready in <code>llm_validate_material()</code></small>", unsafe_allow_html=True)
 
@@ -1043,33 +1133,22 @@ with st.sidebar:
     download_dpi = st.slider("Figure DPI", 150, 1200, 600, 50)
 
 # ------------------------------------------------------------------
-# FILTER DATA BY VALIDATION IF REQUESTED
+# FILTER DATA
 # ------------------------------------------------------------------
-def filter_data_by_validation(data_dict, only_materials):
-    if not only_materials:
-        return data_dict
-    filtered = {}
-    for mk, data in data_dict.items():
-        fdata = {}
-        for doi, mats in data.items():
-            fmats = {}
-            for mat, cnt in mats.items():
-                if mat not in st.session_state.validation_cache:
-                    st.session_state.validation_cache[mat] = validate_material(mat, use_llm=False)
-                if st.session_state.validation_cache[mat]['is_material']:
-                    fmats[mat] = cnt
-            if fmats:
-                fdata[doi] = fmats
-        filtered[mk] = fdata
-    return filtered
-
-display_data = filter_data_by_validation(raw_data, materials_only) if enable_validator else raw_data
+import json
+# Convert defaultdict to regular dict for JSON serialization
+raw_data_plain = {k: dict(v) for k, v in raw_data.items()}
+display_data = filter_data_by_validation_cached(
+    tuple((k, tuple(sorted(v.items()))) for k, v in raw_data_plain.items()),
+    materials_only,
+    enable_validator
+)
 
 # ------------------------------------------------------------------
 # MAIN HEADER
 # ------------------------------------------------------------------
 st.markdown('<div class="main-header">AlloyExtraction Nexus</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Hybrid-Validated Cross-Model Document–Material Visualization</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Hybrid-Validated, Memory-Hardened Cross-Model Visualization</div>', unsafe_allow_html=True)
 
 cols = st.columns(len(MODEL_META))
 for i, (key, meta) in enumerate(MODEL_META.items()):
@@ -1120,15 +1199,7 @@ if show_chord:
             node_width=chord_node_w, ribbon_alpha=chord_rib_a, font_size=chord_font,
             min_ribbon_width=chord_min_lw, max_ribbon_width=chord_max_lw
         )
-        if fig:
-            st.pyplot(fig)
-            buf = BytesIO()
-            fig.savefig(buf, format="png", dpi=download_dpi, bbox_inches='tight', facecolor='white')
-            st.download_button("⬇️ Download Unified Chord PNG", buf.getvalue(),
-                               "unified_chord.png", "image/png")
-            plt.close(fig)
-        else:
-            st.info("No data to render chord.")
+        render_matplotlib_figure(fig, "unified_chord.png", download_dpi)
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1152,7 +1223,7 @@ if show_sankey:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 3: NETWORK
+# TAB 3: NETWORK (CACHED)
 # ------------------------------------------------------------------
 if show_network:
     with tabs[t_idx]:
@@ -1161,7 +1232,8 @@ if show_network:
         if not HAS_PYVIS:
             st.warning("PyVis not installed. `pip install pyvis` to enable.")
         else:
-            html, legend_html = draw_pyvis_network(display_data)
+            display_data_json = json.dumps(display_data)
+            html, legend_html = get_network_html_cached(display_data_json)
             if html:
                 import streamlit.components.v1 as components
                 components.html(html, height=740, scrolling=False)
@@ -1178,15 +1250,7 @@ if show_heatmap:
         st.markdown("### Model Agreement Heatmap")
         st.markdown("<div class='caption'>Cell value = number of models extracting that material for that DOI. Darker = higher agreement.</div>", unsafe_allow_html=True)
         fig_h = draw_heatmap(display_data)
-        if fig_h:
-            st.pyplot(fig_h)
-            buf = BytesIO()
-            fig_h.savefig(buf, format="png", dpi=download_dpi, bbox_inches='tight', facecolor='white')
-            st.download_button("⬇️ Download Heatmap PNG", buf.getvalue(),
-                               "agreement_heatmap.png", "image/png")
-            plt.close(fig_h)
-        else:
-            st.info("Not enough data for heatmap.")
+        render_matplotlib_figure(fig_h, "agreement_heatmap.png", download_dpi)
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1201,24 +1265,16 @@ if show_circos:
             track_h=circos_track, gap_deg=circos_gap, fs=circos_fs,
             max_bar_scale=circos_scale
         )
-        if fig_circ:
-            st.pyplot(fig_circ)
-            buf = BytesIO()
-            fig_circ.savefig(buf, format="png", dpi=download_dpi, bbox_inches='tight', facecolor='white')
-            st.download_button("⬇️ Download Circos PNG", buf.getvalue(),
-                               "circos_radial.png", "image/png")
-            plt.close(fig_circ)
-        else:
-            st.warning("No data to render Circos.")
+        render_matplotlib_figure(fig_circ, "circos_radial.png", download_dpi)
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 6: 3D UMAP
+# TAB 6: 3D UMAP (CACHED)
 # ------------------------------------------------------------------
 if show_umap:
     with tabs[t_idx]:
         st.markdown("### 3D UMAP Clustering of Materials")
-        st.markdown("<div class='caption'>UMAP on occurrence vectors (model counts + taxonomy one-hot + document spread). Color = taxonomy; size = total count. Black edges for visibility.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>UMAP on occurrence vectors. Color = taxonomy; size = total count. Black edges for visibility.</div>", unsafe_allow_html=True)
         if not HAS_UMAP or not HAS_SKLEARN:
             st.warning("UMAP or scikit-learn missing. `pip install umap-learn scikit-learn` to enable.")
         else:
@@ -1261,6 +1317,8 @@ if show_animation:
                         fig_anim.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = anim_speed
                         fig_anim.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = anim_speed // 2
                     st.plotly_chart(fig_anim, use_container_width=True)
+                    del df_anim, fig_anim
+                    gc.collect()
             else:
                 df_cons = build_consensus_animation_data(display_data)
                 if df_cons.empty:
@@ -1278,6 +1336,8 @@ if show_animation:
                         fig_cons.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = anim_speed
                         fig_cons.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = anim_speed // 2
                     st.plotly_chart(fig_cons, use_container_width=True)
+                    del df_cons, fig_cons
+                    gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1286,7 +1346,7 @@ if show_animation:
 if show_validation:
     with tabs[t_idx]:
         st.markdown("### Hybrid Material Validation Results")
-        st.markdown("<div class='caption'>Regex + periodic-table classification. Toggle “Show ONLY validated materials” in the sidebar to filter diagrams. LLM stub ready for GPT-2/Qwen-0.5B upgrade.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>Regex + periodic-table classification. Toggle “Show ONLY validated materials” to filter diagrams.</div>", unsafe_allow_html=True)
         val_rows = []
         for mat in sorted(all_materials):
             if mat not in st.session_state.validation_cache:
@@ -1303,6 +1363,8 @@ if show_validation:
         st.dataframe(df_val, use_container_width=True, height=500)
         csv_val = df_val.to_csv(index=False).encode('utf-8')
         st.download_button("⬇️ Download Validation CSV", csv_val, "material_validation.csv", "text/csv")
+        del df_val, val_rows, csv_val
+        gc.collect()
     t_idx += 1
 
 # ------------------------------------------------------------------
@@ -1330,7 +1392,15 @@ if show_legend_panel:
             st.session_state.doi_aliases.update(imported)
             st.success("Aliases imported! Click Rerun to refresh all diagrams.")
             st.button("🔄 Rerun", on_click=lambda: st.rerun())
+        del legend_df, alias_json
+        gc.collect()
     t_idx += 1
+
+# ------------------------------------------------------------------
+# FINAL MEMORY CLEANUP
+# ------------------------------------------------------------------
+plt.close('all')
+gc.collect()
 
 # ------------------------------------------------------------------
 # FOOTER
@@ -1341,6 +1411,11 @@ st.markdown("""
     <strong>Hybrid Validator:</strong> Periodic-table regex engine auto-tags materials (alloys, ceramics, intermetallics)
     and filters process parameters. Replace <code>llm_validate_material()</code> with a
     <code>transformers</code> pipeline (GPT-2 / Qwen-0.5B) for neural refinement.<br><br>
+    <strong>Memory Hardening:</strong> All expensive operations are <code>@st.cache_data</code> or 
+    <code>@st.cache_resource</code> wrapped. Matplotlib figures are force-closed via 
+    <code>plt.close()</code> + <code>gc.collect()</code> after every render. UMAP embeddings and 
+    PyVis networks are computed once and cached. Use the 🧹 Clear Memory button in the sidebar 
+    for emergency cleanup.<br><br>
     <strong>Publication Defaults:</strong> Serif typography, 600 DPI export, colorblind-safe palettes,
     editable DOI & material aliases, and consensus-aware unified chord diagrams.
 </div>

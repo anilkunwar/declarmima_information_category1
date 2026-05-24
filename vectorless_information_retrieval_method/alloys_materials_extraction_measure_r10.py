@@ -632,6 +632,7 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
     - Dynamic label padding & gap separation
     - Auto colormap fallback for >20 materials
     - FIXED: Label alignment logic to prevent bunching in center.
+    - FIXED: Material label color is now always dark for visibility on white background.
     """
     if show_models is None:
         show_models = {'modelB': True, 'modelC': True, 'modelD': True,
@@ -843,7 +844,10 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
 
         text_rot, ha, va, _, _ = compute_label_transform(ang['mid'], label_mode, is_paper=False)
 
-        txt_color = get_contrast_text_color(fill)
+        # FIX: Always use dark text color because labels are drawn on white background
+        # Old code: txt_color = get_contrast_text_color(fill)  <-- This caused white-on-white invisibility
+        txt_color = '#1a1a2e' 
+        
         label = get_mat_label(mat)
         ax.text(x, y, label, ha=ha, va=va, fontsize=font_size - 1,
                 fontweight='bold', color=txt_color, zorder=6,

@@ -1182,17 +1182,17 @@ with st.sidebar:
     
     # ✅ FIX #1: Diagnostic Panel to monitor resources
     st.markdown("---")
+    # In sidebar (around line 1198)
     with st.expander("🩺 System Diagnostics", expanded=False):
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
-        mem_warn = mem_mb > 1500  # Warning threshold
+        mem_warn = mem_mb > 1500
         
         st.markdown(f"""
         <div style="font-family:monospace; font-size:0.85rem;">
             <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
             <span class="diag-metric">🔑 Session Keys: {len(st.session_state)}</span>
-            <span class="diag-metric">💾 Cached Data: {len(st.cache_data)}</span>
-            <span class="diag-metric">⚡ Cached Resource: {len(st.cache_resource)}</span>
+            <span class="diag-metric">💾 Cache: Auto-managed (TTL + max_entries)</span>
         </div>
         """, unsafe_allow_html=True)
         

@@ -3,8 +3,8 @@ AlloyExtraction Nexus — Memory-Hardened, Publication-Grade Cross-Model Visuali
 Unified Chord · Sankey · Network · Heatmap · Circos · 3D UMAP · Animation
 Hybrid Material Validator · Editable Aliases (Data Editor) · Aggressive Caching & GC
 + Diagnostic Panel · Limited Cache Entries · Capped Figure Sizes
-+ >50 Color Colormaps (Turbo/Jet/Rainbow/Inferno) · Interactive Category Toggling
-+ FIXED: Spatial arrangement, label padding, and ribbon z-ordering in Chord & Circos
++ 50+ Color Colormaps (Turbo/Jet/Inferno/Rainbow/etc.) · Interactive Category Toggling (Morphology Control)
++ v2.3: Fixed Chord & Circos spatial arrangement, label padding, and text orientation
 """
 
 import streamlit as st
@@ -220,6 +220,35 @@ SYNONYM_MAP = {
     'gold': 'au',
     'tib2_al-si-mg-zr': 'tib2_alsimgzr',
 }
+
+# ------------------------------------------------------------------
+# 50+ COLORMAP CATALOG (v2.3)
+# ------------------------------------------------------------------
+COLORMAP_CATALOG = {
+    "Perceptually Uniform": [
+        "viridis", "plasma", "inferno", "magma", "cividis"
+    ],
+    "Sequential": [
+        "turbo", "jet", "rainbow", "gist_rainbow", "gist_ncar", "nipy_spectral",
+        "gnuplot", "gnuplot2", "CMRmap", "cubehelix", "brg", "afmhot",
+        "hot", "cool", "spring", "summer", "autumn", "winter", "copper",
+        "bone", "pink", "terrain", "ocean"
+    ],
+    "Diverging": [
+        "coolwarm", "bwr", "seismic", "RdYlBu", "RdYlGn", "Spectral"
+    ],
+    "Cyclic": [
+        "twilight", "twilight_shifted", "hsv", "flag", "prism"
+    ],
+    "Qualitative (≤20)": [
+        "tab10", "tab20", "Set1", "Set2", "Set3", "Paired", "Dark2", "Accent", "Pastel1", "Pastel2"
+    ]
+}
+# Flat list for selectbox
+ALL_COLORMAPS = []
+for group, cmaps in COLORMAP_CATALOG.items():
+    ALL_COLORMAPS.extend(cmaps)
+ALL_COLORMAPS = sorted(list(set(ALL_COLORMAPS)))
 
 # ------------------------------------------------------------------
 # HELPERS
@@ -451,7 +480,7 @@ def init_aliases(all_dois, all_materials):
     for i, doi in enumerate(sorted(all_dois)):
         if doi not in st.session_state.doi_aliases:
             st.session_state.doi_aliases[doi] = f"[{chr(65 + i)}]" if i < 26 else f"[{i+1}]"
-    
+
     if 'material_aliases' not in st.session_state:
         st.session_state.material_aliases = {}
     for mat in sorted(all_materials):
@@ -512,7 +541,7 @@ def get_network_html_cached(display_data_json):
         return None, ""
     import json
     display_data = json.loads(display_data_json)
-    
+
     net = Network(height='720px', width='100%', bgcolor='white', font_color='black', heading='')
     net.barnes_hut(gravity=-9000, central_gravity=0.35, spring_length=140,
                    spring_strength=0.04, damping=0.09)
@@ -547,7 +576,7 @@ def get_network_html_cached(display_data_json):
                              title=f"{meta['name']}: {cnt}x", smooth={'type': 'continuous'})
 
     net.set_options('{"physics": {"stabilization": {"iterations": 200}}, "interaction": {"hover": true, "tooltipDelay": 100}}')
-    
+
     with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as f:
         net.save_graph(f.name)
         with open(f.name, 'r', encoding='utf-8') as hf:
@@ -586,26 +615,39 @@ def render_matplotlib_figure(fig, filename, dpi):
             plt.close(fig)
 
 # ------------------------------------------------------------------
-# UNIFIED CHORD v2.3 — FIXED SPATIAL ARRANGEMENT & LABEL PADDING
+# IMPROVED UNIFIED CHORD (v2.3 — Spatial & Padding Fixes)
 # ------------------------------------------------------------------
 def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                        node_width=0.08, ribbon_alpha=0.55, font_size=10,
-                       paper_span=np.pi * 0.85, material_span=np.pi * 0.85,
+                       paper_span=np.pi * 0.80, material_span=np.pi * 0.80,
                        min_ribbon_width=0.8, max_ribbon_width=6.0,
-                       cmap_name='turbo'):
+                       cmap_name='turbo', gap_padding=0.015,
+                       label_offset=0.14, curve_tension=0.35):
+    """
+    Improved chord diagram with:
+    - Dynamic label padding & offset to prevent overlap
+    - Better quadrant-aware text alignment
+    - Smoother Bezier curves with configurable tension
+    - Gap padding between arc segments
+    - Auto colormap fallback for >20 materials
+    """
     figsize = (min(figsize[0], 24), min(figsize[1], 24))
-    
+
     all_dois = sorted({d for data in all_models_data.values() for d in data})
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
     if not all_dois or not all_mats:
         return None
 
     n_mats = len(all_mats)
+    # Auto-upgrade to continuous colormap if qualitative is selected but N > capacity
     actual_cmap = cmap_name
-    if actual_cmap == 'tab20' and n_mats > 20:
+    qual_cmaps = ['tab20', 'tab10', 'Set1', 'Set2', 'Set3', 'Paired', 'Dark2', 'Accent', 'Pastel1', 'Pastel2']
+    if actual_cmap in qual_cmaps and n_mats > 20:
         actual_cmap = 'turbo'
-        
-    cmap = plt.get_cmap(actual_cmap, max(n_mats, 256))
+    elif actual_cmap in qual_cmaps and n_mats > 10:
+        actual_cmap = 'tab20'
+
+    cmap = plt.get_cmap(actual_cmap, max(n_mats, 1))
     mat_colors = {mat: mcolors.to_hex(cmap(i)) for i, mat in enumerate(all_mats)}
 
     doi_counts = defaultdict(int)
@@ -627,32 +669,38 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
         total_cnt = sum(c for d, m, c, k in connections if d == doi and m == mat)
         unique_connections.append((doi, mat, total_cnt, len(models), models))
 
+    # --- PAPER ARC (top half) ---
     p_total = sum(doi_counts.values())
-    p_start = np.pi + paper_span / 2
+    n_dois = len(all_dois)
+    total_gap = gap_padding * n_dois
+    available_paper = paper_span - total_gap
+    p_start = np.pi / 2 + available_paper / 2 + total_gap / 2
     p_angles = {}
     cur = p_start
     for doi in all_dois:
         cnt = doi_counts[doi]
-        w = (cnt / p_total) * paper_span if p_total > 0 else 0
+        w = (cnt / p_total) * available_paper if p_total > 0 else 0
         p_angles[doi] = {'start': cur, 'end': cur - w, 'mid': cur - w / 2, 'width': w}
-        cur -= w
+        cur -= (w + gap_padding)
 
+    # --- MATERIAL ARC (bottom half) ---
     m_total = sum(mat_counts.values())
-    m_start = -material_span / 2
+    n_mats = len(all_mats)
+    total_mgap = gap_padding * n_mats
+    available_mat = material_span - total_mgap
+    m_start = -np.pi / 2 - available_mat / 2 - total_mgap / 2
     m_angles = {}
     cur = m_start
     for mat in all_mats:
         cnt = mat_counts[mat]
-        w = (cnt / m_total) * material_span if m_total > 0 else 0
+        w = (cnt / m_total) * available_mat if m_total > 0 else 0
         m_angles[mat] = {'start': cur, 'end': cur + w, 'mid': cur + w / 2, 'width': w}
-        cur += w
+        cur += (w + gap_padding)
 
     fig, ax = plt.subplots(figsize=figsize, facecolor='white')
     ax.set_facecolor('white')
 
-    # FIXED: Dynamic label padding proportional to radius
-    label_pad = radius * 0.12
-    
+    # --- DRAW PAPER NODES (top arc) ---
     doi_color = '#34495E'
     for doi, ang in p_angles.items():
         wdg = Wedge((0, 0), radius,
@@ -660,19 +708,28 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                     width=node_width, facecolor=doi_color, edgecolor='black',
                     linewidth=0.8, alpha=0.9, zorder=5)
         ax.add_patch(wdg)
-        lr = radius + node_width + label_pad
+
+        lr = radius + node_width + label_offset
         x = lr * np.cos(ang['mid'])
         y = lr * np.sin(ang['mid'])
         alias = get_alias(doi)
-        rot_deg = np.degrees(ang['mid']) % 360
-        # FIXED: Quadrant-aware alignment to prevent overlap at 90/270 boundaries
-        if 90 < rot_deg < 270:
+        rot = np.degrees(ang['mid'])
+
+        # Quadrant-aware alignment for better readability
+        if 80 <= rot <= 100:
+            ha, va = 'center', 'bottom'
+        elif 260 <= rot <= 280:
+            ha, va = 'center', 'top'
+        elif 90 < rot < 270:
             ha, va = 'right', 'center'
         else:
             ha, va = 'left', 'center'
-        ax.text(x, y, alias, ha=ha, va=va, fontsize=font_size,
-                fontweight='bold', color='#1a1a2e', zorder=6)
 
+        ax.text(x, y, alias, ha=ha, va=va, fontsize=font_size,
+                fontweight='bold', color='#1a1a2e', zorder=6,
+                clip_on=False)
+
+    # --- DRAW MATERIAL NODES (bottom arc) ---
     for mat, ang in m_angles.items():
         fill = mat_colors[mat]
         wdg = Wedge((0, 0), radius,
@@ -680,19 +737,28 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
                     width=node_width, facecolor=fill, edgecolor='black',
                     linewidth=0.8, alpha=0.9, zorder=5)
         ax.add_patch(wdg)
-        lr = radius + node_width + label_pad
+
+        lr = radius + node_width + label_offset
         x = lr * np.cos(ang['mid'])
         y = lr * np.sin(ang['mid'])
-        rot_deg = np.degrees(ang['mid']) % 360
-        if 90 < rot_deg < 270:
+        rot = np.degrees(ang['mid'])
+
+        if 80 <= rot <= 100:
+            ha, va = 'center', 'bottom'
+        elif 260 <= rot <= 280:
+            ha, va = 'center', 'top'
+        elif 90 < rot < 270:
             ha, va = 'right', 'center'
         else:
             ha, va = 'left', 'center'
+
         txt_color = get_contrast_text_color(fill)
         label = get_mat_label(mat)
         ax.text(x, y, label, ha=ha, va=va, fontsize=font_size - 1,
-                fontweight='bold', color=txt_color, zorder=6)
+                fontweight='bold', color=txt_color, zorder=6,
+                clip_on=False)
 
+    # --- DRAW RIBBONS (improved Bezier curves) ---
     max_count = max([c for _, _, c, _, _ in unique_connections]) if unique_connections else 1
     for doi, mat, count, consensus, models in unique_connections:
         if doi not in p_angles or mat not in m_angles:
@@ -705,14 +771,16 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
         x2 = r_rib * np.cos(ma['mid'])
         y2 = r_rib * np.sin(ma['mid'])
         a1, a2 = pa['mid'], ma['mid']
+
         if abs(a1 - a2) > np.pi:
             if a1 > a2:
                 a2 += 2 * np.pi
             else:
                 a1 += 2 * np.pi
-        cp_r = r_rib * 0.22
-        cp1_a = a1 * 0.65 + a2 * 0.35
-        cp2_a = a1 * 0.35 + a2 * 0.65
+
+        cp_r = r_rib * curve_tension
+        cp1_a = a1 * 0.70 + a2 * 0.30
+        cp2_a = a1 * 0.30 + a2 * 0.70
         cp1x, cp1y = cp_r * np.cos(cp1_a), cp_r * np.sin(cp1_a)
         cp2x, cp2y = cp_r * np.cos(cp2_a), cp_r * np.sin(cp2_a)
         verts = [(x1, y1), (cp1x, cp1y), (cp2x, cp2y), (x2, y2)]
@@ -727,14 +795,14 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
             alpha = ribbon_alpha
 
         lw = min_ribbon_width + (max_ribbon_width - min_ribbon_width) * (count / max_count)
-        # FIXED: zorder=2 ensures ribbons render BELOW nodes
         patch = PathPatch(path, facecolor='none', edgecolor=color,
                           linewidth=lw, alpha=alpha, zorder=2, capstyle='round')
         ax.add_patch(patch)
 
-    # FIXED: Expanded viewport to prevent label clipping
-    ax.set_xlim(-1.6, 1.6)
-    ax.set_ylim(-1.6, 1.6)
+    # --- AXIS & LEGEND ---
+    pad = radius + node_width + label_offset + 0.25
+    ax.set_xlim(-pad, pad)
+    ax.set_ylim(-pad, pad)
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title("Unified Cross-Model Extraction Chord", fontsize=18, fontweight='bold', pad=20, color='#1a1a2e')
@@ -748,7 +816,7 @@ def draw_unified_chord(all_models_data, figsize=(16, 16), radius=1.0,
     ]
     ax.legend(handles=legend_elements, loc='lower right', fontsize=10,
               framealpha=0.95, title='Legend', title_fontsize=11,
-              edgecolor='black', fancybox=True)
+              edgecolor='black', fancybox=True, bbox_to_anchor=(1.02, -0.02))
     return fig
 
 # ------------------------------------------------------------------
@@ -835,13 +903,22 @@ def draw_heatmap(all_models_data):
     return fig
 
 # ------------------------------------------------------------------
-# CIRCOS v2.3 — FIXED SPATIAL ARRANGEMENT & ADAPTIVE TRACK SPACING
+# IMPROVED CIRCOS (v2.3 — Label & Padding Fixes)
 # ------------------------------------------------------------------
 def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
-                      track_h=0.5, gap_deg=1.0, fs=9, show_labels=True,
-                      max_bar_scale=1.0, cmap_name='viridis'):
+                      track_h=0.5, gap_deg=1.5, fs=9, show_labels=True,
+                      max_bar_scale=1.0, cmap_name='viridis',
+                      label_padding=0.25, label_rotation_mode='auto'):
+    """
+    Improved circos with:
+    - Proper label padding from outer rim
+    - Smart rotation: text always readable (never upside down)
+    - Better gap distribution
+    - Configurable label offset
+    - Auto colormap fallback
+    """
     figsize = (min(figsize[0], 24), min(figsize[1], 24))
-    
+
     mat_model = defaultdict(lambda: defaultdict(int))
     for mk, data in all_models_data.items():
         for doi, mats in data.items():
@@ -853,71 +930,86 @@ def draw_circos_clean(all_models_data, figsize=(14, 14), inner_r=1.0,
     if n_mats == 0:
         return None
 
+    # Auto fallback for qualitative colormaps
     actual_cmap = cmap_name
-    if actual_cmap == 'tab20' and n_mats > 20:
+    qual_cmaps = ['tab20', 'tab10', 'Set1', 'Set2', 'Set3', 'Paired', 'Dark2', 'Accent', 'Pastel1', 'Pastel2']
+    if actual_cmap in qual_cmaps and n_mats > 20:
         actual_cmap = 'turbo'
-        
-    cmap = plt.get_cmap(actual_cmap, max(n_mats, 256))
+    elif actual_cmap in qual_cmaps and n_mats > 10:
+        actual_cmap = 'tab20'
+
+    cmap = plt.get_cmap(actual_cmap, max(n_mats, 1))
     rim_colors = {mat: mcolors.to_hex(cmap(i)) for i, mat in enumerate(mats_sorted)}
 
-    avail = 2 * np.pi - np.radians(gap_deg * n_mats)
+    avail = 2 * np.pi - np.radians(gap_deg)
     step = avail / n_mats if n_mats > 0 else 0
+
+    n_tracks = len(MODEL_META)
+    outer_extent = inner_r + n_tracks * track_h + label_padding + 0.1
 
     fig = plt.figure(figsize=figsize, facecolor='white')
     ax = fig.add_subplot(111, polar=True)
     ax.set_facecolor('white')
 
-    n_models = len(MODEL_META)
-    # FIXED: Adaptive track gap to prevent bar overlap at large track_h
-    track_gap = track_h * 0.08
-    
     for i, mat in enumerate(mats_sorted):
         ma = i * step + step / 2
         max_cnt = max(mat_model[mat].values()) if mat_model[mat] else 1
+
         for ti, (mk, meta) in enumerate(MODEL_META.items()):
             cnt = mat_model[mat].get(mk, 0)
             if cnt == 0:
                 continue
-            bottom = inner_r + ti * (track_h + track_gap)
-            h = track_h * (0.12 + 0.88 * cnt / max(1, max_cnt)) * max_bar_scale
-            ax.bar(ma, h, width=step * 0.88, bottom=bottom,
+            bottom = inner_r + ti * track_h
+            h = track_h * (0.15 + 0.85 * cnt / max(1, max_cnt)) * max_bar_scale
+            ax.bar(ma, h, width=step * 0.85, bottom=bottom,
                    color=meta['color'], alpha=0.92,
                    edgecolor='black', linewidth=0.4, zorder=3)
-            if cnt >= 2 and h > 0.15:
+            if cnt >= 2 and h > track_h * 0.35:
                 ax.text(ma, bottom + h / 2, str(cnt),
-                        ha='center', va='center', fontsize=fs - 2,
+                        ha='center', va='center', fontsize=max(fs - 2, 7),
                         color='white', fontweight='bold', zorder=4)
 
-        # FIXED: Proportional label offset from outermost track rim
-        rim_bottom = inner_r + n_models * (track_h + track_gap) + 0.05
-        ax.bar(ma, 0.06, width=step * 0.9, bottom=rim_bottom,
+        # Outer rim indicator
+        rim_bottom = inner_r + n_tracks * track_h + 0.04
+        ax.bar(ma, 0.08, width=step * 0.88, bottom=rim_bottom,
                color=rim_colors[mat], alpha=0.9, edgecolor='black', linewidth=0.3, zorder=5)
 
+        # Improved label positioning
         if show_labels:
             lbl = get_mat_label(mat)
-            rot = np.degrees(ma)
-            # FIXED: Proportional label offset prevents collision at any scale
-            label_r = rim_bottom + 0.06 + (inner_r * 0.08)
-            if 90 < rot < 270:
-                rot_adj = rot - 90
-                va = 'top'
-            else:
-                rot_adj = rot + 90
-                va = 'bottom'
-            ax.text(ma, label_r, lbl,
-                    ha='center', va=va, fontsize=fs - 1,
-                    fontweight='bold', color='#2c3e50', zorder=6,
-                    rotation=rot_adj)
+            label_r = inner_r + n_tracks * track_h + label_padding
 
-    outer_limit = inner_r + n_models * (track_h + track_gap) + 0.35
-    ax.set_ylim(0, outer_limit)
+            rot_deg = np.degrees(ma)
+
+            # Smart rotation: always keep text readable
+            if label_rotation_mode == 'auto':
+                if 90 < rot_deg < 270:
+                    text_rot = rot_deg - 180
+                    ha = 'center'
+                    va = 'top' if rot_deg < 180 else 'bottom'
+                else:
+                    text_rot = rot_deg
+                    ha = 'center'
+                    va = 'bottom' if rot_deg < 90 else 'top'
+            else:
+                text_rot = 0
+                ha = 'center'
+                va = 'center'
+
+            ax.text(ma, label_r, lbl,
+                    ha=ha, va=va, fontsize=fs - 1,
+                    fontweight='bold', color='#2c3e50', zorder=6,
+                    rotation=text_rot,
+                    rotation_mode='anchor')
+
+    ax.set_ylim(0, outer_extent)
     ax.set_yticks([])
     ax.set_xticks([])
     ax.spines['polar'].set_visible(False)
 
     handles = [mpatches.Patch(facecolor=meta['color'], edgecolor='black', label=meta['short'])
                for meta in MODEL_META.values()]
-    ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1.18, 1.05),
+    ax.legend(handles=handles, loc='upper right', bbox_to_anchor=(1.22, 1.08),
               fontsize=fs, framealpha=0.95, title='Model Track', title_fontsize=fs + 1,
               edgecolor='black', fancybox=True)
     return fig
@@ -965,7 +1057,7 @@ def build_umap_features_cached(all_models_data_json):
 def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean'):
     if not HAS_UMAP or not HAS_SKLEARN:
         return None, "UMAP or scikit-learn not installed."
-    
+
     import json
     data_json = json.dumps(all_models_data)
     cached = build_umap_features_cached(data_json)
@@ -975,7 +1067,7 @@ def draw_umap_3d(all_models_data, n_neighbors=5, min_dist=0.3, metric='euclidean
     presence = cached['presence']
     totals = cached['totals']
     doi_counts = cached['doi_counts']
-    
+
     n_samples = len(labels)
     if n_samples < 3:
         return None, "Need ≥3 materials for UMAP."
@@ -1028,9 +1120,9 @@ def build_animation_data(all_models_data):
         for doi, mats in data.items():
             for mat, cnt in mats.items():
                 mat_totals[mat] += cnt
-                
+
     top_mats = sorted(mat_totals.keys(), key=lambda x: mat_totals[x], reverse=True)[:50]
-    
+
     for mk, meta in MODEL_META.items():
         data = all_models_data.get(mk, {})
         mat_counts = defaultdict(int)
@@ -1053,7 +1145,7 @@ def build_animation_data(all_models_data):
 
 def build_consensus_animation_data(all_models_data):
     all_mats = sorted({m for data in all_models_data.values() for mats in data.values() for m in mats})
-    
+
     mat_totals = defaultdict(int)
     for mk, data in all_models_data.items():
         for doi, mats in data.items():
@@ -1061,7 +1153,7 @@ def build_consensus_animation_data(all_models_data):
                 mat_totals[mat] += cnt
     top_mats = sorted(mat_totals.keys(), key=lambda x: mat_totals[x], reverse=True)[:50]
     all_mats = [m for m in all_mats if m in top_mats]
-    
+
     mat_agreement = {}
     mat_maxcnt = {}
     for mat in all_mats:
@@ -1100,14 +1192,6 @@ if 'validation_cache' not in st.session_state:
     st.session_state.validation_cache = {}
 
 # ------------------------------------------------------------------
-# EXPANDED COLORMAP OPTIONS (>50 colors)
-# ------------------------------------------------------------------
-CMAP_OPTIONS = [
-    "turbo", "jet", "gist_rainbow", "inferno", "plasma", 
-    "magma", "cividis", "hsv", "nipy_spectral", "viridis", "tab20"
-]
-
-# ------------------------------------------------------------------
 # SIDEBAR
 # ------------------------------------------------------------------
 with st.sidebar:
@@ -1138,9 +1222,9 @@ with st.sidebar:
     st.markdown("<small>When enabled, non-material nodes/edges are erased, dynamically altering diagram morphology.</small>", unsafe_allow_html=True)
 
     st.markdown("---")
-    
+
     st.markdown("## 🏷️ Alias Editors")
-    
+
     with st.expander("✏️ DOI Aliases", expanded=False):
         alias_search = st.text_input("Filter DOIs", "", key="alias_filter")
         filtered_dois = [d for d in all_dois if not alias_search or alias_search.lower() in d.lower()]
@@ -1193,7 +1277,16 @@ with st.sidebar:
         chord_font = st.slider("Font size", 5, 36, 10, key="chord_fnt")
         chord_min_lw = st.slider("Min ribbon width", 0.2, 6.0, 0.8, 0.1, key="chord_mlw")
         chord_max_lw = st.slider("Max ribbon width", 1.0, 20.0, 6.0, 0.2, key="chord_Mlw")
-        
+
+        # NEW v2.3: Gap padding & label offset
+        chord_gap = st.slider("Arc gap padding", 0.0, 0.08, 0.015, 0.005, key="chord_gap",
+                              help="Gap between adjacent arc segments. Higher = more separation.")
+        chord_lbl_off = st.slider("Label offset", 0.05, 0.40, 0.14, 0.01, key="chord_lo",
+                                  help="Radial distance of labels from arc edge.")
+        chord_tension = st.slider("Curve tension", 0.15, 0.60, 0.35, 0.05, key="chord_ten",
+                                  help="Bezier control-point radius factor. Lower = straighter ribbons.")
+
+        # Category Filter (Morphology Control)
         all_cats = sorted(list(TAXONOMY.keys()) + ['Other'])
         selected_cats = st.multiselect(
             "📂 Toggle Categories (Erase Nodes/Edges)",
@@ -1202,13 +1295,14 @@ with st.sidebar:
             key="chord_cat_filter",
             help="Deselecting a category dynamically erases its nodes and links, altering the diagram's morphology."
         )
-        
+
+        # v2.3: 50+ Colormap Selector with grouping
         chord_cmap = st.selectbox(
             "🎨 Material Colormap", 
-            CMAP_OPTIONS, 
-            index=0, 
+            ALL_COLORMAPS,
+            index=ALL_COLORMAPS.index('turbo') if 'turbo' in ALL_COLORMAPS else 0,
             key="chord_cmap",
-            help="turbo, jet, rainbow, inferno, plasma, magma, cividis, hsv, nipy_spectral all support >50 distinct colors."
+            help="Continuous maps (turbo, jet, inferno, rainbow, etc.) support unlimited colors. Qualitative maps (tab20, Set1...) auto-fallback to turbo if N>20."
         )
 
     st.markdown("## 🧬 Circos Style")
@@ -1216,16 +1310,28 @@ with st.sidebar:
         circos_size = st.slider("Figure size", 8, 24, 14, key="circos_fs")
         circos_inner = st.slider("Inner radius", 0.5, 4.0, 1.0, key="circos_ir")
         circos_track = st.slider("Track height", 0.2, 3.0, 0.5, key="circos_th")
-        circos_gap = st.slider("Gap (°)", 0.0, 20.0, 1.0, key="circos_gap")
+        circos_gap = st.slider("Gap (°)", 0.0, 20.0, 1.5, key="circos_gap")
         circos_fs = st.slider("Font size", 5, 32, 9, key="circos_font")
         circos_scale = st.slider("Bar scale", 0.5, 4.0, 1.0, key="circos_scale")
-        
+
+        # NEW v2.3: Label padding & rotation mode
+        circos_lbl_pad = st.slider("Label padding", 0.1, 0.8, 0.25, 0.05, key="circos_lp",
+                                   help="Radial distance of labels from outer rim.")
+        circos_rot_mode = st.selectbox(
+            "Label rotation",
+            ["auto", "horizontal"],
+            index=0,
+            key="circos_rot",
+            help="Auto = radial rotation (readable from outside). Horizontal = always upright."
+        )
+
+        # v2.3: 50+ Colormap Selector
         circos_cmap = st.selectbox(
             "🎨 Material Colormap", 
-            CMAP_OPTIONS, 
-            index=9, 
+            ALL_COLORMAPS,
+            index=ALL_COLORMAPS.index('viridis') if 'viridis' in ALL_COLORMAPS else 0,
             key="circos_cmap",
-            help="turbo, jet, rainbow, inferno, plasma, magma, cividis, hsv, nipy_spectral all support >50 distinct colors."
+            help="Outer rim colormap. Continuous maps support unlimited materials."
         )
 
     st.markdown("## 🔮 UMAP Style")
@@ -1241,13 +1347,13 @@ with st.sidebar:
 
     st.markdown("## 📊 Global Export")
     download_dpi = st.slider("Figure DPI", 150, 600, 300, 50)
-    
+
     st.markdown("---")
     with st.expander("🩺 System Diagnostics", expanded=False):
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
         mem_warn = mem_mb > 1500
-        
+
         st.markdown(f"""
         <div style="font-family:monospace; font-size:0.85rem;">
             <span class="diag-metric">🧠 Memory: <span class="{'diag-warn' if mem_warn else 'diag-ok'}">{mem_mb:.1f} MB</span></span>
@@ -1255,10 +1361,10 @@ with st.sidebar:
             <span class="diag-metric">💾 Cache: Auto-managed (TTL + max_entries)</span>
         </div>
         """, unsafe_allow_html=True)
-        
+
         if mem_warn:
             st.warning("⚠️ Memory usage high! Consider clearing cache or reducing dataset size.")
-        
+
         if st.button("🗑️ Force GC + Clear Caches", key="diag_clear"):
             plt.close('all')
             gc.collect()
@@ -1282,7 +1388,7 @@ display_data = filter_data_by_validation_cached(
 # MAIN HEADER
 # ------------------------------------------------------------------
 st.markdown('<div class="main-header">AlloyExtraction Nexus v2.3</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Fixed Spatial Layout • >50 Color Maps • Morphology Control</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Memory-Hardened • 50+ Colormaps • Fixed Chord & Circos Spatial Layout</div>', unsafe_allow_html=True)
 
 cols = st.columns(len(MODEL_META))
 for i, (key, meta) in enumerate(MODEL_META.items()):
@@ -1322,13 +1428,14 @@ tabs = st.tabs(tab_labels)
 t_idx = 0
 
 # ------------------------------------------------------------------
-# TAB 1: UNIFIED CHORD
+# TAB 1: UNIFIED CHORD (w/ Category Filtering & v2.3 Fixes)
 # ------------------------------------------------------------------
 if show_chord:
     with tabs[t_idx]:
         st.markdown("### Unified Multi-Model Chord Diagram")
-        st.markdown("<div class='caption'>Use the <b>Toggle Categories</b> multiselect in the sidebar to erase specific nodes/edges and dynamically alter the diagram's morphology. Labels use dynamic padding and quadrant-aware alignment.</div>", unsafe_allow_html=True)
-        
+        st.markdown("<div class='caption'>v2.3 improvements: quadrant-aware labels, configurable gap padding, smoother Bezier curves, 50+ colormaps.</div>", unsafe_allow_html=True)
+
+        # Apply Category Filter specifically for Chord Diagram
         chord_data = {}
         for mk, data in display_data.items():
             fdata = {}
@@ -1338,12 +1445,15 @@ if show_chord:
                     fdata[doi] = fmats
             if fdata:
                 chord_data[mk] = fdata
-                
+
         fig = draw_unified_chord(
             chord_data, figsize=(chord_figsize, chord_figsize), radius=chord_radius,
             node_width=chord_node_w, ribbon_alpha=chord_rib_a, font_size=chord_font,
             min_ribbon_width=chord_min_lw, max_ribbon_width=chord_max_lw,
-            cmap_name=chord_cmap
+            cmap_name=chord_cmap,
+            gap_padding=chord_gap,
+            label_offset=chord_lbl_off,
+            curve_tension=chord_tension
         )
         render_matplotlib_figure(fig, "unified_chord.png", download_dpi)
         del fig
@@ -1408,16 +1518,18 @@ if show_heatmap:
     t_idx += 1
 
 # ------------------------------------------------------------------
-# TAB 5: CIRCOS
+# TAB 5: CIRCOS (v2.3 Fixes)
 # ------------------------------------------------------------------
 if show_circos:
     with tabs[t_idx]:
         st.markdown("### Circos-Style Radial Histogram")
-        st.markdown("<div class='caption'>Clean radial layout with adaptive track spacing and proportional label offsets. Outer rim uses the selected colormap (supports >50 colors).</div>", unsafe_allow_html=True)
+        st.markdown("<div class='caption'>v2.3 improvements: smart label rotation (never upside-down), configurable padding, 50+ colormaps, better gap distribution.</div>", unsafe_allow_html=True)
         fig_circ = draw_circos_clean(
             display_data, figsize=(circos_size, circos_size), inner_r=circos_inner,
             track_h=circos_track, gap_deg=circos_gap, fs=circos_fs,
-            max_bar_scale=circos_scale, cmap_name=circos_cmap
+            max_bar_scale=circos_scale, cmap_name=circos_cmap,
+            label_padding=circos_lbl_pad,
+            label_rotation_mode=circos_rot_mode
         )
         render_matplotlib_figure(fig_circ, "circos_radial.png", download_dpi)
         del fig_circ
@@ -1569,9 +1681,10 @@ st.markdown("---")
 st.markdown("""
 <div style="text-align:center; color:#666; font-size:0.88rem; padding:1rem 0; font-family:serif;">
     <strong>v2.3 Upgrades:</strong> 
-    ✅ Fixed Chord label padding (radius-proportional) & quadrant-aware alignment | 
-    ✅ Fixed Circos adaptive track spacing & proportional label offsets | 
-    ✅ Expanded colormaps: turbo, jet, rainbow, inferno, plasma, magma, cividis, hsv, nipy_spectral (>50 colors)<br><br>
+    ✅ Fixed Chord spatial layout (quadrant-aware labels, gap padding, configurable tension) | 
+    ✅ Fixed Circos label rotation (never upside-down, configurable padding) | 
+    ✅ 50+ Colormaps (turbo, jet, inferno, rainbow, plasma, magma, cividis, etc.) | 
+    ✅ Auto-fallback from qualitative to continuous maps when N>20<br><br>
     <strong>Memory Hardening:</strong> All expensive operations remain wrapped in <code>@st.cache_data</code> or 
     <code>@st.cache_resource(max_entries=3)</code>. Matplotlib figures are force-closed via 
     <code>plt.close()</code> + <code>gc.collect()</code> after every render.

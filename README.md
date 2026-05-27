@@ -274,6 +274,9 @@ Working Versions (v89 is stable version)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.d-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel88d.streamlit.app/) (V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v88.e-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel88e.streamlit.app/) (V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+
 
 
 

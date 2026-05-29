@@ -1688,12 +1688,12 @@ RULES:
 
     def _format_to_pageindex(self, raw: str, query: str) -> str:
         # Ensure citation tags are standardized
-        raw = re.sub(r'<cite.*?doc=["']([^"']+)["'].*?page=["']?(\d+).*?>',
-                     r'@@CITE:doc=;page=@@', raw)
+        def _repl(m):
+            return f"@@CITE:doc={m.group(1)};page={m.group(2)}@@"
+        _pat = "<cite.*?doc=\"([^\"]+)\".*?page=\"?([0-9]+).*?>"
+        raw = re.sub(_pat, _repl, raw)
         if "@@CITE:" not in raw:
-            raw += "
-
-[WARNING] No direct citations generated. Please verify sources manually."
+            raw += "\n\n[WARNING] No direct citations generated. Please verify sources manually."
         return raw
 
 
@@ -2850,14 +2850,10 @@ class LLMReasoningSynthesizer:
 
             if item.item_type == "equation" and item.equation_latex:
                 # Format equation with LaTeX for Streamlit MathJax
-                line = f"### {item.model_name or 'Governing Equation'}
-"
-                line += f"$$ {item.equation_latex} $$
-"
+                line = f"### {item.model_name or 'Governing Equation'}\n"
+                line += f"$$ {item.equation_latex} $$\n"
                 if item.variables_defined:
-                    vars_text = ", ".join([f"${k}$: {v}" for k, v in item.variables_defined.items()])
-                    line += f"*Where: {vars_text}*
-"
+                    line += f"*Where: {vars_text}*\n"
                 line += cite_tag
                 extracted_lines.append(line)
             else:
@@ -2868,8 +2864,7 @@ class LLMReasoningSynthesizer:
                 line = f"- {pq_readable}{mat}: {item.content} ({item.confidence:.2f}) context: {item.context[:200]} {cite_tag}{sim}"
                 extracted_lines.append(line)
 
-        extracted_text = "
-".join(extracted_lines[:20])
+        extracted_text = "\n".join(extracted_lines[:20])
 
         # Dynamic Formatting Instructions based on intent
         if out_fmt == "contrastive_table":
@@ -2931,20 +2926,17 @@ Return ONLY the structured text."""
             return self._format_citations(answer.strip())
         except Exception as e:
             logger.error(f"Reasoning synthesis error: {e}")
-            lines = [f"Query: {query}
-Found {len(items)} relevant items:
-"] + [f"- {item.content} @@CITE:doc={item.doc_source};page={item.page}@@" for item in items[:5]]
-            return "
-".join(lines)
+            lines = [f"Query: {query}\nFound {len(items)} relevant items:\n"] + [f"- {item.content} @@CITE:doc={item.doc_source};page={item.page}@@" for item in items[:5]]
+            return "\n".join(lines)
 
     def _format_citations(self, raw: str) -> str:
         """Standardize citation tags to PageIndex format."""
-        raw = re.sub(r'<cite.*?doc=["']([^"']+)["'].*?page=["']?(\d+).*?>',
-                     r'@@CITE:doc=;page=@@', raw)
+        def _repl(m):
+            return f"@@CITE:doc={m.group(1)};page={m.group(2)}@@"
+        _pat = "<cite.*?doc=\"([^\"]+)\".*?page=\"?([0-9]+).*?>"
+        raw = re.sub(_pat, _repl, raw)
         if "@@CITE:" not in raw:
-            raw += "
-
-[WARNING] No direct citations generated. Please verify sources manually."
+            raw += "\n\n[WARNING] No direct citations generated. Please verify sources manually."
         return raw
     def generate_human_conclusion(self, query: str, report: QueryReport) -> str:
         values = report.all_values

@@ -1677,7 +1677,7 @@ RULES:
 - Never invent connections between papers.
 - Return ONLY the structured text."""
 
-    def __init__(self, llm: HybridLLM):
+    def __init__(self, llm: "HybridLLM"):
         self.llm = llm
 
     def generate(self, query: str, verified_items: List[UniversalExtractionItem]) -> str:
@@ -2758,7 +2758,7 @@ CRITICAL RULES FOR EQUATIONS & MECHANISMS:
 13. For qualitative mechanism queries, extract causal paragraphs verbatim into the "context" field and set item_type="qualitative".
 Return [] if no relevant information found."""
 
-    def __init__(self, llm: HybridLLM):
+    def __init__(self, llm: "HybridLLM"):
         self.llm = llm
         self.phys_classifier = PhysicalQuantityClassifier()
         self.concept_normalizer = ConceptNormalizer()
@@ -2832,7 +2832,7 @@ Return [] if no relevant information found."""
         return None
 
 class LLMReasoningSynthesizer:
-    def __init__(self, llm: HybridLLM):
+    def __init__(self, llm: "HybridLLM"):
         self.llm = llm
         self.phys_classifier = PhysicalQuantityClassifier()
 
@@ -2995,7 +2995,7 @@ Return ONLY the structured text."""
 # HIERARCHICAL TREE RETRIEVER (EXPANDED)
 # =============================================================================
 class HierarchicalTreeRetriever:
-    def __init__(self, llm: HybridLLM, max_results=30, max_text_chars=20000):
+    def __init__(self, llm: "HybridLLM", max_results=30, max_text_chars=20000):
         self.llm = llm
         self.max_results = max_results
         self.max_text_chars = max_text_chars
@@ -3489,7 +3489,7 @@ class DocumentShortLabelRegistry:
     custom_labels dict: {"doc_id": "MyLabel"}. Marker shapes remain unchanged.
     """
 
-    def __init__(self, marker_registry: Optional[DocumentMarkerRegistry] = None, 
+    def __init__(self, marker_registry: Optional["DocumentMarkerRegistry"] = None, 
                  custom_labels: Optional[Dict[str, str]] = None):
         self._doc_to_short: Dict[str, str] = {}
         self._short_to_doc: Dict[str, str] = {}
@@ -3717,7 +3717,7 @@ def create_short_label_legend_html(
 def _get_or_create_short_registry(doc_ids: List[str], 
                                    existing_registry: Optional[DocumentMarkerRegistry] = None,
                                    custom_labels: Optional[Dict[str, str]] = None
-                                   ) -> DocumentShortLabelRegistry:
+                                   ) -> "DocumentShortLabelRegistry":
     """Helper to get/create a unified short-label registry.
 
     Args:
@@ -3917,7 +3917,7 @@ class PublicationVisualizationEngine:
         "plotly_tealrose": "tealrose", "plotly_tropic": "tropic"
     }
 
-    def __init__(self, kgraph: QuantitativeKnowledgeGraph, config: Optional[VisConfig] = None):
+    def __init__(self, kgraph: "QuantitativeKnowledgeGraph", config: Optional["VisConfig"] = None):
         self.kgraph = kgraph
         self.cfg = config or VisConfig()
         self.marker_registry = DocumentMarkerRegistry()

@@ -1665,7 +1665,7 @@ VERIFIED ITEMS: {items_json}
 OUTPUT STRICTLY IN THIS FORMAT:
 **Direct Answer**: [1-2 sentence direct response]
 **Evidence & Citations**:
-- [Value/Parameter] → [Context] @@CITE:doc={doc};page={page}@@
+- [Value/Parameter] → [Context] @@CITE:doc={{doc}};page={{page}}@@
 - ...
 **Cross-Document Consensus**: [Mean/Range if multiple docs]
 **Limitations/Uncertainty**: [Note low-confidence items or missing data]
@@ -1673,7 +1673,7 @@ OUTPUT STRICTLY IN THIS FORMAT:
 
 RULES:
 - Use @@CITE:doc=filename;page=N@@ format for EVERY claim.
-- If a parameter is NOT in a paper, explicitly state: "Not reported in {doc}."
+- If a parameter is NOT in a paper, explicitly state: "Not reported in {{doc}}."
 - Never invent connections between papers.
 - Return ONLY the structured text."""
 

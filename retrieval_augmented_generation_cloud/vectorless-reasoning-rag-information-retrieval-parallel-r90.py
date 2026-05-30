@@ -2754,7 +2754,7 @@ CRITICAL RULES FOR EQUATIONS & MECHANISMS:
 9. If a mathematical equation, constitutive model, or governing PDE is present, set item_type="equation".
 10. Extract the equation into the "equation_latex" field using standard LaTeX syntax (e.g., r"\\sigma = K \\varepsilon^n").
 11. Identify the "model_name" (e.g., "Ramberg-Osgood", "Navier-Stokes", "Cahn-Hilliard").
-12. Define the variables in "variables_defined" as a JSON object (e.g., {"\\sigma": "true stress", "n": "strain hardening exponent"}).
+12. Define the variables in "variables_defined" as a JSON object (e.g., {{"\\sigma": "true stress", "n": "strain hardening exponent"}}).
 13. For qualitative mechanism queries, extract causal paragraphs verbatim into the "context" field and set item_type="qualitative".
 Return [] if no relevant information found."""
 

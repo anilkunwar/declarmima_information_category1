@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
+r"""
 DECLARMIMA v18.2 - VECTORLESS DYNAMIC EQUATION-AWARE MULTI-PHYSICS RAG
 ================================================================================
 v18.0 Major upgrade (4 core) + v18.1 Fixes (5 gaps) + v18.2 Equation retrieval hardening (3 fixes)
@@ -3178,11 +3178,7 @@ class HierarchicalTreeRetriever:
                                 if s_text:
                                     sibling_texts.append(s_text[:2000])
                         if sibling_texts:
-                            full_text = full_text + "
-
-[EXPANDED CONTEXT]:
-" + "
-".join(sibling_texts)
+                            full_text = full_text + "\n\n[EXPANDED CONTEXT]:\n" + "\n".join(sibling_texts)
                 if len(full_text) > max_chars_for_node:
                     full_text = full_text[:max_chars_for_node] + "..."
                 results.append({"full_text": full_text, "page_start": node.get('start_index'), "doc_id": doc_id, "section_title": node.get('title'), "quantitative_items": node.get('quantitative_items', []), "citation": f'<cite doc="{doc_id}" page="{node.get("start_index")}"/>', "selection_reasoning": sel.get('reasoning', ''), "confidence": sel.get('confidence', 0)})

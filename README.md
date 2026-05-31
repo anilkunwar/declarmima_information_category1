@@ -283,7 +283,7 @@ v90 (Refer v88e for backward compatibility)
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v90.a-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel90a.streamlit.app/) (A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
-[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v90.a-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel90a.streamlit.app/) (Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v90.b-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel90b.streamlit.app/) (Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
 
 

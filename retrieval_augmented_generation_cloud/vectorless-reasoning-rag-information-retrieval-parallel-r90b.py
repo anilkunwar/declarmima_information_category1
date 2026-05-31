@@ -2402,12 +2402,14 @@ class FastHierarchicalIndex(HierarchicalIndex):
 
     # v18.2: Regex for inline math ($...$), display math ($$...$$), equation envs
     MATH_BLOCK_RE = re.compile(
-        r'((?<!\)\$\$[^\$]+\$\$(?!\)|'        # display math $$...$$
-        r'(?<!\)\$[^\$]+\$(?!\)|'              # inline math $...$
-        r'\\[.*?\\]|'                          # \[...\]
-        r'\begin\{equation\}.*?\end\{equation\}|'  # equation env
-        r'\begin\{align\}.*?\end\{align\}|'      # align env
-        r'\[(.*?\])',                              # \(...\)
+        r'('  # outer group start
+        r'(?<!\\)\$\$[^\$]+\$\$(?!\\)|'        # display math $$...$$
+        r'(?<!\\)\$[^\$]+\$(?!\\)|'              # inline math $...$
+        r'\\\[.*?\\\]|'                          # \[...\]
+        r'\\begin\{equation\}.*?\\end\{equation\}|'  # equation env
+        r'\\begin\{align\}.*?\\end\{align\}|'      # align env
+        r'\\\((.*?)\\\)'                              # \(...\)
+        r')',  # outer group end
         re.DOTALL
     )
 

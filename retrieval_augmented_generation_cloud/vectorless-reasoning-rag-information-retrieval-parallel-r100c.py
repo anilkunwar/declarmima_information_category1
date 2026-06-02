@@ -3051,16 +3051,16 @@ class FastHierarchicalIndex(HierarchicalIndex):
 
     # v18.2: Regex for inline math ($...$), display math ($$...$$), equation envs
     MATH_BLOCK_RE = re.compile(
-    r'('  # outer group start
-    r'(?<!\)\$\$[^\$]+\$\$(?!\)|'        # display math $$...$$
-    r'(?<!\)\$[^\$]+\$(?!\)|'              # inline math $...$
-    r'\\\[.*?\\\]|'                          # \[...\]
-    r'\\begin\{(equation|align|gather|multline)\}.*?\\end\{\1\}|'  # LaTeX envs
-    r'\\\((.*?)\\\)|'                           # \(...\)
-    r'\*[^*]+_\{[^}]+\}(?:\*[^*]*)*'            # NEW v19.0: *σ*_{{*i**j*}} tensor notation
-    r'(?:Eq\.|Equation)\s*\(\d+\)'              # NEW v19.0: Eq. (6), Equation (7) references
-    r')',
-    re.DOTALL
+        r'(?:'                                    # non-capturing outer group for alternation
+        r'\$\$[^\$]+?\$\$'                        # display math $$...$$
+        r'|\$(?=[^\$\d\s])(?:[^\$]|\\$)+?\$(?![\d])'  # inline math $...$ (not $5, $10)
+        r'|\\[.*?\\]'                           # \[...\] display math
+        r'|\begin\{(?P<env>equation|align|gather|multline)\}.*?\end\{(?P=env)\}'  # LaTeX envs
+        r'|\\(.*?\\)'                           # \(...\) inline math
+        r'|\*[^*]+?\*_[\{\{][^}]*[\}\}]'         # tensor notation *σ*_{{*i**j*}} or *σ*_{ij}
+        r'|(?:Eq\.|Equation)\s*\(\d+\)'           # Eq. (6), Equation (7)
+        r')',
+        re.DOTALL
     )
 
     def __init__(self, cache_dir=".declarmima_cache", llm=None):

@@ -3055,7 +3055,7 @@ class FastHierarchicalIndex(HierarchicalIndex):
         r'\$\$[^\$]+?\$\$'                        # display math $$...$$
         r'|\$(?=[^\$\d\s])(?:[^\$]|\\$)+?\$(?![\d])'  # inline math $...$ (not $5, $10)
         r'|\\[.*?\\]'                           # \[...\] display math
-        r'|\begin\{(?P<env>equation|align|gather|multline)\}.*?\end\{(?P=env)\}'  # LaTeX envs
+        r'|\\begin\{(?P<env>equation|align|gather|multline)\}.*?\\end\{(?P=env)\}'  # LaTeX envs
         r'|\\(.*?\\)'                           # \(...\) inline math
         r'|\*[^*]+?\*_[\{\{][^}]*[\}\}]'         # tensor notation *σ*_{{*i**j*}} or *σ*_{ij}
         r'|(?:Eq\.|Equation)\s*\(\d+\)'           # Eq. (6), Equation (7)

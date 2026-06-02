@@ -3091,7 +3091,7 @@ class FastHierarchicalIndex(HierarchicalIndex):
         r'\\\[.*?\\\]|'                          # \[...\]
         r'\\begin\{(equation|align|gather|multline)\}.*?\\end\{\1\}|'  # LaTeX envs
         r'\\\((.*?)\\\)|'                           # \(...\)
-        r'\*[^*]+_\{[^}]+\}(?:\*[^*]*)*'            # NEW v19.0: *σ*_{*i**j*} tensor notation
+        r'\*[^*]+_\{[^}]+\}(?:\*[^*]*)*'            # NEW v19.0: *σ*_{{*i**j*}} tensor notation
         r'(?:Eq\.|Equation)\s*\(\d+\)'              # NEW v19.0: Eq. (6), Equation (7) references
         r')',
         re.DOTALL
@@ -3705,7 +3705,7 @@ CRITICAL RULES FOR VISUAL/SKETCH QUERIES:
     - Set model_name to the constitutive model name (e.g., "Hollomon Strength Coefficient σ₀(T)")
     - Also create a SEPARATE quantitative item with the parameter_name and any reference values
     - Example: σ₀(T) = -2.65×10⁻³(T-273)² + 8.38×10⁻²(T-273) + 316 → extract as equation_latex
-17. For equations extracted from PDFs with non-standard formatting (e.g., *σ*_{*i**j*},
+17. For equations extracted from PDFs with non-standard formatting (e.g., *σ*_{{*i**j*}},
     asterisk-wrapped tensors, italic variables, equation number tags like "(6)" or "(7)"):
     - STILL extract them as item_type="equation"
     - Convert to clean LaTeX in equation_latex field

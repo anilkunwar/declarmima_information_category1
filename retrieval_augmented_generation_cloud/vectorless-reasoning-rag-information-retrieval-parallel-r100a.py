@@ -2025,15 +2025,10 @@ class AdaptiveResponseGenerator:
             fallback_items = [i for i in items if any(kw in (i.content or "").lower() 
                              for kw in ["hollomon", "ramberg", "osgood", "strength", "hardening"])]
             if fallback_items:
-                return self._format_as_prose(query, fallback_items, qa) + "
+                return self._format_as_prose(query, fallback_items, qa) + "\n\n*[Note: Constitutive parameters found but not structured as equations or values.]*"
+            return self._format_as_prose(query, items, qa) + "\n\n*[Note: No constitutive model equations or parameters found for this query.]*"
 
-*[Note: Constitutive parameters found but not structured as equations or values.]*"
-            return self._format_as_prose(query, items, qa) + "
-
-*[Note: No constitutive model equations or parameters found for this query.]*"
-
-        lines = [f"## Constitutive Model Parameters: {query}
-"]
+        lines = [f"## Constitutive Model Parameters: {query}"]
 
         # Render equations if found
         if eq_items:
@@ -2051,10 +2046,8 @@ class AdaptiveResponseGenerator:
                     vars_str = ", ".join(f"${k}$: {v}" for k, v in item.variables_defined.items())
                     lines.append(f"*Where: {vars_str}*")
                 if item.context:
-                    lines.append(f"
-**Context:** {item.context[:300]}")
-                lines.append(f"@@CITE:doc={item.doc_source};page={item.page}@@
-")
+                    lines.append(f"\n**Context:** {item.context[:300]}")
+                lines.append(f"@@CITE:doc={item.doc_source};page={item.page}@@\n")
 
         # Render parameter values/expressions
         if merged_params:
@@ -2078,8 +2071,7 @@ class AdaptiveResponseGenerator:
             # Add summary statistics for numeric parameters
             numeric_params = [i for i in merged_params if i.value is not None]
             if numeric_params:
-                lines.append("
-### Parameter Statistics")
+                lines.append("\n### Parameter Statistics")
                 by_pq = {}
                 for item in numeric_params:
                     pq = item.physical_quantity or "unknown"
@@ -2091,8 +2083,7 @@ class AdaptiveResponseGenerator:
                     readable = self.phys_classifier.get_human_readable(pq)
                     lines.append(f"- **{readable}**: n={len(vals)}, range={min(vals):.4g} to {max(vals):.4g}, mean={sum(vals)/len(vals):.4g}")
 
-        return "
-".join(lines)
+        return "\n".join(lines)
 
     def _format_as_visual(self, query, items, qa):
         sketch_items = [i for i in items if i.item_type in ["sketch_description", "figure_caption", "process", "material"]]

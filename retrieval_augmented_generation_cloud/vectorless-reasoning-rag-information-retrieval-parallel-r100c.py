@@ -1921,6 +1921,25 @@ class CitationValidator:
                         else:
                             item.confidence = max(0.0, item.confidence - 0.05)
                             item.reasoning_trace += " [WARNING] Equation model/variables not confirmed in page text."
+
+                    # v19.0 FIX #5: PDE-aware validation for fluid dynamics equations
+                    if item.item_type == "equation" and item.model_name:
+                        model_lower = (item.model_name or "").lower()
+                        pde_keywords = {
+                            "continuity": ["divergence", "nabla", "∇·", "mass conservation", "incompressible"],
+                            "momentum": ["momentum", "navier", "stokes", "viscosity", "pressure gradient"],
+                            "heat transfer": ["thermal", "conduction", "convection", "temperature gradient"],
+                            "navier-stokes": ["momentum", "viscosity", "velocity", "pressure"],
+                        }
+                        matched_pde = False
+                        for key, terms in pde_keywords.items():
+                            if key in model_lower:
+                                if any(term in page_lower for term in terms):
+                                    item.confidence = min(1.0, item.confidence + 0.15)
+                                    matched_pde = True
+                                    break
+                        if not matched_pde and not matched_terms:
+                            item.confidence = max(0.0, item.confidence - 0.05)  # Reduced penalty for PDEs
                 else:
                     item.confidence = max(0.0, item.confidence - 0.3)
                     item.reasoning_trace += " [WARNING] Value/parameter not found in cited page text."
@@ -2506,6 +2525,18 @@ class TwoStageRetriever:
                 if total_math_blocks > 0:
                     score += min(0.5, total_math_blocks * 0.05)
 
+            # v19.0 FIX #2: PDE-specific boost for fluid dynamics / tensor notation
+            if query_analysis and query_analysis.get("intent") in ["equation", "equation_hunting"]:
+                pde_signals = [
+                    r'\\nabla', r'\\partial', r'\\vec\{', r'divergence', r'continuity',
+                    r'momentum\s+equation', r'navier.stokes', r'eq\.\s*\(\d+\)',
+                    r'\*[^*]+_\{[^}]+\}',  # tensor notation
+                ]
+                summary_lower = self.doc_summaries.get(name, "").lower()
+                pde_score = sum(1 for pat in pde_signals if re.search(pat, summary_lower, re.IGNORECASE))
+                if pde_score > 0:
+                    score += min(0.6, pde_score * 0.15)
+
             # 3. Target Parameter Matching (if QueryAnalyzer provided targets)
             if query_analysis:
                 target_params = set(query_analysis.get("target_parameters", []))
@@ -3053,18 +3084,18 @@ class FastHierarchicalIndex(HierarchicalIndex):
         return trees
 
     # v18.2: Regex for inline math ($...$), display math ($$...$$), equation envs
-    MATH_BLOCK_RE = re.compile(
+        MATH_BLOCK_RE = re.compile(
         r'('  # outer group start
-        r'(?<!\\)\$\$[^\$]+\$\$(?!\\)|'        # display math $$...$$
-        r'(?<!\\)\$[^\$]+\$(?!\\)|'              # inline math $...$
+        r'(?<!\)\$\$[^\$]+\$\$(?!\)|'        # display math $$...$$
+        r'(?<!\)\$[^\$]+\$(?!\)|'              # inline math $...$
         r'\\\[.*?\\\]|'                          # \[...\]
-        r'\\begin\{equation\}.*?\\end\{equation\}|'  # equation env
-        r'\\begin\{align\}.*?\\end\{align\}|'      # align env
-        r'\\\((.*?)\\\)'                              # \(...\)
-        r')',  # outer group end
+        r'\\begin\{(equation|align|gather|multline)\}.*?\\end\{\1\}|'  # LaTeX envs
+        r'\\\((.*?)\\\)|'                           # \(...\)
+        r'\*[^*]+_\{[^}]+\}(?:\*[^*]*)*'            # NEW v19.0: *σ*_{*i**j*} tensor notation
+        r'(?:Eq\.|Equation)\s*\(\d+\)'              # NEW v19.0: Eq. (6), Equation (7) references
+        r')',
         re.DOTALL
     )
-
     def _extract_pages_raw(self, file_obj) -> Tuple[str, List[Dict]]:
         if hasattr(file_obj, 'getbuffer'):
             buf = BytesIO(file_obj.getbuffer())
@@ -3674,6 +3705,13 @@ CRITICAL RULES FOR VISUAL/SKETCH QUERIES:
     - Set model_name to the constitutive model name (e.g., "Hollomon Strength Coefficient σ₀(T)")
     - Also create a SEPARATE quantitative item with the parameter_name and any reference values
     - Example: σ₀(T) = -2.65×10⁻³(T-273)² + 8.38×10⁻²(T-273) + 316 → extract as equation_latex
+17. For equations extracted from PDFs with non-standard formatting (e.g., *σ*_{*i**j*},
+    asterisk-wrapped tensors, italic variables, equation number tags like "(6)" or "(7)"):
+    - STILL extract them as item_type="equation"
+    - Convert to clean LaTeX in equation_latex field
+    - Set model_name based on the equation type (e.g., "Continuity Equation", "Momentum Equation",
+      "Navier-Stokes", "Heat Transfer Equation") even if the exact name is not stated
+    - Do NOT reject equations just because they lack standard LaTeX delimiters
 Return [] if no relevant information found."""
 
     def __init__(self, llm: "HybridLLM"):
@@ -3761,6 +3799,13 @@ class HierarchicalTreeRetriever:
         self.template = llm.template if hasattr(llm, 'template') else MODEL_PROMPT_TEMPLATES["default"]
 
     async def retrieve_quantitative(self, query: str, annotated_trees: List[Dict]) -> List[Dict]:
+        # v19.0 FIX #3: Pass intent context to condenser for math preservation
+        qa = {"intent": "open_query"}  # Default
+        # Try to detect equation intent from query
+        if any(kw in query.lower() for kw in ["equation", "formula", "pde", "navier", "stokes", "momentum", "continuity", "governing"]):
+            qa["intent"] = "equation"
+        self._current_query_intent = qa.get("intent", "open_query")
+
         trees_json = []
         for tree in annotated_trees:
             doc_id = tree.get("doc_id", "unknown")
@@ -3804,7 +3849,14 @@ class HierarchicalTreeRetriever:
         def condense(node: Dict, depth: int = 0) -> Dict[str, Any]:
             if depth > max_depth:
                 return {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "leaf": True}
-            result = {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "summary": (node.get("summary", "") or "")[:150]}
+            # v19.0 FIX #3: Preserve math content in summaries for equation queries
+            raw_summary = node.get("summary", "") or ""
+            if hasattr(self, '_current_query_intent') and self._current_query_intent == "equation":
+                # Keep equation references and math notation in summary
+                math_preserved = re.sub(r'(Eq\.\s*\(\d+\)|\$\$.*?\$\$|\*[^*]+_\{[^}]+\})', r' [MATH:\1] ', raw_summary)
+                result = {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "summary": math_preserved[:250]}
+            else:
+                result = {"node_id": node.get("node_id", ""), "title": node.get("title", ""), "summary": raw_summary[:150]}
             if node.get("metadata"):
                 meta = node["metadata"]
                 if meta.get("alloys"): result["alloys"] = meta["alloys"][:3]

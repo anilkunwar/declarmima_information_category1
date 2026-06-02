@@ -3048,6 +3048,21 @@ SUMMARY:"""
 
 
 class FastHierarchicalIndex(HierarchicalIndex):
+
+    # v18.2: Regex for inline math ($...$), display math ($$...$$), equation envs
+    MATH_BLOCK_RE = re.compile(
+    r'('  # outer group start
+    r'(?<!\)\$\$[^\$]+\$\$(?!\)|'        # display math $$...$$
+    r'(?<!\)\$[^\$]+\$(?!\)|'              # inline math $...$
+    r'\\\[.*?\\\]|'                          # \[...\]
+    r'\\begin\{(equation|align|gather|multline)\}.*?\\end\{\1\}|'  # LaTeX envs
+    r'\\\((.*?)\\\)|'                           # \(...\)
+    r'\*[^*]+_\{[^}]+\}(?:\*[^*]*)*'            # NEW v19.0: *σ*_{{*i**j*}} tensor notation
+    r'(?:Eq\.|Equation)\s*\(\d+\)'              # NEW v19.0: Eq. (6), Equation (7) references
+    r')',
+    re.DOTALL
+    )
+
     def __init__(self, cache_dir=".declarmima_cache", llm=None):
         super().__init__(cache_dir)
         self.llm = llm
@@ -3083,19 +3098,6 @@ class FastHierarchicalIndex(HierarchicalIndex):
             }
         return trees
 
-    # v18.2: Regex for inline math ($...$), display math ($$...$$), equation envs
-        MATH_BLOCK_RE = re.compile(
-        r'('  # outer group start
-        r'(?<!\)\$\$[^\$]+\$\$(?!\)|'        # display math $$...$$
-        r'(?<!\)\$[^\$]+\$(?!\)|'              # inline math $...$
-        r'\\\[.*?\\\]|'                          # \[...\]
-        r'\\begin\{(equation|align|gather|multline)\}.*?\\end\{\1\}|'  # LaTeX envs
-        r'\\\((.*?)\\\)|'                           # \(...\)
-        r'\*[^*]+_\{[^}]+\}(?:\*[^*]*)*'            # NEW v19.0: *σ*_{{*i**j*}} tensor notation
-        r'(?:Eq\.|Equation)\s*\(\d+\)'              # NEW v19.0: Eq. (6), Equation (7) references
-        r')',
-        re.DOTALL
-    )
     def _extract_pages_raw(self, file_obj) -> Tuple[str, List[Dict]]:
         if hasattr(file_obj, 'getbuffer'):
             buf = BytesIO(file_obj.getbuffer())

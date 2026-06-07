@@ -1762,9 +1762,8 @@ Return JSON:
                 try:
                     candidate = broad_match.group(0)
                     # Fix common LLM JSON errors
-                    candidate = re.sub(r',\s*([\]}])', r'', candidate)  # trailing commas
-                    candidate = re.sub(r'
-\s*', ' ', candidate)  # newlines in strings
+                    candidate = re.sub(r',\s*([\]}])', lambda m: m.group(1), candidate)  # trailing commas
+                    candidate = re.sub(r'\s+', ' ', candidate)  # normalize whitespace
                     candidate = re.sub(r'"\s*:\s*"\s*"', '": "', candidate)  # double quotes
                     data = json.loads(candidate)
                     if isinstance(data, dict):
@@ -1777,8 +1776,7 @@ Return JSON:
 
             # 4. ULTRA-FALLBACK: Parse plain text for action-like patterns
             text_actions = []
-            for line in response.split('
-'):
+            for line in response.split('\n'):
                 line = line.strip().lower()
                 if 'extract' in line or 'drill' in line or 'text' in line:
                     node_id_match = re.search(r'(\d{4}(?:\.\d{4})?)', line)

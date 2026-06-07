@@ -291,6 +291,16 @@ v100  Intent-First Architecture with Explicit Value Gating - ScientificIntentRou
 
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v100.0-blue)](https://vectorless-reasoning-rag-information-retrieval-parallel100.streamlit.app/) (Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v100.a-blue)](https://vectorless-reasoning-rag-information-retrieval-parallel100a.streamlit.app/) (Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v100.b-blue)](https://vectorless-reasoning-rag-information-retrieval-parallel100b.streamlit.app/) (Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v100.c-blue)](https://vectorless-reasoning-rag-information-retrieval-parallel100c.streamlit.app/) (Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+Architecture change from "Search and Extract" to "Navigation and Structural Reasoning (e.g. Multiple-hopping among cross-documents)"
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v100.d-brown)](https://vectorless-reasoning-rag-information-retrieval-parallel100d.streamlit.app/) (Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
 
 
 

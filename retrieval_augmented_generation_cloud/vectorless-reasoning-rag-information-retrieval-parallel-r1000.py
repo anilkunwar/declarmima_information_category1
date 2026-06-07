@@ -1573,7 +1573,7 @@ class IterativeTreeNavigator:
                 for n in current_nodes:
                     score = sum(1 for kw in ['w', 'kw', 'mm/s', 'mpa', 'j/mm', '\u00b0c', 'k', '%'] if kw in n.get('summary', '').lower())
                     scored_nodes.append((score, n))
-                scored_nodes.sort(reverse=True)
+                scored_nodes.sort(key=lambda x: x[0], reverse=True)
                 current_nodes = [n for _, n in scored_nodes[:25]]
 
             # Ask LLM to evaluate current nodes and decide actions

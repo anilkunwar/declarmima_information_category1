@@ -302,6 +302,13 @@ Architecture change from "Search and Extract" to "Navigation and Structural Reas
 [![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v100.d-brown)](https://vectorless-reasoning-rag-information-retrieval-parallel100d.streamlit.app/) (Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
 
 
+Advanced Navigation and Reasoning with Enhancement of MTCS Algorithm
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v1000.0-yellow)](https://vectorless-reasoning-rag-information-retrieval-parallel1000.streamlit.app/) (Fixed Regex Improvment aimed at Answering the Query - "describe the laser power in Watts for different materials/alloys", Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+[![meaningtowords](https://img.shields.io/badge/vectorlessragmodel-v1000.a-brightgreen)](https://vectorless-reasoning-rag-information-retrieval-parallel1000a.streamlit.app/) (Fuzzy Regex, Intent-first architecture, Equation retrieval yet to be tested, A significant improvement over v88e, V88d is V88b with proper labeling of the publications - fixed for visualization of interactive knowledge graph and quality visualization, V88 with more vocabulary with respect to the physicochemical terms and quantities, Interactive Knowledge Graph works and the Font sizes of visualization is improved)
+
+
 
 
 

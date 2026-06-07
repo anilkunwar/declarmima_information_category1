@@ -1568,10 +1568,21 @@ class IterativeTreeNavigator:
             # Local LLMs (e.g., Qwen 14B) cannot reason over 200+ nodes simultaneously
             if len(current_nodes) > 25:
                 logger.warning(f"MCTS Context Overflow: {len(current_nodes)} nodes. Truncating to top 25.")
-                # Simple heuristic: keep nodes that mention numbers/units in their summary
+                # v20.0 FIX: Regex word boundaries prevent substring false positives
+                # e.g., 'w' matching 'show', 'power', 'between' -> now requires \b\d*\s*w\b
                 scored_nodes = []
                 for n in current_nodes:
-                    score = sum(1 for kw in ['w', 'kw', 'mm/s', 'mpa', 'j/mm', '\u00b0c', 'k', '%'] if kw in n.get('summary', '').lower())
+                    summary_lower = n.get('summary', '').lower()
+                    score = sum(1 for kw in [
+                        r'\b\d*\s*w\b',      # "250 W" or standalone "w" (word boundary)
+                        r'\b\d*\s*kw\b',    # "2 kW" or standalone "kw"
+                        r'\bmm/s\b',         # scan speed
+                        r'\bmpa\b',          # MPa
+                        r'\bj/mm\b',         # energy density
+                        r'\b\u00b0c\b',           # Celsius
+                        r'\b\d*\s*k\b',     # temperature in K (with boundary)
+                        r'\b%\b',            # percentage
+                    ] if re.search(kw, summary_lower))
                     scored_nodes.append((score, n))
                 scored_nodes.sort(key=lambda x: x[0], reverse=True)
                 current_nodes = [n for _, n in scored_nodes[:25]]

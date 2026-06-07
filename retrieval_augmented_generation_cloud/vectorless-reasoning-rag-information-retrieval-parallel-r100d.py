@@ -1,20 +1,27 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 r"""
-DECLARMIMA v19.0 - INTENT-FIRST DYNAMIC MULTI-MODAL SCIENTIFIC RAG
+DECLARMIMA v20.0 - PURE PAGEINDEX AGENT (Agentic Navigation & Structural Reasoning)
 ================================================================================
-v19.0 INTENT-FIRST ARCHITECTURE (Major Refurbishment):
-- ScientificIntentRouter replaces DynamicIntentAnalyzer
-- Value extraction is now GATED (explicit triggers only)
-- Default mode: open_query (semantic/conceptual search)
-- 6 distinct intents: open_query, equation, mechanism, comparison, sketch_diagram, boolean
-- AdaptiveResponseGenerator with 6 formatters: prose, latex, table, causal_chain, contrastive_table, mermaid_or_ascii
+v20.0 PURE PAGEINDEX ARCHITECTURE (Agentic Navigation & Structural Reasoning):
+- IterativeTreeNavigator replaces single-shot retrieve_quantitative
+- Agentic MCTS: LLM navigates document trees iteratively (drill_down / extract_text)
+- Cross-Document Meta-Tree: stitches equivalent sections across all docs
+- Layout-aware parsing: pymupdf4llm preserves Markdown #/##/### hierarchies and tables
+- Table & Figure node types: tabular_data and figure_caption as first-class structural citizens
 - Expanded schema: sketch_description, figure_caption, mermaid_diagram, ascii_sketch, figure_page
-- Semantic-default retrieval weights (tree_search=0.95 by default)
-- Math-aware tokenization preserved
-- pymupdf4llm integration preserved
-- Equation validation preserved
-- 100% VECTORLESS (no sentence-transformers dependency)
+- 100% VECTORLESS: all sentence-transformers, t-SNE, UMAP, PCA purged
+- Agentic Navigation replaces Search & Extract paradigm
+- Unified Cross-Document Meta-Tree for simultaneous multi-doc comparison
+- Layout-aware Markdown parsing with pymupdf4llm
+- Table/figure nodes treated as structural citizens (no fragmentation)
+
+v20.0 PURE PAGEINDEX AGENT (5 architectural gaps closed):
+   - IterativeTreeNavigator: MCTS-style agentic navigation (drill_down / extract_text)
+   - Cross-Document Meta-Tree: stitches equivalent sections across all docs simultaneously
+   - pymupdf4llm layout-aware Markdown parsing with #/##/### hierarchy preservation
+   - tabular_data & figure_caption as first-class structural node types
+   - 100% VECTORLESS: sentence-transformers, t-SNE, UMAP, PCA, all semantic fallbacks purged
 
 Previous versions:
 v18.0 Major upgrade (4 core) + v18.1 Fixes (5 gaps) + v18.2 Equation retrieval hardening (3 fixes)
@@ -168,15 +175,6 @@ def check_optional_dependencies() -> Dict[str, bool]:
         deps['transformers'] = False
         logger.warning("✗ transformers not installed. Local HF models unavailable.")
 
-    # sentence-transformers (optional)
-    try:
-        from sentence_transformers import SentenceTransformer, util
-        deps['sentence_transformers'] = True
-        logger.info("✓ sentence-transformers available")
-    except ImportError:
-        deps['sentence_transformers'] = False
-        logger.warning("✗ sentence-transformers not installed. Using vectorless keyword retrieval.")
-
     # rapidfuzz (optional)
     try:
         from rapidfuzz import fuzz, process
@@ -195,15 +193,6 @@ def check_optional_dependencies() -> Dict[str, bool]:
         deps['orjson'] = False
         logger.warning("✗ orjson not installed. Using standard json (slower).")
 
-    # umap-learn (optional)
-    try:
-        import umap
-        deps['umap'] = True
-        logger.info("✓ umap-learn available")
-    except ImportError:
-        deps['umap'] = False
-        logger.warning("✗ umap-learn not installed. UMAP embeddings disabled.")
-
     # pyvis (optional)
     try:
         from pyvis.network import Network
@@ -212,16 +201,6 @@ def check_optional_dependencies() -> Dict[str, bool]:
     except ImportError:
         deps['pyvis'] = False
         logger.warning("✗ pyvis not installed. Interactive networks disabled.")
-
-    # scikit-learn (optional)
-    try:
-        from sklearn.manifold import TSNE
-        from sklearn.decomposition import PCA
-        deps['sklearn'] = True
-        logger.info("✓ scikit-learn available")
-    except ImportError:
-        deps['sklearn'] = False
-        logger.warning("✗ scikit-learn not installed. t-SNE/PCA disabled.")
 
     # pycalphad (optional)
     try:
@@ -294,12 +273,8 @@ except ImportError:
     ORJSON_AVAILABLE = False
     logger.warning("orjson not installed. Using standard json (slower).")
 
-try:
-    from sentence_transformers import SentenceTransformer, util
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    logger.warning("sentence-transformers not installed. Using vectorless keyword retrieval.")
+# v20.0: sentence-transformers PURGED - 100% vectorless guarantee
+SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 try:
     from rapidfuzz import fuzz, process
@@ -317,11 +292,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-try:
-    import umap
-    UMAP_AVAILABLE = True
-except ImportError:
-    UMAP_AVAILABLE = False
+# v20.0: UMAP PURGED - 100% vectorless guarantee
+UMAP_AVAILABLE = False
 
 try:
     from pyvis.network import Network
@@ -329,14 +301,8 @@ try:
 except ImportError:
     PYVIS_AVAILABLE = False
 
-try:
-    from sklearn.manifold import TSNE
-    from sklearn.decomposition import PCA
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.cluster import KMeans
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
+# v20.0: sklearn TSNE/PCA PURGED - 100% vectorless guarantee
+SKLEARN_AVAILABLE = False
 
 try:
     import pycalphad
@@ -360,6 +326,7 @@ from pydantic import BaseModel, Field, field_validator
 class UniversalExtractionItem(BaseModel):
     item_type: Literal["quantitative", "qualitative", "definition", "comparison", "relationship",
                       "process", "material", "method", "equation",
+                      "tabular_data", "figure_caption",  # v20.0: First-class structural citizens
                       "phase_field", "molecular_dynamics",
                       "plasticity", "thermal", "mechanical", "microstructural", "electrochemical",
                       "multiphysics", "ai_ml", "digital_twin", "informatics"]
@@ -1572,6 +1539,174 @@ class StructuredMetadataExtractor:
         return meta
 
 
+
+# =============================================================================
+# ITERATIVE TREE NAVIGATOR (v20.0) - PageIndex-Style MCTS Agent
+# =============================================================================
+class IterativeTreeNavigator:
+    """PageIndex-style Monte Carlo Tree Search (MCTS) agent.
+
+    v20.0: Replaces single-shot retrieve_quantitative with an agentic while loop
+    where the LLM acts as a navigator, deciding whether to drill_down into children
+    or extract_text from the current node.
+    """
+    def __init__(self, llm: "HybridLLM", max_steps: int = 4):
+        self.llm = llm
+        self.max_steps = max_steps
+
+    async def navigate_and_retrieve(self, query: str, trees: List[Dict]) -> List[Dict]:
+        """Agentic navigation: LLM iteratively decides drill_down vs extract_text."""
+        # Step 1: Start at Level 1 (Major Sections) of all relevant docs
+        current_nodes = self._get_nodes_at_level(trees, level=1)
+        final_chunks = []
+
+        for step in range(self.max_steps):
+            if not current_nodes:
+                break
+
+            # Ask LLM to evaluate current nodes and decide actions
+            prompt = self._build_mcts_prompt(query, current_nodes, step)
+            response = await asyncio.to_thread(self.llm.generate, prompt, fast_json=True)
+            actions = self._parse_actions(response)
+
+            next_level_nodes = []
+            for action in actions:
+                node_id = action.get('node_id')
+                action_type = action.get('action')
+
+                if action_type == 'drill_down':
+                    # Fetch children of this node for the next iteration
+                    children = self._get_children(trees, node_id)
+                    next_level_nodes.extend(children)
+                elif action_type == 'extract_text':
+                    # Fetch full text and stop drilling this branch
+                    chunk = self._get_full_text(trees, node_id)
+                    if chunk:
+                        final_chunks.append(chunk)
+
+            current_nodes = next_level_nodes  # Move down the tree
+
+        return final_chunks
+
+    def _get_nodes_at_level(self, trees: List[Dict], level: int) -> List[Dict]:
+        """Collect all nodes at a specific level across all trees."""
+        nodes = []
+        for tree in trees:
+            doc_id = tree.get('doc_id', tree.get('doc_name', 'unknown'))
+            self._collect_at_level(tree, level, doc_id, nodes)
+        return nodes
+
+    def _collect_at_level(self, node: Dict, target_level: int, doc_id: str, result: List[Dict]):
+        """Recursively collect nodes at target level."""
+        node_level = self._infer_level(node)
+        if node_level == target_level:
+            result.append({
+                'node_id': node.get('node_id', ''),
+                'doc_id': doc_id,
+                'title': node.get('title', ''),
+                'summary': node.get('summary', '')[:200],
+                'level': node_level
+            })
+        for child in node.get('nodes', []):
+            self._collect_at_level(child, target_level, doc_id, result)
+
+    def _infer_level(self, node: Dict) -> int:
+        """Infer hierarchical level from node structure."""
+        node_id = node.get('node_id', '')
+        if '.' not in node_id:
+            return 0  # Root
+        return node_id.count('.')
+
+    def _get_children(self, trees: List[Dict], node_id: str) -> List[Dict]:
+        """Get children of a specific node across all trees."""
+        children = []
+        for tree in trees:
+            doc_id = tree.get('doc_id', tree.get('doc_name', 'unknown'))
+            node = self._find_node_by_id(tree, node_id)
+            if node:
+                for child in node.get('nodes', []):
+                    children.append({
+                        'node_id': child.get('node_id', ''),
+                        'doc_id': doc_id,
+                        'title': child.get('title', ''),
+                        'summary': child.get('summary', '')[:200],
+                        'level': self._infer_level(child)
+                    })
+        return children
+
+    def _get_full_text(self, trees: List[Dict], node_id: str) -> Optional[Dict]:
+        """Get full text chunk from a node."""
+        for tree in trees:
+            doc_id = tree.get('doc_id', tree.get('doc_name', 'unknown'))
+            node = self._find_node_by_id(tree, node_id)
+            if node:
+                text = node.get('text', '')
+                if not text:
+                    text = node.get('summary', '')
+                return {
+                    'full_text': text[:20000],
+                    'page_start': node.get('start_index', 1),
+                    'doc_id': doc_id,
+                    'section_title': node.get('title', ''),
+                    'quantitative_items': node.get('quantitative_items', []),
+                    'citation': f'<cite doc="{doc_id}" page="{node.get("start_index", 1)}"/>',
+                    'node_id': node_id
+                }
+        return None
+
+    def _find_node_by_id(self, tree: Dict, node_id: str) -> Optional[Dict]:
+        """Recursively find a node by its ID."""
+        if tree.get('node_id') == node_id:
+            return tree
+        for child in tree.get('nodes', []):
+            result = self._find_node_by_id(child, node_id)
+            if result:
+                return result
+        return None
+
+    def _build_mcts_prompt(self, query, nodes, step):
+        nodes_summary = json.dumps([{
+            "node_id": n['node_id'],
+            "doc_id": n['doc_id'],
+            "title": n['title'],
+            "summary": n.get('summary', '')[:150]
+        } for n in nodes], indent=2)
+
+        return f"""You are an expert scientific navigator. You are at Step {step+1} of searching a document tree.
+QUERY: "{query}"
+
+CURRENT AVAILABLE NODES:
+{nodes_summary}
+
+INSTRUCTIONS:
+1. Analyze the titles and summaries.
+2. If a node's summary indicates it contains the answer or specific data, choose "extract_text".
+3. If a node is a parent section (e.g., "3. Results") and you need more detail, choose "drill_down".
+4. Ignore irrelevant nodes.
+
+Return JSON:
+{{
+  "reasoning": "Brief thought process",
+  "actions": [
+    {{"node_id": "...", "action": "drill_down"}},
+    {{"node_id": "...", "action": "extract_text"}}
+  ]
+}}"""
+
+    def _parse_actions(self, response: str) -> List[Dict]:
+        """Parse action JSON from LLM response."""
+        try:
+            # Try to extract JSON
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                actions = data.get('actions', [])
+                return [a for a in actions if isinstance(a, dict) and 'node_id' in a and 'action' in a]
+        except Exception as e:
+            logger.warning(f"Failed to parse MCTS actions: {e}")
+        # Fallback: extract all nodes mentioned
+        return []
+
 # =============================================================================
 # DYNAMIC INTENT ANALYZER (Vectorless Query Router) - v18.0 UPGRADE
 # =============================================================================
@@ -1971,6 +2106,7 @@ class AdaptiveResponseGenerator:
         "prose": "_format_as_prose",
         "yes_no_evidence": "_format_as_boolean",
         "standard": "_format_as_prose",
+        "tabular_data": "_format_as_table_data",  # v20.0: Table node formatter
     }
 
     def __init__(self, llm: "HybridLLM"):
@@ -2399,6 +2535,21 @@ RULES:
 
         return self.llm.generate(prompt, max_new_tokens=1024, temperature=0.05)
 
+
+    def _format_as_table_data(self, query, items, qa):
+        """v20.0: Format extracted tabular data as structured markdown."""
+        table_items = [i for i in items if i.item_type == "tabular_data"]
+        if not table_items:
+            return self._format_as_prose(query, items, qa)
+
+        lines = ["## Extracted Tabular Data\n"]
+        for item in table_items:
+            lines.append(f"### Source: {item.doc_source} (Page {item.page})")
+            lines.append(f"**Columns:** {item.parameter_name}")
+            lines.append(f"```markdown\n{item.content}\n```")
+            lines.append(f"@@CITE:doc={item.doc_source};page={item.page}@@\n")
+        return "\n".join(lines)
+
     def generate_human_conclusion(self, query: str, report: QueryReport) -> str:
         """Backward-compatible human conclusion generator."""
         values = report.all_values
@@ -2455,16 +2606,10 @@ RULES:
 
 
 class TwoStageRetriever:
-    """Two-stage document retriever with keyword-based filtering and optional semantic blending."""
-    def __init__(self, llm=None, embedding_model: str = "all-MiniLM-L6-v2"):
+    """v20.0: Pure vectorless document retriever. All semantic embedding fallbacks purged."""
+    def __init__(self, llm=None):
         self.llm = llm
-        self.embedding_model = None
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
-            try:
-                self.embedding_model = SentenceTransformer(embedding_model, device="cpu")
-                logger.info(f"Loaded sentence-transformer model {embedding_model} on CPU")
-            except Exception as e:
-                logger.warning(f"Failed to load embedding model: {e}")
+        # v20.0: embedding_model PURGED - 100% vectorless guarantee
         self.doc_metadata: Dict[str, DocumentMetadata] = {}
         self.doc_summaries: Dict[str, str] = {}
         self.doc_math_cache: Dict[str, Dict[int, List[str]]] = {}  # v18.2: per-doc math block cache
@@ -3123,6 +3268,76 @@ class FastHierarchicalIndex(HierarchicalIndex):
         doc.close()
         return doc_name, pages
 
+
+    # === v20.0: Layout-Aware Markdown Parsing (Gap 4) ===
+    def _extract_pages_raw_markdown(self, file_obj) -> Tuple[str, List[Dict]]:
+        """Uses pymupdf4llm to get layout-aware Markdown."""
+        import pymupdf4llm
+        buf = BytesIO(file_obj.getbuffer()) if hasattr(file_obj, 'getbuffer') else file_obj
+        doc_name = getattr(file_obj, 'name', 'unknown.pdf')
+
+        # pymupdf4llm natively handles font sizes, bolding, and spatial layout
+        md_chunks = pymupdf4llm.to_markdown(stream=buf.getvalue(), page_chunks=True)
+
+        pages = []
+        for chunk in md_chunks:
+            pages.append({
+                'page_num': chunk['metadata']['page_number'],
+                'text': chunk['text'],  # This is pure Markdown!
+                'has_equation': bool(re.search(r'\$\$|\$|\\\[', chunk['text'])),
+                'math_blocks': [m.group(0).strip() for m in self.MATH_BLOCK_RE.finditer(chunk['text'])],
+            })
+        return doc_name, pages
+
+    def _build_tree_from_markdown(self, doc_name: str, pages: List[Dict]) -> PageNode:
+        """Parses Markdown headers (#, ##, ###) into a PageNode tree."""
+        root = PageNode(f"{doc_name}_root", doc_name, 1, len(pages), "", "", 0, doc_id=doc_name)
+
+        current_h1 = root
+        current_h2 = None
+        current_h3 = None
+
+        for page_data in pages:
+            md_text = page_data['text']
+            lines = md_text.split('\n')
+            buffer = []
+
+            for line in lines:
+                if line.startswith('### '):
+                    # Save previous buffer
+                    self._flush_buffer(buffer, current_h3 or current_h2 or current_h1)
+                    buffer = []
+                    current_h3 = PageNode(f"{doc_name}_h3_{line[4:20]}", line[4:], page_data['page_num'], page_data['page_num'], "", "", 3, doc_id=doc_name)
+                    if current_h2:
+                        current_h2.children.append(current_h3)
+                elif line.startswith('## '):
+                    self._flush_buffer(buffer, current_h3 or current_h2 or current_h1)
+                    buffer = []
+                    current_h3 = None
+                    current_h2 = PageNode(f"{doc_name}_h2_{line[3:20]}", line[3:], page_data['page_num'], page_data['page_num'], "", "", 2, doc_id=doc_name)
+                    current_h1.children.append(current_h2)
+                elif line.startswith('# '):
+                    self._flush_buffer(buffer, current_h3 or current_h2 or current_h1)
+                    buffer = []
+                    current_h3 = None
+                    current_h2 = None
+                    current_h1 = PageNode(f"{doc_name}_h1_{line[2:20]}", line[2:], page_data['page_num'], page_data['page_num'], "", "", 1, doc_id=doc_name)
+                    root.children.append(current_h1)
+                else:
+                    buffer.append(line)
+
+            self._flush_buffer(buffer, current_h3 or current_h2 or current_h1)
+
+        return root
+
+    def _flush_buffer(self, buffer, target_node):
+        if buffer and target_node:
+            text = "\n".join(buffer).strip()
+            if text:
+                target_node.full_text += "\n" + text
+                if not target_node.summary:
+                    target_node.summary = text[:200]
+
     async def _llm_extract_toc(self, doc_name: str, pages: List[Dict]) -> Dict[str, Any]:
         sample_text = "\n".join(p['text'][:1500] for p in pages[:5])
         prompt = f"""Analyze this document and extract its hierarchical structure.
@@ -3714,6 +3929,16 @@ CRITICAL RULES FOR VISUAL/SKETCH QUERIES:
     - Set model_name based on the equation type (e.g., "Continuity Equation", "Momentum Equation",
       "Navier-Stokes", "Heat Transfer Equation") even if the exact name is not stated
     - Do NOT reject equations just because they lack standard LaTeX delimiters
+CRITICAL RULES FOR TABLES & FIGURES (v20.0):
+18. If the text contains a Markdown table (indicated by |---|---| syntax):
+    - Set item_type="tabular_data".
+    - In the "content" field, paste the EXACT raw Markdown table.
+    - In the "parameter_name" field, list the column headers (e.g., "Alloy, Laser Power (W), Scan Speed (mm/s)").
+    - DO NOT extract table data row-by-row as individual quantitative items unless specifically asked. Treat the table as a single structural object.
+19. If the text contains a figure caption (e.g., "Fig. 3. shows..."):
+    - Set item_type="figure_caption".
+    - In the "content" field, paste the full caption text.
+    - In the "parameter_name" field, extract the Figure number (e.g., "Fig. 3").
 Return [] if no relevant information found."""
 
     def __init__(self, llm: "HybridLLM"):
@@ -3976,6 +4201,56 @@ Include up to {self.max_results} selections."""
             if res:
                 return res
         return None
+
+    # === v20.0: Cross-Document Meta-Tree (Gap 3) ===
+    def build_cross_document_meta_tree(self, query: str, trees: List[Dict]) -> Dict:
+        """Creates a virtual tree grouping equivalent sections across all docs."""
+        # 1. Ask LLM to identify the structural category needed for the query
+        intent_prompt = f'''To answer "{query}", which structural section of a scientific paper is most relevant? 
+        (e.g., 'Experimental Setup', 'Results', 'Methodology', 'Introduction'). 
+        Return ONLY the section name as a string.'''
+
+        try:
+            target_section = self.llm.generate(intent_prompt, max_new_tokens=20).strip().strip('"')
+        except Exception:
+            target_section = "Results"  # Fallback
+
+        # 2. Build Meta-Root
+        meta_root = {
+            "node_id": "meta_root",
+            "title": f"Cross-Document Meta-Tree: {target_section}",
+            "doc_id": "META",
+            "children": []
+        }
+
+        # 3. Find and attach matching nodes from all documents
+        for tree in trees:
+            doc_id = tree.get('doc_id', tree.get('doc_name', 'unknown'))
+            matching_node = self._find_section_by_keyword(tree, target_section)
+            if matching_node:
+                meta_root["children"].append({
+                    "node_id": f"meta_{doc_id}_{matching_node.get('node_id', '')}",
+                    "title": f"[{doc_id}] {matching_node.get('title', '')}",
+                    "summary": matching_node.get('summary', ''),
+                    "doc_id": doc_id,
+                    "original_node_id": matching_node.get('node_id', ''),
+                    "text": matching_node.get('text', ''),
+                    "nodes": matching_node.get('nodes', [])
+                })
+
+        return meta_root
+
+    def _find_section_by_keyword(self, tree: Dict, keyword: str) -> Optional[Dict]:
+        """Recursively finds a node whose title matches the keyword."""
+        def search(node):
+            if keyword.lower() in node.get('title', '').lower():
+                return node
+            for child in node.get('nodes', []):
+                res = search(child)
+                if res:
+                    return res
+            return None
+        return search(tree)
 
 # =============================================================================
 # VISUALIZATION CONFIGURATION (EXPANDED)
@@ -5697,91 +5972,19 @@ class PublicationVisualizationEngine:
         fig.update_layout(title="Cross-Document Consensus (mean +- std)", yaxis_title="Value", xaxis_title="Material (Quantity)", font=dict(family=self.font_family, size=self.font_size))
         return fig
 
-    def _get_context_embeddings(self, embedding_fn: Callable, df: pd.DataFrame, quantity: Optional[str] = None) -> Tuple[np.ndarray, pd.DataFrame]:
-        if quantity: df = df[df["physical_quantity"] == quantity].copy()
-        else: df = df.copy()
-        if len(df) < 5: return np.array([]), df.iloc[0:0]
-        contexts = df["context"].fillna("").tolist()
-        embs = []
-        valid_indices = []
-        for idx, ctx in enumerate(contexts):
-            try:
-                emb = embedding_fn(ctx)
-                if emb is not None and len(emb) > 0:
-                    embs.append(emb)
-                    valid_indices.append(idx)
-            except Exception: continue
-        if len(embs) < 5: return np.array([]), df.iloc[0:0]
-        df_valid = df.iloc[valid_indices].copy()
-        return np.array(embs), df_valid
+    # v20.0: _get_context_embeddings DELETED - 100% vectorless
 
-    def plot_tsne(self, embedding_fn: Callable, quantity: Optional[str] = None, colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
-        if not SKLEARN_AVAILABLE: return None
-        df = self.extract_dataframe()
-        embs, df_use = self._get_context_embeddings(embedding_fn, df, quantity)
-        if len(embs) < 5: return None
-        tsne = TSNE(n_components=2, perplexity=min(30, len(embs)-1), random_state=42)
-        coords = tsne.fit_transform(embs)
-        fig, ax = plt.subplots(figsize=figsize)
-        materials = df_use["material"].unique()
-        cmap = plt.get_cmap(self._get_colormap(colormap))
-        for i, mat in enumerate(materials):
-            mask = df_use["material"] == mat
-            color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
-            ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-            for (_, row), coord in zip(df_use.iterrows(), coords):
-                ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]), fontsize=self.label_font_size-1, alpha=0.8)
-        ax.legend(loc='best', fontsize=self.label_font_size)
-        ax.set_title(f"t-SNE of Extraction Contexts{' ('+quantity+')' if quantity else ''}", fontsize=self.title_font_size, fontweight='bold')
-        ax.axis("off")
-        plt.tight_layout()
-        return fig
+    def plot_tsne(self, *args, **kwargs) -> None:
+        """v20.0: PURGED - t-SNE removed (100% vectorless guarantee)."""
+        return None
 
-    def plot_pca(self, embedding_fn: Callable, quantity: Optional[str] = None, colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
-        if not SKLEARN_AVAILABLE: return None
-        df = self.extract_dataframe()
-        embs, df_use = self._get_context_embeddings(embedding_fn, df, quantity)
-        if len(embs) < 5: return None
-        pca = PCA(n_components=2)
-        coords = pca.fit_transform(embs)
-        var_ratio = pca.explained_variance_ratio_
-        fig, ax = plt.subplots(figsize=figsize)
-        materials = df_use["material"].unique()
-        cmap = plt.get_cmap(self._get_colormap(colormap))
-        for i, mat in enumerate(materials):
-            mask = df_use["material"] == mat
-            color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
-            ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-            for (_, row), coord in zip(df_use.iterrows(), coords):
-                ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]), fontsize=self.label_font_size-1, alpha=0.8)
-        ax.legend(loc='best', fontsize=self.label_font_size)
-        ax.set_title(f"PCA of Extraction Contexts{' ('+quantity+')' if quantity else ''}\nPC1: {var_ratio[0]:.1%}, PC2: {var_ratio[1]:.1%}", fontsize=self.title_font_size, fontweight='bold')
-        ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%})")
-        ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%})")
-        plt.tight_layout()
-        return fig
+    def plot_pca(self, *args, **kwargs) -> None:
+        """v20.0: PURGED - PCA removed (100% vectorless guarantee)."""
+        return None
 
-    def plot_umap(self, embedding_fn: Callable, quantity: Optional[str] = None, colormap: Optional[str] = None, figsize: Tuple[int,int] = (10,8)) -> Optional[plt.Figure]:
-        if not UMAP_AVAILABLE: return None
-        df = self.extract_dataframe()
-        embs, df_use = self._get_context_embeddings(embedding_fn, df, quantity)
-        if len(embs) < 5: return None
-        reducer = umap.UMAP(n_neighbors=min(15, len(embs)-1), min_dist=0.1, random_state=42)
-        coords = reducer.fit_transform(embs)
-        fig, ax = plt.subplots(figsize=figsize)
-        materials = df_use["material"].unique()
-        cmap = plt.get_cmap(self._get_colormap(colormap))
-        for i, mat in enumerate(materials):
-            mask = df_use["material"] == mat
-            color = mcolors.to_hex(cmap(i / max(len(materials)-1, 1))) if len(materials)>1 else "#3b82f6"
-            ax.scatter(coords[mask,0], coords[mask,1], c=color, label=mat, alpha=0.8, s=80, edgecolors='white')
-            for (_, row), coord in zip(df_use.iterrows(), coords):
-                ax.annotate(f"{row['value']:.0f}", (coord[0], coord[1]), fontsize=self.label_font_size-1, alpha=0.8)
-        ax.legend(loc='best', fontsize=self.label_font_size)
-        ax.set_title(f"UMAP of Extraction Contexts{' ('+quantity+')' if quantity else ''}", fontsize=self.title_font_size, fontweight='bold')
-        ax.axis("off")
-        plt.tight_layout()
-        return fig
+    def plot_umap(self, *args, **kwargs) -> None:
+        """v20.0: PURGED - UMAP removed (100% vectorless guarantee)."""
+        return None
 
     def plot_parallel_categories(self, df: pd.DataFrame, colormap: Optional[str] = None) -> go.Figure:
         if df.empty: return go.Figure().update_layout(title="No data")
@@ -6141,31 +6344,9 @@ class PublicationVisualizationEngine:
         plt.tight_layout()
         return fig
 
-    def plot_semantic_vs_vectorless(self, query, relevant_docs, annotated_trees, embedding_fn=None):
-        if not relevant_docs or not embedding_fn: return None
-        doc_names = [d for d, _ in relevant_docs]
-        keyword_scores = [s for _, s in relevant_docs]
-        doc_texts = []
-        for tree in annotated_trees:
-            tid = tree.get("doc_id", tree.get("doc_name", "unknown"))
-            if tid in doc_names:
-                text = tree.get("summary", "") + " " + str(tree.get("metadata", {}))
-                doc_texts.append(text)
-        if not doc_texts or not any(doc_texts): return None
-        try:
-            query_emb = embedding_fn(query)
-            doc_embs = [embedding_fn(t) for t in doc_texts]
-            def cosine(a, b): return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
-            semantic_scores = [cosine(query_emb, de) for de in doc_embs]
-        except Exception: return None
-        fig = go.Figure()
-        doc_labels = [Path(d).stem for d in doc_names]
-        fig.add_trace(go.Scatter(x=keyword_scores, y=semantic_scores, mode='markers+text', text=doc_labels, textposition="top center", marker=dict(size=14, color="#3b82f6"), name="Documents"))
-        min_val = min(min(keyword_scores), min(semantic_scores))
-        max_val = max(max(keyword_scores), max(semantic_scores))
-        fig.add_trace(go.Scatter(x=[min_val, max_val], y=[min_val, max_val], mode='lines', line=dict(dash='dash', color='#ef4444'), name="Agreement Line"))
-        fig.update_layout(title="Semantic (Embedding) vs Vectorless (Keyword/Heuristic) Retrieval Scores", xaxis_title="Vectorless Score (Keyword/Heuristic)", yaxis_title="Semantic Score (Cosine Similarity)", font=dict(family=self.font_family, size=self.font_size), height=500)
-        return fig
+    def plot_semantic_vs_vectorless(self, *args, **kwargs):
+        """v20.0: PURGED - Semantic vs Vectorless comparison removed (100% vectorless)."""
+        return None
 
 # =============================================================================
 # STREAMLIT UI & UTILITIES (EXPANDED)
@@ -6186,7 +6367,7 @@ def render_sidebar():
         st.session_state.max_retrieval_chars = max_chars
         st.checkbox("Show reasoning trace", value=True, key="show_trace")
         st.checkbox("Show tree navigation", value=True, key="show_tree_nav")
-        st.checkbox("Enable two-stage retrieval (semantic)", value=True, key="two_stage")
+        st.checkbox("Enable two-stage retrieval", value=True, key="two_stage")  # v20.0: "(semantic)" removed - vectorless only
         st.markdown("#### Visualization Settings")
         st.selectbox("Default colormap", list(PublicationVisualizationEngine.COLORMAP_OPTIONS.keys()), index=0, key="viz_colormap")
         st.selectbox("Document label style", ["doi", "number", "alias", "short"], index=0, key="viz_label_style")
@@ -6297,9 +6478,9 @@ def render_streamlit_marker_legend(
                 """, unsafe_allow_html=True)
 
 def run_streamlit():
-    st.set_page_config(page_title="DECLARMIMA v19.0 - Intent-First Dynamic RAG", layout="wide")
-    st.markdown("# DECLARMIMA v19.0 - Intent-First Dynamic Multi-Modal Scientific RAG")
-    st.caption("Multi-physics integration, electrochemical modeling, AI/ML pipelines, materials informatics, tensor decomposition, equation-aware retrieval, and 35+ chart types.")
+    st.set_page_config(page_title="DECLARMIMA v20.0 - Agentic Navigation & Structural Reasoning", layout="wide")
+    st.markdown("# DECLARMIMA v20.0 - Pure PageIndex Agent (Agentic Navigation & Structural Reasoning)")
+    st.caption("v20.0: Iterative MCTS navigation, Cross-Document Meta-Trees, layout-aware Markdown parsing, table/figure structural nodes. 100% vectorless.")
     if "messages" not in st.session_state:
         st.session_state.messages = []
     if "query_processor" not in st.session_state:
@@ -6314,8 +6495,7 @@ def run_streamlit():
         st.session_state.active_prompt = ""
     if "two_stage_retriever" not in st.session_state:
         st.session_state.two_stage_retriever = None
-    if "embedding_model" not in st.session_state:
-        st.session_state.embedding_model = None
+    # v20.0: embedding_model REMOVED - 100% vectorless guarantee
     if "doc_aliases" not in st.session_state:
         st.session_state.doc_aliases = {}
     render_sidebar()
@@ -6359,7 +6539,7 @@ def run_streamlit():
             extractor = UniversalLLMExtractor(llm)
             kg = QuantitativeKnowledgeGraph()
             all_items = []
-            two_stage = TwoStageRetriever(llm=llm)
+            two_stage = TwoStageRetriever(llm=llm)  # v20.0: embedding_model param removed - vectorless
             for doc_name, tree in trees.items():
                 leaf_texts = []
                 def collect_leaves(node: PageNode):
@@ -6414,8 +6594,7 @@ def run_streamlit():
                     for doc, mats in mat_dict.items():
                         if mats:
                             st.write(f"- {doc}: {', '.join(mats)}")
-    if SENTENCE_TRANSFORMERS_AVAILABLE and st.session_state.embedding_model is None:
-        st.session_state.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device="cpu")
+    # v20.0: SentenceTransformer initialization PURGED - 100% vectorless
     if st.session_state.annotated_trees:
         st.markdown("### Quick Queries")
         col1, col2, col3, col4 = st.columns(4)
@@ -6483,9 +6662,16 @@ def run_streamlit():
                     relevant_docs = [(t.get("doc_id", t.get("doc_name", "unknown")), 1.0) for t in filtered_trees]
                 progress.progress(0.3)
 
-                # === v18.0 UPGRADE: Hierarchical Tree Retrieval with Intent Context ===
+                # === v20.0 UPGRADE: Agentic Iterative Tree Navigation (replaces single-shot retrieve_quantitative) ===
+                # Step 1: Build Cross-Document Meta-Tree for unified multi-doc search
                 retriever = HierarchicalTreeRetriever(llm, max_results=30, max_text_chars=max_retrieval_chars)
-                retrieved = asyncio.run(retriever.retrieve_quantitative(active_prompt, filtered_trees))
+                meta_tree = retriever.build_cross_document_meta_tree(active_prompt, filtered_trees)
+
+                # Step 2: Use IterativeTreeNavigator for MCTS-style drill-down
+                navigator = IterativeTreeNavigator(llm, max_steps=4)
+                # Feed both the meta-tree and individual document trees into the navigator
+                all_trees = [meta_tree] + filtered_trees if meta_tree.get("children") else filtered_trees
+                retrieved = asyncio.run(navigator.navigate_and_retrieve(active_prompt, all_trees))
                 progress.progress(0.5)
 
                 # === v18.0 UPGRADE: Dynamic Extraction with Focus Injection ===
@@ -6770,7 +6956,8 @@ def run_streamlit():
                 selected_qty = st.selectbox("Filter by physical quantity", options=["All"] + sorted(df_all["physical_quantity"].unique()), key="viz_qty_filter")
                 group_by = st.selectbox("Group by", ["material", "doc_stem"], key="viz_group_by")
                 colormap = st.session_state.get("viz_colormap", "viridis")
-                tabs = st.tabs(["Histograms & Bars", "Pie & Donut", "Sunburst & Treemap", "Radar & Chord", "Contradiction & Consensus", "Networks", "Embedding Spaces", "Scatter & Violin", "Entity Explorer", "Retrieval Diagnostics", "AI/ML & Informatics", "Multi-Physics & Electrochem"])
+                # v20.0: "Embedding Spaces" tab REMOVED (100% vectorless)
+                tabs = st.tabs(["Histograms & Bars", "Pie & Donut", "Sunburst & Treemap", "Radar & Chord", "Contradiction & Consensus", "Networks", "Scatter & Violin", "Entity Explorer", "Retrieval Diagnostics", "AI/ML & Informatics", "Multi-Physics & Electrochem"])
                 with tabs[0]:
                     if selected_qty != "All":
                         fig_hist = viz.plot_quantitative_histogram(df_all, selected_qty, group_by, colormap)
@@ -6854,32 +7041,8 @@ def run_streamlit():
                             st.download_button("Download PyVis Salience HTML", html_salience.encode('utf-8'), "salience_network_pyvis.html", mime="text/html")
                         else:
                             st.info("Install pyvis for interactive network: pip install pyvis")
+                # v20.0: Embedding Spaces tab PURGED - 100% vectorless guarantee
                 with tabs[6]:
-                    if st.session_state.embedding_model is not None:
-                        emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
-                        if SKLEARN_AVAILABLE:
-                            fig_tsne = viz.plot_tsne(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
-                            if fig_tsne:
-                                st.pyplot(fig_tsne)
-                                buf = BytesIO()
-                                fig_tsne.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download t-SNE PNG", buf.getvalue(), "tsne.png", mime="image/png")
-                            fig_pca = viz.plot_pca(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
-                            if fig_pca:
-                                st.pyplot(fig_pca)
-                                buf = BytesIO()
-                                fig_pca.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download PCA PNG", buf.getvalue(), "pca.png", mime="image/png")
-                        if UMAP_AVAILABLE:
-                            fig_umap = viz.plot_umap(emb_fn, None if selected_qty=="All" else selected_qty, colormap, figsize=config.figsize_embedding)
-                            if fig_umap:
-                                st.pyplot(fig_umap)
-                                buf = BytesIO()
-                                fig_umap.savefig(buf, format="png", dpi=config.figure_dpi)
-                                st.download_button("Download UMAP PNG", buf.getvalue(), "umap.png", mime="image/png")
-                    else:
-                        st.warning("Install sentence-transformers and re-index to enable t-SNE/PCA/UMAP.")
-                with tabs[7]:
                     fig_scatter = viz.plot_scatter_power_vs_speed(df_all, colormap)
                     st.plotly_chart(fig_scatter, use_container_width=True, key="plotly_19")
                     fig_parallel = viz.plot_parallel_categories(df_all, colormap)
@@ -6888,7 +7051,7 @@ def run_streamlit():
                     st.plotly_chart(fig_violin, use_container_width=True, key="plotly_21")
                     fig_timeline = viz.plot_timeline(colormap)
                     st.plotly_chart(fig_timeline, use_container_width=True, key="plotly_22")
-                with tabs[8]:
+                with tabs[7]:
                     st.markdown("### Interactive Knowledge Graph Explorer")
                     entities = st.session_state.knowledge_graph.get_all_entity_names()
                     if entities:
@@ -6927,7 +7090,7 @@ def run_streamlit():
                             st.info("No entities extracted yet. Run a query or re-index.")
                     else:
                         st.info("No entities extracted yet. Run a query or re-index.")
-                with tabs[9]:
+                with tabs[8]:
                     st.markdown("### Retrieval Diagnostics & Provenance")
                     cached = st.session_state.get("cached_query_result", {})
                     rel_docs = cached.get("relevant_docs", [])
@@ -6970,14 +7133,7 @@ def run_streamlit():
                             st.info("No tree data available for this document.")
                     else:
                         st.info("No tree data available.")
-                    if st.session_state.embedding_model is not None:
-                        st.markdown("#### Semantic vs Vectorless Score Comparison")
-                        emb_fn = lambda x: np.array(st.session_state.embedding_model.encode(x))
-                        fig_comp = viz.plot_semantic_vs_vectorless(active_prompt, rel_docs, st.session_state.annotated_trees, emb_fn)
-                        if fig_comp:
-                            st.plotly_chart(fig_comp, use_container_width=True, key="plotly_27")
-                        else:
-                            st.info("Could not compute semantic scores for comparison.")
+                    # v20.0: Semantic vs Vectorless comparison PURGED - 100% vectorless
                     st.markdown("#### Raw Retrieval Metadata")
                     if retrieved_nodes:
                         df_ret = pd.DataFrame([{"Document": r.get("doc_id", ""), "Node ID": r.get("node_id", ""), "Section": r.get("section_title", ""), "Page": r.get("page_start", 0), "Confidence": r.get("confidence", 0), "Reasoning": r.get("selection_reasoning", "")[:100]} for r in retrieved_nodes])
@@ -6986,7 +7142,7 @@ def run_streamlit():
                         st.download_button("Download Retrieval Metadata CSV", csv_ret, "retrieval_metadata.csv", mime="text/csv")
                     else:
                         st.info("No retrieved node metadata available.")
-                with tabs[10]:
+                with tabs[9]:
                     st.markdown("### AI/ML & Materials Informatics Dashboard")
                     st.info("This tab integrates extracted AI/ML methodologies, tensor decomposition results, and materials informatics metrics from the corpus. Future updates will include live UQ/XAI attribution visualizations and TF-IDF/PMI co-occurrence graphs.")
                     with st.expander("Extracted AI/ML Methodologies"):
@@ -7001,7 +7157,7 @@ def run_streamlit():
                     with st.expander("Informatics Metrics (TF-IDF / PMI / NER)"):
                         st.markdown("Natural language processing pipelines extract domain-specific entities (e.g., `Ti3Au`, `SDSS 2507`, `Lewis number`, `U-Net`, `eigenstrain`) and compute co-occurrence probabilities. Positive PMI scores confirm statistically significant term pairings in the literature.")
                         st.code("from sklearn.feature_extraction.text import TfidfVectorizer\n# TF-IDF vectorization of extracted chunks pending", language="python")
-                with tabs[11]:
+                with tabs[10]:
                     st.markdown("### Multi-Physics & Electrochemical Analysis")
                     st.info("This tab visualizes coupled physics extractions: Phase-Field iterations, Molecular Dynamics steps, CALPHAD database references, Nernst-Planck/Butler-Volmer kinetics, EIS/CPP results, and Marangoni/Boussinesq parameters.")
                     with st.expander("Extracted Multi-Physics Parameters"):

@@ -1719,23 +1719,23 @@ Return JSON:
     def _parse_actions(self, response: str) -> List[Dict]:
         """Parse action JSON from LLM response.
 
-        v20.0 FIX #3: Handle Markdown wrappers, trailing commas, and log errors properly.
+        v20.0 FIX: Use greedy regex to correctly capture nested JSON objects.
+        Fixes the non-greedy regex bug where .*? stopped at the first } in nested JSON,
+        causing truncated JSON extraction and silent MCTS navigation failure.
         """
         try:
-            # 1. Try to extract from Markdown code block first
-            md_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
-            if md_match:
-                data = json.loads(md_match.group(1))
+            # FIX: Use greedy regex .* to capture from the FIRST '{' to the LAST '}'
+            # This correctly handles nested dictionaries inside the "actions" list.
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+
+            if json_match:
+                raw_json = json_match.group()
+                # Fix trailing commas which local LLMs (like Qwen/Mistral) often generate
+                clean_json = re.sub(r',\s*([\]}])', r'', raw_json)
+                data = json.loads(clean_json)
             else:
-                # 2. Fallback to first { ... }
-                json_match = re.search(r'\{.*\}', response, re.DOTALL)
-                if json_match:
-                    # Fix trailing commas which local LLMs often generate
-                    clean_json = re.sub(r',\s*([\]}])', r'\1', json_match.group())
-                    data = json.loads(clean_json)
-                else:
-                    logger.error(f"MCTS returned NO JSON. Raw response: {response[:300]}")
-                    return []
+                logger.error(f"MCTS returned NO JSON. Raw response: {response[:300]}")
+                return []
 
             actions = data.get('actions', [])
             return [a for a in actions if isinstance(a, dict) and 'node_id' in a and 'action' in a]
@@ -1747,13 +1747,6 @@ Return JSON:
             logger.error(f"MCTS Unexpected Error: {e}")
             return []
 
-# =============================================================================
-# DYNAMIC INTENT ANALYZER (Vectorless Query Router) - v18.0 UPGRADE
-# =============================================================================
-
-# =============================================================================
-# SCIENTIFIC INTENT ROUTER (v19.0) - Intent-First Dynamic Architecture
-# =============================================================================
 class ScientificIntentRouter:
     """
     Replaces DynamicIntentAnalyzer. 

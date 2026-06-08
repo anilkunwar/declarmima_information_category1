@@ -22,3 +22,4 @@ litellm
 umap-learn 
 bokeh
 orjson
+ollama

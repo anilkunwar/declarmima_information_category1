@@ -1261,6 +1261,15 @@ def run_streamlit():
         st.session_state.documents = {}
     if "pipeline" not in st.session_state:
         st.session_state.pipeline = None
+    # Version check: clear old data from previous code versions
+    if st.session_state.get("declarmima_version") != "v21":
+        st.session_state.documents = {}
+        st.session_state.messages = []
+        st.session_state.pipeline = None
+        st.session_state.selected_docs_for_query = []
+        st.session_state.declarmima_version = "v21"
+        st.rerun()
+
 
     render_sidebar()
 
@@ -1306,7 +1315,7 @@ def run_streamlit():
                     st.session_state.messages = []
                     progress_bar.empty()
 
-                    st.success(f"✅ Indexed {len(uploaded_files)} document(s) with {sum(len(d.sections) for d in documents.values())} sections")
+                    st.success(f"✅ Indexed {len(uploaded_files)} document(s) with {sum((len(d.sections) if hasattr(d, "sections") else len(d.get("sections", []))) for d in documents.values())} sections")
 
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
@@ -1327,10 +1336,18 @@ def run_streamlit():
                 for doc_name in doc_names:
                     st.subheader(f"📄 {doc_name}")
                     doc = st.session_state.documents[doc_name]
-                    for sec in doc.sections:
-                        st.markdown(f"**{sec.id}: {sec.title}** *(pp. {sec.page_range})*")
-                        st.caption(sec.summary)
-                        st.divider()
+                    # Handle both old dict format and new Document dataclass
+                    if isinstance(doc, dict):
+                        sections = doc.get("sections", [])
+                        for sec in sections:
+                            st.markdown(f"**{sec.get('id', 'sec')}: {sec.get('title', 'Untitled')}** *(pp. {sec.get('start_page', '?')}-{sec.get('end_page', '?')})*")
+                            st.caption(sec.get("summary", ""))
+                            st.divider()
+                    else:
+                        for sec in doc.sections:
+                            st.markdown(f"**{sec.id}: {sec.title}** *(pp. {sec.page_range})*")
+                            st.caption(sec.summary)
+                            st.divider()
 
     # Main chat area
     if not st.session_state.documents:

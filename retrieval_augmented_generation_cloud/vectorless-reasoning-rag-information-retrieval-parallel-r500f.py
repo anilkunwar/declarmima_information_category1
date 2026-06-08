@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any
 from collections import defaultdict
 from io import BytesIO
-import warnings
+
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -1277,6 +1277,78 @@ def _get_children_from_tree(tree: Dict, node_id: str) -> List[Dict]:
         return None
     result = search(tree)
     return result if result is not None else []
+
+def render_sidebar():
+    """Render the sidebar with model selection and configuration."""
+    with st.sidebar:
+        st.markdown("### ⚙️ Configuration")
+
+        # Model selection
+        model_keys = list(LOCAL_LLM_OPTIONS.keys())
+        if "llm_model_choice" not in st.session_state:
+            st.session_state.llm_model_choice = model_keys[2]  # Default: qwen2.5:7b
+
+        selected = st.selectbox(
+            "Select LLM Model",
+            options=model_keys,
+            index=model_keys.index(st.session_state.llm_model_choice),
+            key="llm_model_select",
+            help="Choose between Ollama (fast, local API) or HuggingFace Transformers (local loading, requires more RAM/VRAM)"
+        )
+        st.session_state.llm_model_choice = selected
+
+        # Show backend info
+        model_key = LOCAL_LLM_OPTIONS[selected]
+        if model_key.startswith("ollama:"):
+            st.caption("🟢 Backend: Ollama (API)")
+            st.caption(f"Model: `{model_key.replace('ollama:', '')}`")
+        else:
+            st.caption("🔵 Backend: Transformers (Local)")
+            st.caption(f"Model: `{model_key}`")
+
+        # 4-bit quantization toggle (only for transformers)
+        if not model_key.startswith("ollama:"):
+            st.checkbox("Use 4-bit quantization (saves VRAM)", value=True, key="use_4bit")
+            if TORCH_AVAILABLE and torch.cuda.is_available():
+                st.caption(f"GPU: {torch.cuda.get_device_name(0)}")
+            else:
+                st.warning("⚠️ No GPU detected. Local model will run on CPU (slow).")
+        else:
+            st.session_state.use_4bit = False
+
+        st.markdown("---")
+        st.markdown("#### 📊 System Status")
+
+        # Show dependency status
+        cols = st.columns(2)
+        with cols[0]:
+            st.markdown(f"{'✅' if OLLAMA_AVAILABLE else '❌'} Ollama")
+        with cols[1]:
+            st.markdown(f"{'✅' if TRANSFORMERS_AVAILABLE else '❌'} Transformers")
+        cols2 = st.columns(2)
+        with cols2[0]:
+            st.markdown(f"{'✅' if TORCH_AVAILABLE else '❌'} PyTorch")
+        with cols2[1]:
+            st.markdown(f"{'✅' if PYMUPDF_AVAILABLE else '❌'} PyMuPDF")
+
+        st.markdown("---")
+
+        # Advanced settings
+        with st.expander("Advanced Settings", expanded=False):
+            st.slider("Max context chars", 5000, 30000, 15000, 1000, 
+                     key="max_context_chars",
+                     help="Maximum characters to send to LLM as context")
+            st.slider("Chunk size (pages)", 1, 10, 5, 1,
+                     key="chunk_size",
+                     help="Pages per chunk for section extraction")
+
+        st.markdown("---")
+
+        if st.button("🗑️ Clear Cache & Reset", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+
 
 def run_streamlit():
     """Main Streamlit application entry point."""

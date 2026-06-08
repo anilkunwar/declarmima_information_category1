@@ -582,6 +582,15 @@ class ScientificIntentRouter:
 # PILLAR 2: CROSS-DOCUMENT META-TREE STITCHER
 # ============================================================================
 
+def _prefix_node_ids_recursive(node: Dict, prefix: str) -> Dict:
+    """Recursively prefix all node_ids in a tree branch so drill-downs work."""
+    new_node = node.copy()
+    new_node['node_id'] = f"{prefix}_{node.get('node_id', '0000')}"
+    if 'nodes' in new_node and new_node['nodes']:
+        new_node['nodes'] = [_prefix_node_ids_recursive(child, prefix) for child in new_node['nodes']]
+    return new_node
+
+
 def build_cross_document_meta_tree(query: str, selected_docs: Dict, llm: HybridLLM) -> Dict:
     intent_prompt = f"""To answer "{query}", which structural section of a scientific paper is most relevant?
     (e.g., 'Experimental Setup', 'Results', 'Methodology', 'Process Parameters', 'Materials and Methods').
@@ -604,16 +613,12 @@ def build_cross_document_meta_tree(query: str, selected_docs: Dict, llm: HybridL
         if not matching_nodes:
             matching_nodes = tree.get('nodes', [])
         for node in matching_nodes:
-            meta_root["nodes"].append({
-                "node_id": f"meta_{doc_name}_{node.get('node_id', '0000')}",
-                "title": f"[{doc_name}] {node.get('title', '')}",
-                "summary": node.get('summary', ''),
-                "doc_id": doc_name,
-                "original_node_id": node.get('node_id', ''),
-                "start_page": node.get('start_page', 1),
-                "end_page": node.get('end_page', 1),
-                "nodes": node.get('nodes', [])
-            })
+            # FIX: Recursively prefix the ENTIRE branch, not just the top node!
+            prefixed_node = _prefix_node_ids_recursive(node, f"meta_{doc_name}")
+            prefixed_node['doc_id'] = doc_name
+            prefixed_node['original_node_id'] = node.get('node_id', '')
+            prefixed_node['title'] = f"[{doc_name}] {node.get('title', '')}"
+            meta_root["nodes"].append(prefixed_node)
 
     # Ensure meta_root always has the required keys
     if not isinstance(meta_root, dict):
@@ -649,47 +654,54 @@ class JSONMCTSNavigator:
                 "page_range": f"{n.get('start_page', '?')}-{n.get('end_page', '?')}"
             } for n in current_nodes], indent=2)
 
-            prompt = f"""You are an expert scientific navigator. Step {step + 1} of {self.max_steps}.
+            # TIGHTENED PROMPT: Forces the LLM to return at least one action
+            prompt = f"""You are a scientific document navigator. Step {step + 1}.
             QUERY: "{query}"
-            CURRENT JSON NODES:
+            AVAILABLE NODES:
             {nodes_summary}
 
             INSTRUCTIONS:
-            1. If a node's summary likely contains the answer or specific data, choose "extract_text".
-            2. If a node is a parent section and you need more detail to decide, choose "drill_down".
-            3. If a node is irrelevant, choose "skip".
+            1. Use "extract_text" if the summary mentions data, parameters, or the query topic.
+            2. Use "drill_down" ONLY if the node is a broad section (e.g., "Results") and you need subsections.
+            3. You MUST return at least one action in the "actions" list. Do not return an empty list.
 
-            Return strictly JSON: {{"reasoning": "your step-by-step analysis", "actions": [{{"node_id": "...", "action": "drill_down|extract_text|skip"}}]}}"""
+            Return strictly JSON: {{"reasoning": "brief thought", "actions": [{{"node_id": "ID_HERE", "action": "extract_text"}}]}}"""
 
             response = self.llm.generate(prompt, max_new_tokens=1024, system_prompt="Return ONLY valid JSON. No markdown fences.")
             actions_data = extract_json(response)
 
-            if not actions_data or not isinstance(actions_data, dict) or 'actions' not in actions_data:
-                self.trace.append("No valid actions returned by navigator.")
+            if not actions_data or not isinstance(actions_data, dict):
+                self.trace.append("JSON parse failed. Triggering desperation fallback.")
                 break
 
             self.trace.append(actions_data.get('reasoning', f"Step {step + 1}"))
+            actions = actions_data.get('actions', [])
+
+            # DESPERATION FALLBACK: If LLM returns empty actions, force extraction
+            if not actions and step == 0:
+                self.trace.append("Navigator returned 0 actions. Forcing extraction from top nodes.")
+                for node in current_nodes[:3]:
+                    chunk = self._extract_chunk(node['node_id'], selected_docs)
+                    if chunk: final_chunks.append(chunk)
+                break
 
             next_level_nodes = []
-            for action in actions_data.get('actions', []):
-                if not isinstance(action, dict):
-                    continue
+            for action in actions:
+                if not isinstance(action, dict): continue
                 node_id = action.get('node_id')
                 action_type = action.get('action', 'skip')
-                if action_type == 'skip' or not node_id:
-                    continue
+
+                if action_type == 'skip' or not node_id: continue
                 elif action_type == 'drill_down':
                     children = self._get_children(current_nodes, node_id)
                     if children:
                         next_level_nodes.extend(children)
                     else:
                         chunk = self._extract_chunk(node_id, selected_docs)
-                        if chunk:
-                            final_chunks.append(chunk)
+                        if chunk: final_chunks.append(chunk)
                 elif action_type == 'extract_text':
                     chunk = self._extract_chunk(node_id, selected_docs)
-                    if chunk:
-                        final_chunks.append(chunk)
+                    if chunk: final_chunks.append(chunk)
 
             current_nodes = next_level_nodes
 
@@ -704,103 +716,46 @@ class JSONMCTSNavigator:
     def _extract_chunk(self, node_id: str, selected_docs: Dict) -> Optional[Dict]:
         if not node_id.startswith('meta_'):
             return None
-        parts = node_id.split('_', 2)
-        if len(parts) < 3:
+
+        # FIX: Robust filename matching that handles underscores in filenames
+        remainder = node_id[5:] # strip "meta_"
+        doc_name = None
+        original_id = None
+
+        for key in selected_docs.keys():
+            if remainder.startswith(key + "_"):
+                doc_name = key
+                original_id = remainder[len(key) + 1:]
+                break
+
+        if not doc_name or not original_id:
             return None
-        doc_name = parts[1]
-        original_id = parts[2]
-        if doc_name not in selected_docs:
-            return None
+
         data = selected_docs[doc_name]
-        if not isinstance(data, dict):
-            return None
         tree = data.get('tree', {})
-        if not tree:
-            # Fallback: try old flat sections format
-            sections = data.get('sections', [])
-            for sec in sections:
-                if sec.get('id') == original_id:
-                    pages = data.get('pages', [])
-                    text_parts = []
-                    for p in pages:
-                        if sec.get('start_page', 1) <= p['page_num'] <= sec.get('end_page', sec.get('start_page', 1)):
-                            text_parts.append(p['text'])
-                    return {
-                        "doc_name": doc_name,
-                        "node_id": original_id,
-                        "section_title": sec.get('title', ''),
-                        "start_page": sec.get('start_page', 1),
-                        "end_page": sec.get('end_page', 1),
-                        "full_text": "\n".join(text_parts),
-                        "summary": sec.get('summary', '')
-                    }
-            return None
         target_node = find_node_by_id(tree, original_id)
+
         if not target_node:
             return None
+
         start_page = target_node.get('start_page', 1)
         end_page = target_node.get('end_page', start_page)
         pages = data.get('pages', [])
+
         text_parts = []
         for p in pages:
             if start_page <= p['page_num'] <= end_page:
                 text_parts.append(p['text'])
-        full_text = "\n".join(text_parts)
+
         return {
             "doc_name": doc_name,
             "node_id": original_id,
             "section_title": target_node.get('title', ''),
             "start_page": start_page,
             "end_page": end_page,
-            "full_text": full_text,
+            "full_text": "\n".join(text_parts),
             "summary": target_node.get('summary', '')
         }
-
-
-# ============================================================================
-# PILLAR 4: UNIVERSAL STRUCTURED EXTRACTOR
-# ============================================================================
-
-class UniversalLLMExtractor:
-    PROMPT = """Extract quantitative data, equations, or mechanisms from the text relevant to the query: "{query}"
-    Return a JSON list of objects:
-    [{{"item_type": "quantitative|equation|mechanism|prose",
-       "parameter_name": "...",
-       "value": number_or_string_or_null,
-       "unit": "...",
-       "equation_latex": "...",
-       "context": "exact supporting sentence",
-       "doc_name": "{doc_name}",
-       "page": {page}}}]"
-
-    Text:
-    {text}"""
-
-    def extract(self, chunks: List[Dict], query: str, llm: HybridLLM) -> List[Dict]:
-        items = []
-        for chunk in chunks:
-            prompt = self.PROMPT.format(
-                query=query,
-                doc_name=chunk['doc_name'],
-                page=chunk.get('start_page', 1),
-                text=chunk['full_text'][:6000]
-            )
-            resp = llm.generate(prompt, max_new_tokens=2048, system_prompt="Return ONLY valid JSON list. No markdown fences.")
-            parsed = extract_json(resp)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    item['doc_name'] = chunk['doc_name']
-                    item['page'] = chunk.get('start_page', 1)
-                    item['section_title'] = chunk.get('section_title', '')
-                    items.append(item)
-            elif isinstance(parsed, dict) and 'items' in parsed:
-                for item in parsed['items']:
-                    item['doc_name'] = chunk['doc_name']
-                    item['page'] = chunk.get('start_page', 1)
-                    item['section_title'] = chunk.get('section_title', '')
-                    items.append(item)
-        return items
-
 
 # ============================================================================
 # PILLAR 5: CITATION VALIDATOR (HALLUCINATION KILLER)

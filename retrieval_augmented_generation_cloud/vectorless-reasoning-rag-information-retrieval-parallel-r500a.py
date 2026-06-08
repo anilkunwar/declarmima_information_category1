@@ -636,8 +636,10 @@ Instructions:
             step_chunks: List[Dict] = []
 
             for action in actions[:self.max_sections]:
+                if not isinstance(action, dict):
+                    continue
                 ns_id = action.get("id", "")
-                if ":::" not in ns_id:
+                if not isinstance(ns_id, str) or ":::" not in ns_id:
                     continue
 
                 doc_name, sec_id = ns_id.split(":::", 1)
@@ -1002,8 +1004,13 @@ class DocumentIndexer:
 
             logger.info(f"Indexing ({idx+1}/{total}): {uploaded_file.name}")
 
-            pdf_bytes = uploaded_file.read()
+            pdf_bytes = uploaded_file.getvalue()
             pages_data = self.pdf_processor.extract_pages(pdf_bytes)
+
+            # Guard against empty or failed extraction
+            if not pages_data:
+                logger.warning(f"No text extracted from {uploaded_file.name}")
+                pages_data = [{"page_num": 1, "text": "[No extractable text found in PDF]"}]
 
             # Extract sections using LLM
             sections = self._extract_sections(pages_data)
@@ -1049,15 +1056,34 @@ Text:
             resp = self.llm.generate(prompt, max_new_tokens=1024, system_prompt=system, fast_json=True)
             parsed = JSONExtractor.extract(resp)
 
+            # Handle LLM returning a single dict instead of a list
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+
             if parsed and isinstance(parsed, list):
                 for item in parsed:
-                    if "title" in item and "start_page" in item:
-                        sections.append(Section(
-                            id=f"sec_{len(sections)+1:03d}",
-                            title=item["title"],
-                            start_page=item["start_page"],
-                            end_page=len(pages_data)  # Temporary, will fix below
-                        ))
+                    if not isinstance(item, dict):
+                        continue
+                    if "title" not in item or "start_page" not in item:
+                        continue
+                    # Validate types
+                    title = item.get("title", "")
+                    start_page = item.get("start_page", 1)
+                    if not isinstance(title, str):
+                        title = str(title)
+                    if isinstance(start_page, str):
+                        try:
+                            start_page = int(start_page)
+                        except ValueError:
+                            start_page = 1
+                    if not isinstance(start_page, int) or start_page < 1:
+                        start_page = 1
+                    sections.append(Section(
+                        id=f"sec_{len(sections)+1:03d}",
+                        title=title,
+                        start_page=start_page,
+                        end_page=len(pages_data)  # Temporary, will fix below
+                    ))
 
         # Sort and fix end pages
         sections.sort(key=lambda s: s.start_page)
@@ -1072,8 +1098,11 @@ Text:
     def _summarize_sections(self, sections: List[Section], pages_data: List[Dict]) -> List[Section]:
         """Generate LLM summaries for each section."""
         for sec in sections:
-            start_idx = sec.start_page - 1
-            end_idx = sec.end_page
+            start_idx = max(0, sec.start_page - 1)
+            end_idx = max(start_idx, min(sec.end_page, len(pages_data)))
+            if start_idx >= len(pages_data) or start_idx >= end_idx:
+                sec.summary = "[No text available for this section]"
+                continue
             section_text = "\n".join([
                 p["text"] for p in pages_data[start_idx:end_idx]
             ])

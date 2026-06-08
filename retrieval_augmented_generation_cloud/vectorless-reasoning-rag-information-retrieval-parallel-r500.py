@@ -1,13 +1,29 @@
 import streamlit as st
-import fitz  # PyMuPDF
 import json
 import re
 import torch
 import requests
 from typing import Optional, Any
+import os
 
 # ============================================================================
-# DEPENDENCY CHECKS
+# PYMUPDF IMPORT (FIXED)
+# ============================================================================
+# This resolves the conflict where "pip install fitz" installs the wrong package.
+try:
+    import pymupdf as fitz  # PyMuPDF >= 1.24 recommended
+except ImportError:
+    try:
+        import fitz  # Fallback for older PyMuPDF versions
+    except ImportError:
+        st.error(
+            "PyMuPDF is not installed.\n"
+            "Please run: pip install pymupdf"
+        )
+        st.stop()
+
+# ============================================================================
+# LLM DEPENDENCY CHECKS
 # ============================================================================
 try:
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -22,7 +38,7 @@ except ImportError:
     OLLAMA_AVAILABLE = False
 
 # ============================================================================
-# HYBRID LLM ENGINE (From Provided Code)
+# HYBRID LLM ENGINE
 # ============================================================================
 class HybridLLM:
     def __init__(self, model_key: str, use_4bit: bool = True):
@@ -35,6 +51,7 @@ class HybridLLM:
         self.tokenizer = None
         self.model = None
         
+        # Check if it's an Ollama model or a HuggingFace model
         if model_key.startswith("ollama:"):
             self.model_name = model_key.replace("ollama:", "", 1)
             self._init_ollama()
@@ -46,6 +63,7 @@ class HybridLLM:
         if not OLLAMA_AVAILABLE:
             raise RuntimeError("Ollama python package not installed. Run: pip install ollama")
         try:
+            # Check connection
             requests.get("http://localhost:11434/api/tags", timeout=5)
             self.backend = "ollama"
             self.client = ollama.Client(host="http://localhost:11434")
@@ -55,19 +73,28 @@ class HybridLLM:
     def generate(self, prompt: str, system_prompt: str = "You are a helpful assistant.", max_new_tokens=1024, temperature=0.1):
         if self.backend == "ollama":
             messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
-            resp = self.client.chat(
-                model=self.model_name, 
-                messages=messages, 
-                options={"temperature": temperature, "num_predict": max_new_tokens}
-            )
-            return resp.get("message", {}).get("content", "").strip()
+            try:
+                resp = self.client.chat(
+                    model=self.model_name, 
+                    messages=messages, 
+                    options={"temperature": temperature, "num_predict": max_new_tokens}
+                )
+                return resp.get("message", {}).get("content", "").strip()
+            except Exception as e:
+                return f"⚠️ Ollama Error: {e}"
             
         elif self.backend == "transformers":
             if self.model is None:
                 self._load_transformers()
             
-            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
-            text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            # Apply chat template if available (critical for Instruct models)
+            try:
+                messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
+                text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            except Exception:
+                # Fallback for older models without templates
+                text = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            
             inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
             
             with torch.no_grad():
@@ -79,10 +106,10 @@ class HybridLLM:
                     pad_token_id=self.tokenizer.eos_token_id
                 )
             
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            if "assistant" in response:
-                response = response.split("assistant")[-1].strip()
-            return response
+            # Decode only the generated part
+            generated_ids = outputs[0][inputs['input_ids'].shape[1]:]
+            response = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            return response.strip()
 
     def _load_transformers(self):
         if not TRANSFORMERS_AVAILABLE:
@@ -94,6 +121,8 @@ class HybridLLM:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
         model_kwargs = {"trust_remote_code": True, "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32}
+        
+        # 4-bit quantization for VRAM savings
         if self.use_4bit and self.device == "cuda":
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True, 
@@ -112,7 +141,7 @@ class HybridLLM:
 # HELPER FUNCTIONS
 # ============================================================================
 def extract_json(text: str) -> Optional[Any]:
-    """Robust JSON extractor that handles markdown wrappers and malformed outputs."""
+    """Robust JSON extractor that handles markdown wrappers."""
     if not text: return None
     try: return json.loads(text)
     except: pass
@@ -131,26 +160,41 @@ def extract_json(text: str) -> Optional[Any]:
     return None
 
 def extract_text_from_pdf(file_bytes: bytes, max_pages: int = None) -> list[dict]:
-    """Extract text page-by-page using PyMuPDF."""
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    """
+    Extract text page-by-page using PyMuPDF.
+    Compatible with modern PyMuPDF versions.
+    """
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception as e:
+        raise RuntimeError(f"Failed to open PDF: {e}")
+
     pages_data = []
     total_pages = len(doc)
-    if max_pages:
+
+    if max_pages is not None:
         total_pages = min(total_pages, max_pages)
-        
+
     for i in range(total_pages):
-        page = doc[i]
-        text = page.get_text("text").strip()
-        if text:
-            pages_data.append({
-                "page_num": i + 1,
-                "text": text
-            })
+        try:
+            page = doc[i]
+            text = page.get_text("text").strip()
+
+            if text:
+                pages_data.append(
+                    {
+                        "page_num": i + 1,
+                        "text": text
+                    }
+                )
+        except Exception:
+            continue
+
     doc.close()
     return pages_data
 
 # ============================================================================
-# VECTORLESS RAG PIPELINE (Preserved from Previous Code)
+# VECTORLESS RAG PIPELINE
 # ============================================================================
 def build_document_tree(pages_data: list[dict], model: HybridLLM, chunk_size: int = 5) -> list[dict]:
     """Phase 1: Build hierarchical tree index with summaries."""
@@ -195,6 +239,7 @@ Text:
         end_idx = next((j for j, p in enumerate(pages_data) if p['page_num'] == sec['end_page']), len(pages_data)-1)
         
         section_text = "\n".join([p['text'] for p in pages_data[start_idx:end_idx+1]])
+        # Truncate to prevent OOM on summarization
         if len(section_text) > 4000:
             section_text = section_text[:4000] + "..."
             
@@ -209,11 +254,13 @@ Text:
 
 def agentic_retrieve_and_answer(query: str, pages_data: list[dict], sections: list[dict], model: HybridLLM) -> tuple[str, str, list]:
     """Phase 2 & 3: Agentic Tree Search and Answer Generation."""
+    # 1. Build the Tree Description for the Agent
     tree_desc = "\n".join([
         f"ID: {s['id']} | Title: {s['title']} | Pages: {s['start_page']}-{s['end_page']} | Summary: {s['summary']}" 
         for s in sections
     ])
     
+    # 2. Tree Search (Navigation Agent)
     search_prompt = f"""You are a research assistant. Given a query and a document structure, identify which sections are most likely to contain the answer.
 Query: {query}
 
@@ -232,6 +279,7 @@ Return a JSON object: {{"thinking": "your step-by-step reasoning", "relevant_ids
         thinking = search_result.get('thinking', 'No reasoning provided.')
         relevant_ids = search_result.get('relevant_ids', [])
         
+    # 3. Fetch Content (Lossless Retrieval)
     context = ""
     retrieved_sections = []
     for s in sections:
@@ -248,9 +296,11 @@ Return a JSON object: {{"thinking": "your step-by-step reasoning", "relevant_ids
     if not context:
         return "I could not find any relevant sections in the document to answer your query.", thinking, retrieved_sections
         
+    # Truncate to prevent OOM on small models
     if len(context) > 12000:
         context = context[:12000] + "\n[Context truncated due to length]"
         
+    # 4. Generate Answer
     answer_prompt = f"""Answer the user's query based ONLY on the provided document context.
 If the answer is not in the context, say "I don't know based on the provided document."
 
@@ -268,14 +318,17 @@ Context:
 # ============================================================================
 st.set_page_config(page_title="Hybrid Vectorless RAG", layout="wide")
 st.title("🌲 Hybrid Vectorless RAG (No API Required)")
-st.caption("Run small models directly via Transformers (Cloud/Local) or large models via Ollama (Local). No chunking, no vector DBs.")
+st.caption("Run small models via Transformers (Cloud/Local) or large models via Ollama (Local).")
 
+# Expanded Model Options including 0.5B and SmolLM
 MODEL_OPTIONS = {
-    "🚀 Cloud/Local Small (No API, Transformers)": "Qwen/Qwen2.5-1.5B-Instruct",
-    "🚀 Cloud/Local Tiny (Fast, CPU OK)": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "🚀 HF: Qwen2.5-0.5B (Fastest, CPU Friendly)": "Qwen/Qwen2.5-0.5B-Instruct",
+    "🚀 HF: SmolLM2-1.7B (Tiny, Fast)": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "🚀 HF: Qwen2.5-1.5B (Recommended for Cloud)": "Qwen/Qwen2.5-1.5B-Instruct",
     "🖥️ Local Ollama: Qwen 2.5 7B": "ollama:qwen2.5:7b",
     "🖥️ Local Ollama: Mistral 7B": "ollama:mistral:7b",
     "🖥️ Local Ollama: Llama 3.1 8B": "ollama:llama3.1:8b",
+    "🖥️ Local Ollama: Falcon 3 10B": "ollama:falcon3:10b",
 }
 
 with st.sidebar:
@@ -283,8 +336,10 @@ with st.sidebar:
     selected_model_name = st.selectbox("Select LLM Backend", list(MODEL_OPTIONS.keys()))
     model_id = MODEL_OPTIONS[selected_model_name]
     
-    use_4bit = st.checkbox("Use 4-bit quantization (Saves VRAM, requires CUDA)", value=True)
-    max_pages = st.slider("Max pages to process", 1, 50, 10, help="Limit this to avoid overwhelming local LLM context windows.")
+    # Only show 4-bit option for HF models
+    is_ollama = "ollama:" in model_id
+    use_4bit = not is_ollama and st.checkbox("Use 4-bit quantization (Saves VRAM)", value=True, disabled=is_ollama)
+    max_pages = st.slider("Max pages to process", 1, 50, 10, help="Limit to avoid exceeding context windows.")
     
     st.markdown("---")
     st.header("📄 Document")
@@ -315,6 +370,7 @@ if uploaded_file and st.button("🚀 Build Document Tree"):
             st.session_state.messages = [] # Clear chat history on new doc
         except Exception as e:
             st.error(f"Failed to initialize LLM: {e}")
+            st.stop()
 
 if st.session_state.sections:
     with st.expander("🌳 View Document Tree Structure", expanded=False):
@@ -343,6 +399,7 @@ if st.session_state.sections:
             
         with st.chat_message("assistant"):
             with st.spinner("Searching tree and generating answer..."):
+                # Re-initialize LLM for query (cached models load faster if in memory)
                 llm = HybridLLM(model_key=model_id, use_4bit=use_4bit)
                 answer, thinking, retrieved_secs = agentic_retrieve_and_answer(
                     prompt, st.session_state.pages_data, st.session_state.sections, llm

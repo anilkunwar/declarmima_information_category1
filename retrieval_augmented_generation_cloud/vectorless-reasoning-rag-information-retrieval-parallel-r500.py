@@ -14,6 +14,7 @@ Key enhancements:
 - Enhanced PDF processing with pymupdf4llm fallback
 - 100% Vectorless: No embeddings, no vector DBs
 - Agentic tree navigation for multi-document retrieval
+- FIXED: Safe PyMuPDF import to avoid 'fitz' package collision
 """
 
 import streamlit as st
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any
 from collections import defaultdict
 from io import BytesIO
-import warnings
+
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -42,29 +43,40 @@ logging.basicConfig(level=logging.INFO, handlers=[console_handler], force=True)
 logger = logging.getLogger("DECLARMIMA_ENHANCED")
 
 # ============================================================================
-# DEPENDENCY CHECKS WITH GRACEFUL DEGRADATION (from DECLARMIMA v20.0)
+# PYMUPDF IMPORT (FIXED)
+# ============================================================================
+try:
+    import pymupdf as fitz  # PyMuPDF >= 1.24
+    PYMUPDF_AVAILABLE = True
+    logger.info("✓ PyMuPDF (modern) loaded via pymupdf")
+except ImportError:
+    try:
+        import fitz  # Older PyMuPDF versions
+        PYMUPDF_AVAILABLE = True
+        logger.info("✓ PyMuPDF (legacy) loaded via fitz")
+    except ImportError:
+        PYMUPDF_AVAILABLE = False
+        st.error(
+            "PyMuPDF is not installed.\n"
+            "Install with:\n"
+            "pip install pymupdf"
+        )
+        st.stop()
+
+# ============================================================================
+# DEPENDENCY CHECKS WITH GRACEFUL DEGRADATION
 # ============================================================================
 
 def check_optional_dependencies() -> Dict[str, bool]:
     """Check all optional dependencies and report availability with graceful degradation."""
     deps: Dict[str, bool] = {}
 
-    # PyMuPDF (required)
-    try:
-        try:
-            import pymupdf
-            deps['pymupdf'] = True
-            import sys
-            if 'fitz' not in sys.modules:
-                sys.modules['fitz'] = pymupdf
-        except ImportError:
-            import fitz
-            deps['pymupdf'] = True
+    # PyMuPDF (required) - checked via the safe import above
+    deps['pymupdf'] = PYMUPDF_AVAILABLE
+    if PYMUPDF_AVAILABLE:
         logger.info("✓ PyMuPDF available")
-    except ImportError:
-        deps['pymupdf'] = False
+    else:
         logger.error("✗ PyMuPDF required: pip install pymupdf")
-        raise ImportError("PyMuPDF is required for this application to function")
 
     # Ollama (recommended for local LLM)
     try:
@@ -117,37 +129,12 @@ def check_optional_dependencies() -> Dict[str, bool]:
 # Check dependencies at module load time
 GLOBAL_DEPS = check_optional_dependencies()
 
-# ============================================================================
-# UNIFIED PDF IMPORT (handles both old and new PyMuPDF)
-# ============================================================================
-try:
-    # Try modern import first (PyMuPDF >= 1.23)
-    try:
-        import pymupdf
-        PYMUPDF_AVAILABLE = True
-        # Make fitz available as alias for backward compatibility
-        import sys
-        if 'fitz' not in sys.modules:
-            sys.modules['fitz'] = pymupdf
-        import fitz  # Now available as alias
-        logger.info("✓ PyMuPDF (modern) loaded via pymupdf")
-    except ImportError:
-        # Fallback to legacy import (PyMuPDF < 1.23)
-        import fitz
-        PYMUPDF_AVAILABLE = True
-        logger.info("✓ PyMuPDF (legacy) loaded via fitz")
-except ImportError:
-    PYMUPDF_AVAILABLE = False
-    logger.error("✗ PyMuPDF required: pip install pymupdf")
-    raise ImportError("PyMuPDF is required. Run: pip install pymupdf")
-
 # Ollama client
 try:
     import ollama
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
-    logger.warning("Ollama not installed. Ollama backend unavailable.")
 
 # Transformers
 try:
@@ -170,7 +157,6 @@ try:
     ORJSON_AVAILABLE = True
 except ImportError:
     ORJSON_AVAILABLE = False
-    logger.warning("orjson not installed. Using standard json (slower).")
 
 # rapidfuzz for fuzzy matching
 try:
@@ -206,10 +192,11 @@ def fast_json_dumps(obj: Any, indent: bool = False) -> bytes:
     return json.dumps(obj, indent=2 if indent else None).encode('utf-8')
 
 # ============================================================================
-# HYBRID LLM & TEMPLATES (from DECLARMIMA v20.0)
+# HYBRID LLM & TEMPLATES
 # ============================================================================
 
 LOCAL_LLM_OPTIONS = {
+    # Ollama models
     "[Ollama] qwen2.5:0.5b (Fastest, CPU OK)": "ollama:qwen2.5:0.5b",
     "[Ollama] qwen2.5:1.5b (Balanced)": "ollama:qwen2.5:1.5b",
     "[Ollama] qwen2.5:7b (Recommended for RAG)": "ollama:qwen2.5:7b",
@@ -218,21 +205,26 @@ LOCAL_LLM_OPTIONS = {
     "[Ollama] mistral:7b (High JSON Reliability)": "ollama:mistral:7b",
     "[Ollama] gemma2:9b (Scientific Nuance)": "ollama:gemma2:9b",
     "[Ollama] falcon3:10b (Instruction Following)": "ollama:falcon3:10b",
+    
     # HuggingFace Transformers models (local loading)
+    "[HF] Qwen2.5-0.5B-Instruct (Tiny, CPU OK)": "Qwen/Qwen2.5-0.5B-Instruct",
+    "[HF] Qwen2.5-1.5B-Instruct (Small, Fast)": "Qwen/Qwen2.5-1.5B-Instruct",
+    "[HF] Qwen2.5-3B-Instruct (Compact)": "Qwen/Qwen2.5-3B-Instruct",
     "[HF] Qwen2.5-7B-Instruct (Local)": "Qwen/Qwen2.5-7B-Instruct",
     "[HF] Mistral-7B-Instruct-v0.3 (Local)": "mistralai/Mistral-7B-Instruct-v0.3",
+    "[HF] Llama-3.2-1B-Instruct (Tiny)": "meta-llama/Llama-3.2-1B-Instruct",
+    "[HF] Llama-3.2-3B-Instruct (Small)": "meta-llama/Llama-3.2-3B-Instruct",
     "[HF] Llama-3.1-8B-Instruct (Local)": "meta-llama/Llama-3.1-8B-Instruct",
+    "[HF] SmolLM2-1.7B-Instruct (Ultra Small)": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
 }
 
 MODEL_PROMPT_TEMPLATES = {
-    "qwen2.5:0.5b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
-    "qwen2.5:1.5b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
-    "qwen2.5:7b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
-    "qwen2.5:14b": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "qwen": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
+    "smollm": {"system": "You are a precise document analyst. Follow JSON format strictly.", "json_reminder": "Return ONLY valid JSON."},
     "mistral": {"system": "You are a helpful assistant that always returns valid JSON.", "json_reminder": "Return ONLY valid JSON."},
-    "llama3.1": {"system": "You are a helpful assistant. Be concise and accurate.", "json_reminder": "Return valid JSON only."},
-    "gemma2": {"system": "You are a helpful assistant.", "json_reminder": "Return valid JSON only."},
-    "falcon3": {"system": "You are a helpful assistant.", "json_reminder": "Return valid JSON only."},
+    "llama": {"system": "You are a helpful assistant. Be concise and accurate.", "json_reminder": "Return valid JSON only."},
+    "gemma": {"system": "You are a helpful assistant.", "json_reminder": "Return valid JSON only."},
+    "falcon": {"system": "You are a helpful assistant.", "json_reminder": "Return valid JSON only."},
     "default": {"system": "You are a document navigation agent.", "json_reminder": "Return valid JSON only."}
 }
 
@@ -248,14 +240,6 @@ def get_model_template(model_name: str):
 class HybridLLM:
     """
     Hybrid LLM backend supporting both Ollama (local API) and HuggingFace Transformers (local loading).
-
-    Backend selection priority:
-    1. Ollama (if available and running at localhost:11434)
-    2. Transformers (if transformers + torch installed)
-
-    Model key formats:
-    - "ollama:model_name" -> Ollama backend
-    - "Qwen/Qwen2.5-7B-Instruct" -> Transformers backend (HuggingFace model ID)
     """
 
     def __init__(self, model_key: str, use_4bit: bool = True, device: Optional[str] = None):
@@ -304,10 +288,8 @@ class HybridLLM:
             return
 
         raise RuntimeError(
-            "No LLM backend available. Please either:
-"
-            "1. Install and start Ollama (pip install ollama, then ollama serve)
-"
+            "No LLM backend available. Please either:\n"
+            "1. Install and start Ollama (pip install ollama, then ollama serve)\n"
             "2. Install transformers + torch (pip install transformers torch)"
         )
 
@@ -412,7 +394,7 @@ def get_cached_llm(model_choice: str, use_4bit: bool = True):
 
 
 # ============================================================================
-# JSON EXTRACTION UTILITIES (enhanced from both codes)
+# JSON EXTRACTION UTILITIES
 # ============================================================================
 
 def extract_json(text: str) -> Optional[Any]:
@@ -458,8 +440,43 @@ def extract_json(text: str) -> Optional[Any]:
 
 
 # ============================================================================
-# PDF PROCESSING (enhanced with pymupdf4llm fallback from DECLARMIMA)
+# PDF PROCESSING (FIXED IMPORT)
 # ============================================================================
+
+def extract_text_from_pdf(file_bytes: bytes, max_pages: int = None) -> list[dict]:
+    """
+    Extract text page-by-page using PyMuPDF.
+    Compatible with modern PyMuPDF versions.
+    """
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception as e:
+        raise RuntimeError(f"Failed to open PDF: {e}")
+
+    pages_data = []
+    total_pages = len(doc)
+
+    if max_pages is not None:
+        total_pages = min(total_pages, max_pages)
+
+    for i in range(total_pages):
+        try:
+            page = doc[i]
+            text = page.get_text("text").strip()
+
+            if text:
+                pages_data.append(
+                    {
+                        "page_num": i + 1,
+                        "text": text
+                    }
+                )
+        except Exception:
+            continue
+
+    doc.close()
+    return pages_data
+
 
 class PaginationAwareReader:
     """Enhanced PDF reader with pymupdf4llm LaTeX-aware fallback."""
@@ -530,36 +547,19 @@ class PaginationAwareReader:
         doc.close()
         return result
 
-    def extract_all_pages(self, pdf_bytes: bytes) -> List[Dict[str, Any]]:
-        """Extract all pages from PDF bytes with metadata."""
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        pages = []
-        for i in range(len(doc)):
-            page = doc[i]
-            text = page.get_text("text")
-            pages.append({
-                'page': i + 1,
-                'text': text,
-                'images': len(page.get_images()),
-            })
-        doc.close()
-        return pages
-
 
 # ============================================================================
-# VECTORLESS RAG CORE (from shorter code, enhanced)
+# VECTORLESS RAG CORE
 # ============================================================================
 
 def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
     """
     Phase 1: Builds hierarchical tree indices for multiple PDFs.
-    Enhanced with better error handling and progress tracking.
     """
     documents = {}
     total_files = len(uploaded_files)
     progress_bar = st.progress(0)
     status_text = st.empty()
-    reader = PaginationAwareReader()
 
     for idx, uploaded_file in enumerate(uploaded_files):
         doc_name = os.path.splitext(uploaded_file.name)[0]
@@ -571,15 +571,15 @@ def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
 
         pdf_bytes = uploaded_file.read()
 
-        # Use enhanced reader for page extraction
-        pages_text = reader.extract_all_pages(pdf_bytes)
+        # Use the safe extraction function
+        pages_text = extract_text_from_pdf(pdf_bytes)
 
         # 1. Extract Sections using LLM (Chunked to fit context windows)
         sections = []
         for i in range(0, len(pages_text), chunk_size):
             chunk = pages_text[i:i+chunk_size]
             text_with_tags = "\n".join([
-                f"<page_{p['page']}>\n{p['text']}\n</page_{p['page']}>" 
+                f"<page_{p['page_num']}>\n{p['text']}\n</page_{p['page_num']}>" 
                 for p in chunk
             ])
 
@@ -637,7 +637,6 @@ def agentic_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM,
                                 max_context_chars: int = 15000):
     """
     Phase 2 & 3: Agentic Multi-Document Tree Search and Answer Generation.
-    Enhanced with the HybridLLM integration.
     """
 
     # 1. Build the "Forest" Description
@@ -677,7 +676,6 @@ def agentic_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM,
     # 3. Fetch Content (Lossless Retrieval)
     context = ""
     retrieved_info = []
-    reader = PaginationAwareReader()
 
     for ns_id in relevant_ids:
         if ":::" not in ns_id: 
@@ -725,7 +723,7 @@ def agentic_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM,
 
 
 # ============================================================================
-# STREAMLIT UI (enhanced with model selection and better UX)
+# STREAMLIT UI
 # ============================================================================
 
 def render_sidebar():
@@ -759,7 +757,7 @@ def render_sidebar():
         # 4-bit quantization toggle (only for transformers)
         if not model_key.startswith("ollama:"):
             st.checkbox("Use 4-bit quantization (saves VRAM)", value=True, key="use_4bit")
-            if torch.cuda.is_available():
+            if TORCH_AVAILABLE and torch.cuda.is_available():
                 st.caption(f"GPU: {torch.cuda.get_device_name(0)}")
             else:
                 st.warning("⚠️ No GPU detected. Local model will run on CPU (slow).")

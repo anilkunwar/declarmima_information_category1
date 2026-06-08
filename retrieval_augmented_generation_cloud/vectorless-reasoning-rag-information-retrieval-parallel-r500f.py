@@ -1,30 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 r"""
-DECLARMIMA v20.1 Enhanced - Hybrid Vectorless RAG with 4-Pillar Architecture
-============================================================================
-Integrates the robust import/LLM-loading system from DECLARMIMA v20.0
-with the clean vectorless RAG architecture, PLUS the 4-Pillar agentic
-architecture and Cross-Document Meta-Tree JSON processing.
+DECLARMIMA v20.0 Enhanced - Hybrid Vectorless RAG
+===================================================
+Combines the robust import/LLM-loading system from DECLARMIMA v20.0
+with the clean vectorless RAG architecture from the shorter codebase.
 
-Key enhancements over v20.0:
-- 4-Pillar Agentic Architecture: Intent Router, MCTS Navigator,
-  Structured Extractor + Citation Validator, Adaptive Synthesizer
-- Cross-Document Meta-Tree stitching for multi-document JSON reasoning
-- JSON-Action MCTS Navigator for PageIndex-style hierarchical navigation
-- Layout-Aware JSON Tree Builder using pymupdf4llm
-- Enhanced VALUE_TRIGGERS for unit/parameter detection
-- MCTS node capping to prevent LLM context overflow
-- Robust JSON parsing with trailing comma fix
-- Removed "definition" from document flood bypass
-- Fixed meta-tree "children" -> "nodes" key mismatch
-- Added _format_as_value_comparison narrative-by-material formatter
+Key enhancements:
 - Graceful dependency degradation (Ollama, Transformers, PyMuPDF, etc.)
 - Hybrid LLM backend (Ollama local + HuggingFace transformers local)
 - Cached LLM initialization via @st.cache_resource
 - Model-specific prompt templates (Qwen, Mistral, Llama, etc.)
 - Enhanced PDF processing with pymupdf4llm fallback
 - 100% Vectorless: No embeddings, no vector DBs
+- Agentic tree navigation for multi-document retrieval
 - FIXED: Safe PyMuPDF import to avoid 'fitz' package collision
 """
 
@@ -42,7 +31,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any
 from collections import defaultdict
 from io import BytesIO
-
+import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -51,8 +40,7 @@ log_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(messa
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(log_formatter)
 logging.basicConfig(level=logging.INFO, handlers=[console_handler], force=True)
-logger = logging.getLogger("DECLARMIMA_v20_1")
-
+logger = logging.getLogger("DECLARMIMA_ENHANCED")
 
 # ============================================================================
 # PYMUPDF IMPORT (FIXED)
@@ -75,7 +63,6 @@ except ImportError:
         )
         st.stop()
 
-
 # ============================================================================
 # DEPENDENCY CHECKS WITH GRACEFUL DEGRADATION
 # ============================================================================
@@ -84,20 +71,14 @@ def check_optional_dependencies() -> Dict[str, bool]:
     """Check all optional dependencies and report availability with graceful degradation."""
     deps: Dict[str, bool] = {}
 
+    # PyMuPDF (required) - checked via the safe import above
     deps['pymupdf'] = PYMUPDF_AVAILABLE
     if PYMUPDF_AVAILABLE:
         logger.info("✓ PyMuPDF available")
     else:
         logger.error("✗ PyMuPDF required: pip install pymupdf")
 
-    try:
-        import pymupdf4llm
-        deps['pymupdf4llm'] = True
-        logger.info("✓ pymupdf4llm available")
-    except ImportError:
-        deps['pymupdf4llm'] = False
-        logger.warning("✗ pymupdf4llm not installed. Layout-aware extraction disabled.")
-
+    # Ollama (recommended for local LLM)
     try:
         import ollama
         deps['ollama'] = True
@@ -106,6 +87,7 @@ def check_optional_dependencies() -> Dict[str, bool]:
         deps['ollama'] = False
         logger.warning("✗ Ollama not installed. Ollama backend unavailable.")
 
+    # HuggingFace Transformers (recommended for local LLM)
     try:
         from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
         deps['transformers'] = True
@@ -114,6 +96,7 @@ def check_optional_dependencies() -> Dict[str, bool]:
         deps['transformers'] = False
         logger.warning("✗ transformers not installed. Local HF models unavailable.")
 
+    # rapidfuzz (optional - for fuzzy matching)
     try:
         from rapidfuzz import fuzz, process
         deps['rapidfuzz'] = True
@@ -122,6 +105,7 @@ def check_optional_dependencies() -> Dict[str, bool]:
         deps['rapidfuzz'] = False
         logger.warning("✗ rapidfuzz not installed. Fuzzy matching disabled.")
 
+    # orjson (optional - faster JSON)
     try:
         import orjson
         deps['orjson'] = True
@@ -130,6 +114,7 @@ def check_optional_dependencies() -> Dict[str, bool]:
         deps['orjson'] = False
         logger.warning("✗ orjson not installed. Using standard json (slower).")
 
+    # pyvis (optional - interactive networks)
     try:
         from pyvis.network import Network
         deps['pyvis'] = True
@@ -141,21 +126,24 @@ def check_optional_dependencies() -> Dict[str, bool]:
     logger.info(f"Dependency check complete: {sum(deps.values())}/{len(deps)} available")
     return deps
 
+# Check dependencies at module load time
 GLOBAL_DEPS = check_optional_dependencies()
 
-# Individual flags
+# Ollama client
 try:
     import ollama
     OLLAMA_AVAILABLE = True
 except ImportError:
     OLLAMA_AVAILABLE = False
 
+# Transformers
 try:
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
 
+# PyTorch (needed for transformers)
 try:
     import torch
     TORCH_AVAILABLE = True
@@ -163,24 +151,26 @@ except ImportError:
     TORCH_AVAILABLE = False
     logger.warning("PyTorch not installed. Transformers backend requires torch.")
 
+# orjson for fast JSON
 try:
     import orjson
     ORJSON_AVAILABLE = True
 except ImportError:
     ORJSON_AVAILABLE = False
 
+# rapidfuzz for fuzzy matching
 try:
     from rapidfuzz import fuzz, process
     RAPIDFUZZ_AVAILABLE = True
 except ImportError:
     RAPIDFUZZ_AVAILABLE = False
 
+# pyvis for interactive networks
 try:
     from pyvis.network import Network
     PYVIS_AVAILABLE = True
 except ImportError:
     PYVIS_AVAILABLE = False
-
 
 # ============================================================================
 # FAST JSON HELPERS (orjson fallback)
@@ -201,7 +191,6 @@ def fast_json_dumps(obj: Any, indent: bool = False) -> bytes:
         return orjson.dumps(obj, option=option)
     return json.dumps(obj, indent=2 if indent else None).encode('utf-8')
 
-
 # ============================================================================
 # HYBRID LLM & TEMPLATES
 # ============================================================================
@@ -216,7 +205,7 @@ LOCAL_LLM_OPTIONS = {
     "[Ollama] mistral:7b (High JSON Reliability)": "ollama:mistral:7b",
     "[Ollama] gemma2:9b (Scientific Nuance)": "ollama:gemma2:9b",
     "[Ollama] falcon3:10b (Instruction Following)": "ollama:falcon3:10b",
-
+    
     # HuggingFace Transformers models (local loading)
     "[HF] Qwen2.5-0.5B-Instruct (Tiny, CPU OK)": "Qwen/Qwen2.5-0.5B-Instruct",
     "[HF] Qwen2.5-1.5B-Instruct (Small, Fast)": "Qwen/Qwen2.5-1.5B-Instruct",
@@ -439,7 +428,7 @@ def extract_json(text: str) -> Optional[Any]:
         end = text.rfind(end_char)
         if start != -1 and end != -1 and end > start:
             candidate = text[start:end+1]
-            # Fix common LLM JSON errors - trailing comma fix
+            # Fix common LLM JSON errors
             candidate = re.sub(r',\s*([\]}])', r'\1', candidate)  # Remove trailing commas
             candidate = re.sub(r'\s+', ' ', candidate)  # Normalize whitespace
             try:
@@ -559,685 +548,271 @@ class PaginationAwareReader:
         return result
 
 
-
 # ============================================================================
-# ════════════════════════════════════════════════════════════════════════════
-# 4-PILLAR ARCHITECTURAL COMPONENTS (v20.1 Enhancement)
-# ════════════════════════════════════════════════════════════════════════════
+# VECTORLESS RAG CORE
 # ============================================================================
-
-# ───────────────────────────────────────────────────────────────────────────
-# PILLAR 1: Scientific Intent Router
-# ───────────────────────────────────────────────────────────────────────────
-
-class ScientificIntentRouter:
-    """
-    Lightweight intent classifier using regex triggers.
-    Classifies *what* the user wants (Values? Equations? Mechanisms?) 
-    before searching, enabling intent-aware routing.
-    """
-    PATTERNS = {
-        "value_extraction": [
-            r"\bvalue\b", r"\bhow much\b", 
-            r"\b\d+\s*(?:W|kW|MPa|mm/s|GPa|°C|K|Hz|m/s|kg|g|μm|nm)\b",
-            r"\btable\b", r"\blist\b", r"\bparameter\b", r"\bproperty\b",
-            r"\btemperature\b", r"\bpressure\b", r"\bvelocity\b", r"\bpower\b",
-            r"\bdensity\b", r"\bconductivity\b", r"\bmodulus\b", r"\bstrength\b",
-            r"\byield\b", r"\btensile\b", r"\bhardness\b", r"\bporosity\b",
-        ],
-        "equation": [
-            r"\bequation\b", r"\bformula\b", r"\bconstitutive\b", 
-            r"\bnavier[- ]stokes\b", r"\bcahn[- ]hilliard\b",
-            r"\bgoverning\b", r"\bmodel\b.*\bequation\b", r"\bmathematical\b",
-            r"\bPDE\b", r"\bODE\b", r"\bdifferential\b", r"\bstrain[- ]rate\b",
-            r"\bstress[- ]strain\b", r"\bstrain rate\b", r"\bconstitutive model\b",
-        ],
-        "mechanism": [
-            r"\bwhy\b", r"\bhow does\b", r"\bmechanism\b", 
-            r"\bcause\b", r"\bdriving force\b", r"\bexplain\b",
-            r"\bwhat causes\b", r"\bwhat is the reason\b", r"\bwhat leads to\b",
-            r"\bwhat results in\b", r"\bwhat is responsible\b", r"\bwhat triggers\b",
-            r"\bwhat induces\b", r"\bwhat promotes\b", r"\bwhat inhibits\b",
-        ],
-        "comparison": [
-            r"\bcompare\b", r"\bversus\b", r"\bvs\b", r"\bdifference\b",
-            r"\bcontrast\b", r"\bsimilarity\b", r"\bbetween\b.*\band\b",
-            r"\bwhich is better\b", r"\bwhich is higher\b", r"\bwhich is lower\b",
-        ],
-        "methodology": [
-            r"\bmethod\b", r"\bprocedure\b", r"\bprotocol\b", r"\bprocess\b",
-            r"\bexperimental setup\b", r"\bsimulation setup\b", r"\bcomputational\b",
-            r"\bFEA\b", r"\bCFD\b", r"\bfinite element\b", r"\bmesh\b",
-            r"\bboundary condition\b", r"\binitial condition\b",
-        ],
-    }
-
-    def route(self, query: str) -> Dict[str, str]:
-        """Route query to intent and output format."""
-        q_lower = query.lower()
-        for intent, patterns in self.PATTERNS.items():
-            if any(re.search(p, q_lower) for p in patterns):
-                return {"intent": intent, "output_format": intent}
-        return {"intent": "open_query", "output_format": "prose"}
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# PILLAR 2: Iterative MCTS Navigator
-# ───────────────────────────────────────────────────────────────────────────
-
-class IterativeTreeNavigator:
-    """
-    Simulates PageIndex MCTS navigation using the short code's flat sections.
-    Replaces single-shot search with an agentic drill-down loop.
-    Includes MCTS node capping to prevent LLM context overflow.
-    """
-    def __init__(self, llm: HybridLLM, max_steps: int = 2, max_nodes_per_step: int = 30):
-        self.llm = llm
-        self.max_steps = max_steps
-        self.max_nodes_per_step = max_nodes_per_step
-        self.trace = []
-
-    def navigate(self, query: str, selected_docs: Dict) -> List[Dict]:
-        """Agentic drill-down navigation through document sections."""
-        retrieved_chunks = []
-
-        # Step 1: Build the "Forest" of summaries (capped to prevent overflow)
-        forest_desc = []
-        for doc_name, data in selected_docs.items():
-            for s in data['sections']:
-                forest_desc.append(
-                    f"ID: {doc_name}:::{s['id']} | Title: {s['title']} | "
-                    f"Pages: {s['start_page']}-{s['end_page']} | "
-                    f"Summary: {s['summary'][:150]}"
-                )
-
-        # Cap nodes to prevent LLM context overflow
-        if len(forest_desc) > self.max_nodes_per_step:
-            forest_desc = forest_desc[:self.max_nodes_per_step]
-            self.trace.append(
-                f"[MCTS] Capped forest to {self.max_nodes_per_step} nodes to prevent context overflow."
-            )
-
-        # Step 2: Agentic Drill-Down
-        current_nodes_text = "\n".join(forest_desc)
-        for step in range(self.max_steps):
-            prompt = f"""You are a scientific navigator. Query: "{query}"
-Available Sections:
-{current_nodes_text}
-
-Return JSON: {{"reasoning": "...", "actions": [{{"id": "doc:::sec_id", "action": "extract_text"}}]}}.
-ONLY select sections that definitively contain the answer. Max 3 actions."""
-
-            resp = self.llm.generate(prompt, max_new_tokens=512, system_prompt="Return ONLY valid JSON.")
-            actions_data = extract_json(resp)
-
-            if not actions_data or 'actions' not in actions_data:
-                self.trace.append(f"[Step {step+1}] No valid actions returned. Stopping.")
-                break
-
-            self.trace.append(actions_data.get('reasoning', f'[Step {step+1}] No reasoning provided.'))
-
-            for action in actions_data['actions']:
-                ns_id = action.get('id')
-                if not ns_id or ":::" not in ns_id: 
-                    continue
-                doc_name, sec_id = ns_id.split(":::", 1)
-
-                if doc_name in selected_docs:
-                    sec = next((s for s in selected_docs[doc_name]['sections'] if s['id'] == sec_id), None)
-                    if sec:
-                        # Fetch raw text
-                        pages = selected_docs[doc_name]['pages']
-                        text_parts = [
-                            pages[p-1]['text'] 
-                            for p in range(sec['start_page'], sec['end_page']+1) 
-                            if 0 < p <= len(pages)
-                        ]
-                        retrieved_chunks.append({
-                            "doc_name": doc_name, 
-                            "section_title": sec['title'],
-                            "start_page": sec['start_page'], 
-                            "end_page": sec['end_page'],
-                            "full_text": "\n".join(text_parts),
-                            "section_id": sec_id,
-                        })
-            # For minimal workability, 1-step deep extraction is highly effective
-            break
-
-        return retrieved_chunks
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# PILLAR 3: Structured Extractor & Citation Validator
-# ───────────────────────────────────────────────────────────────────────────
-
-class UniversalLLMExtractor:
-    """
-    Extracts structured JSON items from raw text chunks.
-    Handles non-standard math formatting (asterisk-wrapped tensors, equation number tags)
-    that standard LaTeX regex misses.
-    """
-    PROMPT = """Extract quantitative data, equations, or mechanisms from the text.
-
-SPECIAL HANDLING for non-standard math:
-- Asterisk-wrapped tensors: *\\sigma_ij* -> capture as tensor notation
-- Equation number tags: (1), (2.3) -> capture with equation
-- Inline math: $...$ or \\(...\\) -> preserve LaTeX
-
-Return a JSON list of objects: 
-{{
-    "item_type": "quantitative|equation|mechanism", 
-    "parameter_name": "...", 
-    "value": number_or_null, 
-    "unit": "...", 
-    "equation_latex": "...", 
-    "context": "exact sentence or phrase from text", 
-    "doc_name": "...", 
-    "page": int,
-    "confidence": "high|medium|low"
-}}.
-
-Text: {text}"""
-
-    def extract(self, chunks: List[Dict], query: str, llm: HybridLLM) -> List[Dict]:
-        """Extract structured items from text chunks."""
-        items = []
-        for chunk in chunks:
-            prompt = self.PROMPT.format(text=chunk['full_text'][:4000])
-            resp = llm.generate(prompt, max_new_tokens=1024, system_prompt="Return ONLY valid JSON list.")
-            parsed = extract_json(resp)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    item['doc_name'] = chunk['doc_name']
-                    item['page'] = chunk['start_page']
-                    item['section_title'] = chunk.get('section_title', '')
-                    items.append(item)
-        return items
-
-
-class CitationValidator:
-    """
-    Cross-checks extracted values against raw page text to prevent hallucinations.
-    The hallucination killer.
-    """
-    def verify(self, items: List[Dict], selected_docs: Dict) -> List[Dict]:
-        """Verify extracted items against raw PDF text."""
-        verified = []
-        for item in items:
-            doc_name = item.get('doc_name')
-            page_num = item.get('page', 1)
-            if doc_name in selected_docs:
-                # Safely get raw text for the page
-                pages = selected_docs[doc_name].get('pages', [])
-                if page_num - 1 < len(pages):
-                    raw_text = pages[page_num - 1].get('text', '').lower()
-                else:
-                    raw_text = ""
-
-                # Verification Logic
-                val_str = str(item.get('value', ''))
-                param = (item.get('parameter_name') or '').lower()
-
-                # Enhanced VALUE_TRIGGERS for unit/parameter detection
-                value_triggers = [
-                    val_str, param,
-                    str(item.get('unit', '')).lower(),
-                    str(item.get('equation_latex', '')).lower(),
-                ]
-
-                # Check if any trigger appears in raw text
-                any_trigger_found = any(t and t in raw_text for t in value_triggers)
-
-                if item.get('value') is not None and val_str in raw_text:
-                    item['confidence'] = 0.95
-                    item['verification_status'] = 'verified_exact'
-                    verified.append(item)
-                elif param and param in raw_text:
-                    item['confidence'] = 0.7
-                    item['verification_status'] = 'verified_param'
-                    verified.append(item)
-                elif any_trigger_found:
-                    item['confidence'] = 0.6
-                    item['verification_status'] = 'verified_trigger'
-                    verified.append(item)
-                elif item.get('item_type') == 'equation' and item.get('equation_latex'):
-                    # Hard to verify LaTeX via raw text, trust LLM with medium confidence
-                    item['confidence'] = 0.8
-                    item['verification_status'] = 'equation_trusted'
-                    verified.append(item)
-                else:
-                    # Hallucination suspected
-                    item['confidence'] = 0.2
-                    item['verification_status'] = 'hallucination_suspected'
-                    verified.append(item)  # Keep it but mark low confidence
-        return sorted(verified, key=lambda x: x.get('confidence', 0), reverse=True)
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# PILLAR 4: Adaptive Synthesizer
-# ───────────────────────────────────────────────────────────────────────────
-
-class AdaptiveResponseGenerator:
-    """
-    Generates strict template-enforced responses based on the Intent Router's classification.
-    Forces the LLM to output strict Markdown tables, LaTeX blocks, or causal chains.
-    """
-    def __init__(self, llm: HybridLLM):
-        self.llm = llm
-
-    def generate(self, query: str, items: List[Dict], intent: str) -> str:
-        """Generate adaptive response based on detected intent."""
-        evidence = "\n".join([
-            f"- [{i.get('doc_name')}, p.{i.get('page')}] {i.get('context', i.get('equation_latex', ''))}"
-            for i in items[:15]
-        ])
-
-        if intent == "value_extraction":
-            prompt = f"""Create a Markdown table of extracted values.
-Query: {query}
-Evidence:
-{evidence}
-
-Columns: | Parameter | Value | Unit | Document | Page | Confidence |
-RULE: Every row MUST be backed by the evidence. Do not invent data.
-Include a summary paragraph after the table explaining the key findings."""
-
-        elif intent == "equation":
-            prompt = f"""State the governing equations in LaTeX format ($$ ... $$).
-Query: {query}
-Evidence:
-{evidence}
-
-RULE: Define all variables immediately below each equation. Cite the document.
-If multiple equations exist, list them in order of relevance."""
-
-        elif intent == "mechanism":
-            prompt = f"""Explain the physical mechanism comprehensively.
-Query: {query}
-Evidence:
-{evidence}
-
-RULE: Use inline citations like [DocName, p.X] for every factual claim.
-Structure as: (1) Cause, (2) Process/Chain, (3) Effect/Outcome.
-Use causal chain arrows (→) where appropriate."""
-
-        elif intent == "comparison":
-            prompt = f"""Provide a structured comparison.
-Query: {query}
-Evidence:
-{evidence}
-
-RULE: Use a side-by-side Markdown comparison table.
-Highlight differences in bold. Cite sources for every data point."""
-
-        elif intent == "methodology":
-            prompt = f"""Describe the methodology or experimental setup.
-Query: {query}
-Evidence:
-{evidence}
-
-RULE: List steps in numbered order. Include parameters, conditions, and equipment.
-Cite the document for each detail."""
-
-        else:  # open_query or fallback
-            prompt = f"""Answer the query comprehensively.
-Query: {query}
-Evidence:
-{evidence}
-
-RULE: Use inline citations like [DocName, p.X] for every factual claim.
-Be thorough but concise. If information is insufficient, state so clearly."""
-
-        return self.llm.generate(prompt, max_new_tokens=1500, system_prompt="You are a scientific analyst. Follow formatting rules strictly.")
-
-    def _format_as_value_comparison(self, items: List[Dict], query: str) -> str:
-        """
-        Narrative-by-material formatter for comparison queries.
-        Groups extracted values by material/parameter and compares across documents.
-        """
-        param_groups = defaultdict(list)
-        for item in items:
-            param = item.get('parameter_name', 'Unknown')
-            param_groups[param].append(item)
-
-        lines = [f"### Value Comparison: {query}", ""]
-        for param, group in sorted(param_groups.items()):
-            lines.append(f"**{param}:**")
-            for item in group:
-                val = item.get('value', 'N/A')
-                unit = item.get('unit', '')
-                doc = item.get('doc_name', 'Unknown')
-                page = item.get('page', '?')
-                conf = item.get('confidence', 0)
-                lines.append(f"  - {val} {unit} [{doc}, p.{page}] (conf: {conf:.2f})")
-            lines.append("")
-
-        return "\n".join(lines)
 
 
 
 # ============================================================================
-# ════════════════════════════════════════════════════════════════════════════
-# CROSS-DOCUMENT META-TREE COMPONENTS (PageIndex-Style JSON Processing)
-# ════════════════════════════════════════════════════════════════════════════
+# LAYOUT-AWARE PDF EXTRACTION (PyMuPDF4LLM)
+# ============================================================================
+# Uses pymupdf4llm to convert PDFs to Markdown with preserved heading
+# hierarchies (#, ##, ###), tables, and reading order. Falls back to
+# standard PyMuPDF text extraction if pymupdf4llm is unavailable.
 # ============================================================================
 
-def _build_tree_from_markdown(md_text: str, doc_id: str = "doc") -> Dict:
+def extract_pages_with_layout(pdf_bytes: bytes, doc_name: str = "unknown") -> List[Dict]:
+    """Extract PDF pages using layout-aware Markdown conversion.
+
+    Tries pymupdf4llm first for rich Markdown output with heading detection,
+    table preservation, and reading-order reconstruction. Falls back to
+    standard PyMuPDF text extraction if unavailable.
     """
-    Parse Markdown headers (#, ##, ###) into a nested JSON tree.
-    Layout-Aware JSON Tree Builder using pymupdf4llm output.
+    # Try pymupdf4llm first
+    try:
+        import pymupdf4llm
+
+        # Write bytes to temp file (pymupdf4llm needs a file path or Document)
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+
+        try:
+            # Use page_chunks=True for per-page metadata + text
+            chunks = pymupdf4llm.to_markdown(tmp_path, page_chunks=True)
+
+            pages = []
+            for chunk in chunks:
+                meta = chunk.get("metadata", {})
+                pages.append({
+                    "page_num": meta.get("page_number", meta.get("page", 0)),
+                    "text": chunk.get("text", ""),
+                    "has_equation": bool(re.search(r'\$\$|\$|\\\[', chunk.get("text", ""))),
+                    "has_table": "|---|" in chunk.get("text", "") or "| " in chunk.get("text", ""),
+                })
+
+            os.unlink(tmp_path)
+            logger.info(f"✓ pymupdf4llm extracted {len(pages)} pages with layout awareness")
+            return pages
+
+        except Exception as e:
+            os.unlink(tmp_path)
+            logger.warning(f"pymupdf4llm failed: {e}. Falling back to standard extraction.")
+
+    except ImportError:
+        logger.info("pymupdf4llm not installed. Using standard PyMuPDF extraction.")
+
+    # Fallback: standard PyMuPDF text extraction
+    return extract_text_from_pdf(pdf_bytes)
+
+
+def build_nested_tree_from_markdown(pages: List[Dict], doc_name: str) -> Dict:
+    """Parse Markdown heading hierarchies (#, ##, ###) into a nested JSON tree.
+
+    This creates the deeply nested structure that JSONMCTSNavigator expects,
+    with parent nodes containing child nodes in a 'nodes' array.
     """
-    lines = md_text.split("\n")
     root = {
-        "node_id": f"{doc_id}_root",
-        "title": "Document Root",
-        "level": 0,
-        "doc_id": doc_id,
-        "nodes": [],
-        "text_lines": [],
-    }
-    stack = [root]
-
-    for line in lines:
-        # Match header lines
-        header_match = re.match(r'^(#{1,6})\s+(.+)$', line.strip())
-        if header_match:
-            hashes, title = header_match.groups()
-            level = len(hashes)
-
-            # Pop stack to find correct parent
-            while len(stack) > 1 and stack[-1]["level"] >= level:
-                stack.pop()
-
-            node = {
-                "node_id": f"{doc_id}_h{level}_{len(stack)}",
-                "title": title.strip(),
-                "level": level,
-                "doc_id": doc_id,
-                "nodes": [],
-                "text_lines": [],
-                "summary": "",  # Will be filled by LLM
-            }
-            stack[-1]["nodes"].append(node)
-            stack.append(node)
-        else:
-            # Add non-header text to current node
-            if line.strip():
-                stack[-1]["text_lines"].append(line)
-
-    # Join text lines for each node
-    def _join_text(node):
-        node["text"] = "\n".join(node["text_lines"])
-        del node["text_lines"]
-        for child in node.get("nodes", []):
-            _join_text(child)
-
-    _join_text(root)
-    return root
-
-
-def find_section_by_keyword(tree: Dict, keyword: str, threshold: float = 0.6) -> Optional[Dict]:
-    """
-    Fuzzy search for a section by keyword in the JSON tree.
-    Returns the best matching node or None.
-    """
-    keyword_lower = keyword.lower()
-    best_match = None
-    best_score = 0.0
-
-    def _search(node, depth=0):
-        nonlocal best_match, best_score
-        title = node.get('title', '').lower()
-
-        # Exact match
-        if keyword_lower in title or title in keyword_lower:
-            score = 1.0
-        elif RAPIDFUZZ_AVAILABLE:
-            from rapidfuzz import fuzz
-            score = fuzz.partial_ratio(keyword_lower, title) / 100.0
-        else:
-            # Simple word overlap
-            kw_words = set(keyword_lower.split())
-            title_words = set(title.split())
-            if kw_words and title_words:
-                score = len(kw_words & title_words) / len(kw_words)
-            else:
-                score = 0.0
-
-        if score > best_score:
-            best_score = score
-            best_match = node
-
-        for child in node.get('nodes', []):
-            _search(child, depth + 1)
-
-    _search(tree)
-    return best_match if best_score >= threshold else None
-
-
-def get_children_from_tree(tree: Dict, node_id: str) -> List[Dict]:
-    """Get children (nodes) of a specific node in the tree."""
-
-    def _search(node):
-        if node.get('node_id') == node_id:
-            return node.get('nodes', [])
-        for child in node.get('nodes', []):
-            found = _search(child)
-            if found is not None:
-                return found
-        return None
-
-    found = _search(tree)
-    return found if found is not None else []
-
-
-def get_full_text_from_tree(tree: Dict, node_id: str) -> Optional[Dict]:
-    """Get full text content of a specific node and all its descendants."""
-
-    def _search(node):
-        if node.get('node_id') == node_id:
-            # Collect all text from this node and descendants
-            texts = [node.get('text', '')]
-            for child in node.get('nodes', []):
-                child_text = _collect_text(child)
-                texts.append(child_text)
-            return {
-                "node_id": node_id,
-                "title": node.get('title', ''),
-                "doc_id": node.get('doc_id', ''),
-                "full_text": "\n\n".join(filter(None, texts)),
-            }
-        for child in node.get('nodes', []):
-            found = _search(child)
-            if found is not None:
-                return found
-        return None
-
-    def _collect_text(node):
-        parts = [node.get('text', '')]
-        for child in node.get('nodes', []):
-            parts.append(_collect_text(child))
-        return "\n\n".join(filter(None, parts))
-
-    return _search(tree)
-
-
-def build_cross_document_meta_tree(query: str, doc_trees: List[Dict], llm: HybridLLM) -> Dict:
-    """
-    Stitches equivalent JSON sections from multiple documents into a single virtual root.
-    PageIndex-style cross-document JSON processing.
-    """
-    # Step 1: Ask LLM what structural category is needed for the query
-    intent_prompt = f"""To answer "{query}", which structural section of a scientific paper is most relevant?
-(e.g., 'Experimental Setup', 'Results', 'Methodology', 'Introduction', 'Conclusion').
-Return ONLY the section name."""
-    target_section = llm.generate(intent_prompt, max_new_tokens=20).strip().strip('"').strip("'")
-
-    # Step 2: Build the Virtual Meta-Root
-    meta_root = {
-        "node_id": "meta_root",
-        "title": f"Cross-Document Meta-Tree: {target_section}",
-        "doc_id": "META",
+        "title": doc_name,
+        "node_id": f"{doc_name}_0000",
+        "start_page": 1,
+        "end_page": len(pages),
+        "summary": f"Document root. {len(pages)} pages.",
+        "doc_id": doc_name,
         "nodes": []
     }
 
-    # Step 3: Search all document JSON trees and stitch matching nodes
-    for tree in doc_trees:
-        doc_id = tree.get('doc_id', 'unknown')
-        matching_node = find_section_by_keyword(tree, target_section)
+    # Track current nodes at each heading level
+    current_h1 = root
+    current_h2 = None
+    current_h3 = None
 
-        if matching_node:
-            meta_root["nodes"].append({
-                "node_id": f"meta_{doc_id}_{matching_node.get('node_id', '')}",
-                "title": f"[{doc_id}] {matching_node.get('title', '')}",
-                "summary": matching_node.get('summary', ''),
-                "doc_id": doc_id,
-                "original_node_id": matching_node.get('node_id', ''),
-                "nodes": matching_node.get('nodes', [])  # Preserve nested children!
+    buffer = []  # Text buffer for current section
+
+    def flush_buffer(target_node, start_page, end_page):
+        """Flush accumulated text into a node's full_text field."""
+        if buffer and target_node:
+            text = "\n".join(buffer).strip()
+            if text:
+                target_node.setdefault("full_text", "")
+                target_node["full_text"] += "\n" + text
+                if not target_node.get("summary"):
+                    target_node["summary"] = text[:200]
+                # Update page range
+                target_node["end_page"] = max(target_node.get("end_page", start_page), end_page)
+
+    for page_data in pages:
+        page_num = page_data["page_num"]
+        md_text = page_data.get("text", "")
+        lines = md_text.split("\n")
+
+        for line in lines:
+            stripped = line.strip()
+
+            if stripped.startswith("### "):
+                # H3: subsection
+                flush_buffer(current_h3 or current_h2 or current_h1, page_num, page_num)
+                buffer = []
+                current_h3 = {
+                    "title": stripped[4:].strip(),
+                    "node_id": f"{doc_name}_h3_{len(root['nodes'])}_{len(current_h1.get('nodes', []))}_{len(current_h2.get('nodes', [])) if current_h2 else 0}",
+                    "start_page": page_num,
+                    "end_page": page_num,
+                    "summary": "",
+                    "doc_id": doc_name,
+                    "nodes": []
+                }
+                if current_h2:
+                    current_h2.setdefault("nodes", []).append(current_h3)
+                else:
+                    current_h1.setdefault("nodes", []).append(current_h3)
+
+            elif stripped.startswith("## "):
+                # H2: section
+                flush_buffer(current_h3 or current_h2 or current_h1, page_num, page_num)
+                buffer = []
+                current_h3 = None
+                current_h2 = {
+                    "title": stripped[3:].strip(),
+                    "node_id": f"{doc_name}_h2_{len(root['nodes'])}",
+                    "start_page": page_num,
+                    "end_page": page_num,
+                    "summary": "",
+                    "doc_id": doc_name,
+                    "nodes": []
+                }
+                current_h1.setdefault("nodes", []).append(current_h2)
+
+            elif stripped.startswith("# "):
+                # H1: major section
+                flush_buffer(current_h3 or current_h2 or current_h1, page_num, page_num)
+                buffer = []
+                current_h3 = None
+                current_h2 = None
+                current_h1 = {
+                    "title": stripped[2:].strip(),
+                    "node_id": f"{doc_name}_h1_{len(root['nodes'])}",
+                    "start_page": page_num,
+                    "end_page": page_num,
+                    "summary": "",
+                    "doc_id": doc_name,
+                    "nodes": []
+                }
+                root["nodes"].append(current_h1)
+
+            else:
+                buffer.append(line)
+
+        # End of page: flush remaining buffer
+        flush_buffer(current_h3 or current_h2 or current_h1, page_num, page_num)
+
+    # If no headings were found, create page-level nodes
+    if not root["nodes"]:
+        for i, page_data in enumerate(pages):
+            root["nodes"].append({
+                "title": f"Page {page_data['page_num']}",
+                "node_id": f"{doc_name}_p{i+1:04d}",
+                "start_page": page_data["page_num"],
+                "end_page": page_data["page_num"],
+                "summary": page_data["text"][:150],
+                "full_text": page_data["text"],
+                "doc_id": doc_name,
+                "nodes": []
             })
 
-    return meta_root
+    return root
 
 
-class JSONMCTSNavigator:
-    """
-    JSON-Action MCTS Navigator.
-    Instead of asking the LLM to "pick IDs from a list", feed it the raw JSON Meta-Tree
-    and force it to output JSON navigation actions, exactly like PageIndex's internal agent.
-    """
-    def __init__(self, llm: HybridLLM, max_steps: int = 3, max_nodes_per_step: int = 25):
-        self.llm = llm
-        self.max_steps = max_steps
-        self.max_nodes_per_step = max_nodes_per_step
+def build_nested_json_tree(pages_text, doc_name, llm):
+    """Uses LLM to build a deeply nested JSON tree of sections from page text."""
+    full_text_sample = "\n".join([f"<page_{p['page_num']}>\n{p['text']}\n</page_{p['page_num']}>" for p in pages_text[:8]])
 
-    def navigate(self, query: str, meta_tree: Dict) -> List[Dict]:
-        """Agentic navigation: LLM iteratively decides drill_down vs extract_text via JSON."""
-        current_nodes = meta_tree.get("nodes", [])
-        final_chunks = []
+    prompt = f"""You are an expert document parser. Analyze the text and extract the hierarchical section structure.
+    Return a strictly valid JSON object representing a tree:
+    {{
+      "title": "{doc_name}",
+      "node_id": "0000",
+      "start_page": 1,
+      "end_page": {len(pages_text)},
+      "summary": "Brief 1-sentence summary of the whole document.",
+      "nodes": [
+        {{
+          "title": "1. Introduction",
+          "node_id": "0001",
+          "start_page": 1,
+          "end_page": 2,
+          "summary": "Brief summary of this section.",
+          "nodes": [
+             {{"title": "1.1 Background", "node_id": "0001_01", "start_page": 1, "end_page": 1, "summary": "...", "nodes": []}}
+          ]
+        }}
+      ]
+    }}
+    Rules:
+    - Assign logical start_page and end_page for each section.
+    - Keep summaries under 150 characters.
+    - If a section has subsections, nest them in the "nodes" array.
+    - Return ONLY valid JSON. No markdown fences.
 
-        for step in range(self.max_steps):
-            if not current_nodes: 
-                break
+    Text:
+    {full_text_sample[:6000]}"""
 
-            # Cap nodes to prevent context overflow
-            nodes_to_show = current_nodes[:self.max_nodes_per_step]
-            if len(current_nodes) > self.max_nodes_per_step:
-                logger.info(f"[JSONMCTS] Capped nodes from {len(current_nodes)} to {self.max_nodes_per_step}")
-
-            # Format the current JSON nodes for the LLM
-            nodes_summary = json.dumps([{
-                "node_id": n['node_id'], 
-                "doc_id": n['doc_id'],
-                "title": n['title'], 
-                "summary": n.get('summary', '')[:150]
-            } for n in nodes_to_show], indent=2)
-
-            prompt = f"""You are an expert scientific navigator. Step {step+1}.
-QUERY: "{query}"
-CURRENT JSON NODES:
-{nodes_summary}
-
-INSTRUCTIONS:
-1. If a node's summary contains the answer, choose "extract_text".
-2. If a node is a parent section and you need more detail, choose "drill_down".
-
-Return JSON: {{"reasoning": "...", "actions": [{{"node_id": "...", "action": "drill_down|extract_text"}}]}}"""
-
-            response = self.llm.generate(prompt, max_new_tokens=512, system_prompt="Return ONLY valid JSON.")
-            actions_data = extract_json(response)
-
-            if not actions_data:
-                break
-
-            actions = actions_data.get('actions', [])
-
-            if not actions: 
-                break
-
-            next_level_nodes = []
-            for action in actions:
-                node_id = action.get('node_id')
-                if action.get('action') == 'drill_down':
-                    # Fetch children from the JSON tree (FIXED: "nodes" not "children")
-                    children = get_children_from_tree(meta_tree, node_id)
-                    next_level_nodes.extend(children)
-                elif action.get('action') == 'extract_text':
-                    # Fetch full text and stop drilling this branch
-                    chunk = get_full_text_from_tree(meta_tree, node_id)
-                    if chunk: 
-                        final_chunks.append(chunk)
-
-            current_nodes = next_level_nodes
-
-        return final_chunks
+    resp = llm.generate(prompt, max_new_tokens=2048, system_prompt="Return ONLY valid JSON.")
+    tree = extract_json(resp)
+    if not tree or not isinstance(tree, dict):
+        # Fallback to flat tree if LLM fails JSON parsing
+        tree = {
+            "title": doc_name, "node_id": "0000", "start_page": 1, "end_page": len(pages_text),
+            "summary": "Document root.", "nodes": []
+        }
+        for i, p in enumerate(pages_text):
+            tree["nodes"].append({
+                "title": f"Page {p['page_num']}", "node_id": f"{i+1:04d}",
+                "start_page": p['page_num'], "end_page": p['page_num'],
+                "summary": p['text'][:150], "nodes": []
+            })
+    return tree
 
 
+def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
+    """Phase 1: Builds NESTED hierarchical JSON tree indices for multiple PDFs."""
+    documents = {}
+    total_files = len(uploaded_files)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-# ============================================================================
-# ════════════════════════════════════════════════════════════════════════════
-# UNIFIED PIPELINE: advanced_retrieve_and_answer
-# ════════════════════════════════════════════════════════════════════════════
-# ============================================================================
+    for idx, uploaded_file in enumerate(uploaded_files):
+        doc_name = os.path.splitext(uploaded_file.name)[0]
+        if doc_name in documents: 
+            doc_name = f"{doc_name}_{idx+1}"
+        status_text.info(f"Processing ({idx+1}/{total_files}): {uploaded_file.name}...")
+        pdf_bytes = uploaded_file.read()
 
-def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM,
-                                 use_meta_tree: bool = False, doc_trees: List[Dict] = None,
-                                 max_context_chars: int = 15000):
-    """
-    The DECLARMIMA v20.1 Minimal Pipeline.
-    Integrates all 4 pillars + optional Meta-Tree navigation.
-    """
-    # 1. Route Intent
-    router = ScientificIntentRouter()
-    intent_data = router.route(query)
+        # Use layout-aware extraction with pymupdf4llm fallback
+        pages_text = extract_pages_with_layout(pdf_bytes, doc_name)
 
-    # 2. Navigation (choose between flat MCTS or Meta-Tree JSON MCTS)
-    if use_meta_tree and doc_trees:
-        # PageIndex-style hierarchical JSON navigation
-        meta_tree = build_cross_document_meta_tree(query, doc_trees, llm)
-        navigator = JSONMCTSNavigator(llm, max_steps=3, max_nodes_per_step=25)
-        retrieved_chunks = navigator.navigate(query, meta_tree)
-        trace = ["[Meta-Tree] Used cross-document JSON hierarchical navigation."]
-    else:
-        # Flat section MCTS navigation
-        navigator = IterativeTreeNavigator(llm, max_steps=2, max_nodes_per_step=30)
-        retrieved_chunks = navigator.navigate(query, selected_docs)
-        trace = navigator.trace
+        # BUILD NESTED TREE
+        tree = build_nested_json_tree(pages_text, doc_name, llm)
+        tree['doc_id'] = doc_name  # Inject doc_id for meta-tree stitching
 
-    if not retrieved_chunks:
-        return (
-            "I could not find relevant sections in the selected documents.", 
-            "No sections matched.", 
-            [],
-            intent_data
-        )
+        documents[doc_name] = {
+            'pages': pages_text,
+            'tree': tree,  # NESTED TREE REPLACES FLAT SECTIONS
+            'filename': uploaded_file.name,
+            'pdf_bytes': pdf_bytes
+        }
+        progress_bar.progress((idx + 1) / total_files)
 
-    # 3. Structured Extraction
-    extractor = UniversalLLMExtractor()
-    raw_items = extractor.extract(retrieved_chunks, query, llm)
-
-    # 4. Citation Validation
-    validator = CitationValidator()
-    verified_items = validator.verify(raw_items, selected_docs)
-
-    # Filter out severe hallucinations (confidence > 0.5)
-    verified_items = [i for i in verified_items if i.get('confidence', 0) > 0.5]
-
-    # 5. Adaptive Synthesis
-    generator = AdaptiveResponseGenerator(llm)
-    answer = generator.generate(query, verified_items, intent_data['intent'])
-
-    return answer, "\n".join(trace), verified_items, intent_data
-
-
-# ============================================================================
-# LEGACY FALLBACK: agentic_retrieve_and_answer (preserved for compatibility)
-# ============================================================================
+    progress_bar.empty()
+    status_text.empty()
+    return documents
 
 def agentic_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM, 
                                 max_context_chars: int = 15000):
     """
     Phase 2 & 3: Agentic Multi-Document Tree Search and Answer Generation.
-    Legacy single-shot approach - preserved for backward compatibility.
     """
 
     # 1. Build the "Forest" Description
@@ -1256,13 +831,13 @@ def agentic_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM,
     # 2. Agentic Navigation - LLM decides which sections are relevant
     search_prompt = f"""You are a research assistant. Given a query and a forest of document structures, identify which sections across the documents are most likely to contain the answer.
 
-Query: {query}
+    Query: {query}
 
-Document Structures:
-{tree_text}
+    Document Structures:
+    {tree_text}
 
-Return a JSON object: {{"thinking": "your step-by-step reasoning", "relevant_ids": ["doc_name:::sec_id1", "doc_name:::sec_id2"]}}.
-If no sections are relevant, return an empty list for relevant_ids."""
+    Return a JSON object: {{"thinking": "your step-by-step reasoning", "relevant_ids": ["doc_name:::sec_id1", "doc_name:::sec_id2"]}}.
+    If no sections are relevant, return an empty list for relevant_ids."""
 
     system = "You are a precise navigation agent. Return ONLY valid JSON."
     search_response = llm.generate(search_prompt, max_new_tokens=1024, system_prompt=system)
@@ -1309,13 +884,13 @@ If no sections are relevant, return an empty list for relevant_ids."""
 
     # 4. Generate Answer using the same LLM
     answer_prompt = f"""Answer the user's query based ONLY on the provided document context.
-If the answer is not in the context, say "I don't know based on the provided documents."
-Cite the document name and section title when possible.
-Be concise but thorough. If there are numbers or specific data points, include them.
+    If the answer is not in the context, say "I don't know based on the provided documents."
+    Cite the document name and section title when possible.
+    Be concise but thorough. If there are numbers or specific data points, include them.
 
-Query: {query}
-Context:
-{context}"""
+    Query: {query}
+    Context:
+    {context}"""
 
     system = "You are a helpful document QA assistant. Be concise, accurate, and cite sources."
     answer = llm.generate(answer_prompt, max_new_tokens=2048, temperature=0.1, system_prompt=system)
@@ -1324,223 +899,396 @@ Context:
 
 
 # ============================================================================
-# VECTORLESS RAG CORE: Document Indexing
+# 4 ARCHITECTURAL PILLARS FOR PAGEINDEX-LEVEL INTELLIGENCE
+# ============================================================================
+# These classes elevate the short code to DECLARMIMA v20.0-level intelligence
+# by adding: Intent Routing, Iterative MCTS Navigation, Structured Extraction
+# with Citation Validation, and Adaptive Response Generation.
 # ============================================================================
 
-def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5,
-                       build_json_trees: bool = False):
-    """
-    Phase 1: Builds hierarchical tree indices for multiple PDFs.
-    Optionally builds nested JSON trees using pymupdf4llm.
-    """
-    documents = {}
-    doc_trees = []
-    total_files = len(uploaded_files)
-    progress_bar = st.progress(0)
-    status_text = st.empty()
 
-    for idx, uploaded_file in enumerate(uploaded_files):
-        doc_name = os.path.splitext(uploaded_file.name)[0]
-        # Handle duplicate filenames
-        if doc_name in documents:
-            doc_name = f"{doc_name}_{idx+1}"
+# ============================================================================
+# 4 ARCHITECTURAL PILLARS FOR PAGEINDEX-LEVEL INTELLIGENCE
+# ============================================================================
 
-        status_text.info(f"Processing ({idx+1}/{total_files}): {uploaded_file.name}...")
+class ScientificIntentRouter:
+    """Lightweight intent classifier using regex triggers."""
+    PATTERNS = {
+        "value_extraction": [r"\bvalue\b", r"\bhow much\b", r"\b\d+\s*(?:W|kW|MPa|mm/s|GPa)\b", r"\btable\b", r"\blist\b"],
+        "equation": [r"\bequation\b", r"\bformula\b", r"\bconstitutive\b", r"\bnavier[- ]stokes\b", r"\bcahn[- ]hilliard\b"],
+        "mechanism": [r"\bwhy\b", r"\bhow does\b", r"\bmechanism\b", r"\bcause\b", r"\bdriving force\b"],
+    }
 
-        pdf_bytes = uploaded_file.read()
+    def route(self, query: str) -> Dict[str, str]:
+        q_lower = query.lower()
+        for intent, patterns in self.PATTERNS.items():
+            if any(re.search(p, q_lower) for p in patterns):
+                return {"intent": intent, "output_format": intent}
+        return {"intent": "open_query", "output_format": "prose"}
 
-        # Use the safe extraction function
-        pages_text = extract_text_from_pdf(pdf_bytes)
 
-        # Optional: Build nested JSON tree from Markdown (if pymupdf4llm available)
-        json_tree = None
-        if build_json_trees and GLOBAL_DEPS.get('pymupdf4llm'):
-            try:
-                import pymupdf4llm
-                # Save to temp file for pymupdf4llm
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                    tmp.write(pdf_bytes)
-                    tmp_path = tmp.name
+class IterativeTreeNavigator:
+    """Simulates PageIndex MCTS navigation using the short code's flat sections."""
+    def __init__(self, llm: HybridLLM, max_steps: int = 2):
+        self.llm = llm
+        self.max_steps = max_steps
+        self.trace = []
 
-                md_text = pymupdf4llm.to_markdown(tmp_path)
-                json_tree = _build_tree_from_markdown(md_text, doc_id=doc_name)
-                json_tree['doc_id'] = doc_name
+    def navigate(self, query: str, selected_docs: Dict) -> List[Dict]:
+        retrieved_chunks = []
 
-                # Generate summaries for tree nodes using LLM
-                def _summarize_nodes(node):
-                    text = node.get('text', '')
-                    if text and len(text) > 50:
-                        prompt = f"Summarize this section in 1-2 sentences:\n{text[:2000]}"
-                        summary = llm.generate(prompt, max_new_tokens=128, temperature=0.1)
-                        node['summary'] = summary.strip()
-                    for child in node.get('nodes', []):
-                        _summarize_nodes(child)
+        # Step 1: Build the "Forest" of summaries
+        forest_desc = []
+        for doc_name, data in selected_docs.items():
+            for s in data['sections']:
+                forest_desc.append(f"ID: {doc_name}:::{s['id']} | Title: {s['title']} | Pages: {s['start_page']}-{s['end_page']} | Summary: {s['summary'][:150]}")
 
-                _summarize_nodes(json_tree)
-                doc_trees.append(json_tree)
-                os.unlink(tmp_path)
-            except Exception as e:
-                logger.warning(f"JSON tree build failed for {doc_name}: {e}")
+        # Step 2: Agentic Drill-Down
+        current_nodes_text = "\n".join(forest_desc)
+        for step in range(self.max_steps):
+            prompt = f"""You are a scientific navigator. Query: "{query}"
+            Available Sections:
+            {current_nodes_text}
 
-        # 1. Extract Sections using LLM (Chunked to fit context windows)
-        sections = []
-        for i in range(0, len(pages_text), chunk_size):
-            chunk = pages_text[i:i+chunk_size]
-            text_with_tags = "\n".join([
-                f"<page_{p['page_num']}>\n{p['text']}\n</page_{p['page_num']}>" 
-                for p in chunk
-            ])
+            Return JSON: {{"reasoning": "...", "actions": [{{"id": "doc:::sec_id", "action": "extract_text"}}]}}.
+            ONLY select sections that definitively contain the answer. Max 3 actions."""
 
-            prompt = f"""Analyze the document text and extract main section headings and their starting page numbers.
-Return a JSON list of objects: {{"title": "Section Title", "start_page": page_number}}.
-Ignore headers/footers. Only include actual content sections.
+            resp = self.llm.generate(prompt, max_new_tokens=512, system_prompt="Return ONLY valid JSON.")
+            actions_data = extract_json(resp)
 
-Text:
-{text_with_tags}"""
+            if not actions_data or 'actions' not in actions_data:
+                break
 
-            system = "You are an expert document analyzer. Return ONLY a valid JSON list."
-            response = llm.generate(prompt, max_new_tokens=1024, system_prompt=system)
-            parsed = extract_json(response)
+            self.trace.append(actions_data.get('reasoning', ''))
 
-            if parsed and isinstance(parsed, list):
+            for action in actions_data['actions']:
+                ns_id = action.get('id')
+                if ":::" not in ns_id: 
+                    continue
+                doc_name, sec_id = ns_id.split(":::", 1)
+
+                if doc_name in selected_docs:
+                    sec = next((s for s in selected_docs[doc_name]['sections'] if s['id'] == sec_id), None)
+                    if sec:
+                        # Fetch raw text
+                        pages = selected_docs[doc_name]['pages']
+                        text_parts = [pages[p-1]['text'] for p in range(sec['start_page'], sec['end_page']+1) if 0 < p <= len(pages)]
+                        retrieved_chunks.append({
+                            "doc_name": doc_name, "section_title": sec['title'],
+                            "start_page": sec['start_page'], "end_page": sec['end_page'],
+                            "full_text": "\n".join(text_parts)
+                        })
+            break # For minimal workability, 1-step deep extraction is highly effective
+
+        return retrieved_chunks
+
+
+class UniversalLLMExtractor:
+    """Extracts structured JSON items from raw text chunks."""
+    PROMPT = """Extract quantitative data, equations, or mechanisms from the text.
+    Return a JSON list of objects: {{"item_type": "quantitative|equation|mechanism", "parameter_name": "...", "value": number_or_null, "unit": "...", "equation_latex": "...", "context": "exact sentence", "doc_name": "...", "page": int}}.
+    Text: {text}"""
+
+    def __init__(self, llm: HybridLLM):
+        self.llm = llm
+
+    def extract(self, chunks: List[Dict], query: str) -> List[Dict]:
+        items = []
+        for chunk in chunks:
+            prompt = self.PROMPT.format(text=chunk['full_text'][:4000])
+            resp = self.llm.generate(prompt, max_new_tokens=1024, system_prompt="Return ONLY valid JSON list.")
+            parsed = extract_json(resp)
+            if isinstance(parsed, list):
                 for item in parsed:
-                    if 'title' in item and 'start_page' in item:
-                        sections.append(item)
+                    item['doc_name'] = chunk['doc_name']
+                    item['page'] = chunk['start_page']
+                    items.append(item)
+        return items
 
-        # 2. Determine End Pages and Build Flat Tree
-        sections.sort(key=lambda x: x['start_page'])
-        for i in range(len(sections)):
-            sections[i]['end_page'] = sections[i+1]['start_page'] - 1 if i + 1 < len(sections) else len(pages_text)
-            sections[i]['id'] = f"sec_{i+1:03d}"
 
-        # 3. Generate Summaries for each node using LLM
-        for i, sec in enumerate(sections):
-            start_idx = sec['start_page'] - 1
-            end_idx = sec['end_page']
-            section_text = "\n".join([p['text'] for p in pages_text[start_idx:end_idx]])
+class CitationValidator:
+    """Cross-checks extracted values against raw page text to prevent hallucinations."""
+    def verify(self, items: List[Dict], selected_docs: Dict) -> List[Dict]:
+        verified = []
+        for item in items:
+            doc_name = item.get('doc_name')
+            page_num = item.get('page', 1)
+            if doc_name in selected_docs:
+                raw_text = selected_docs[doc_name]['pages'][page_num-1]['text'].lower()
 
-            # Limit text length for summary to avoid context overflow
-            if len(section_text) > 4000:
-                section_text = section_text[:4000] + "..."
+                # Verification Logic
+                val_str = str(item.get('value', ''))
+                param = (item.get('parameter_name') or '').lower()
 
-            prompt = f"Summarize the following text in 2-3 concise sentences, focusing on key facts, numbers, and findings:\n\n{section_text}"
-            system = "You are a helpful scientific summarizer. Be concise and factual."
-            summary = llm.generate(prompt, max_new_tokens=256, system_prompt=system)
-            sec['summary'] = summary.strip()
+                if item.get('value') is not None and val_str in raw_text:
+                    item['confidence'] = 0.95
+                    verified.append(item)
+                elif param and param in raw_text:
+                    item['confidence'] = 0.7
+                    verified.append(item)
+                elif item.get('item_type') == 'equation' and item.get('equation_latex'):
+                    item['confidence'] = 0.8 # Hard to verify LaTeX via raw text, trust LLM
+                    verified.append(item)
+                else:
+                    item['confidence'] = 0.2 # Hallucination suspected
+                    verified.append(item) # Keep it but mark low confidence
+        return sorted(verified, key=lambda x: x.get('confidence', 0), reverse=True)
 
-        documents[doc_name] = {
-            'pages': pages_text, 
-            'sections': sections, 
-            'filename': uploaded_file.name,
-            'pdf_bytes': pdf_bytes,
-            'json_tree': json_tree,
-        }
-        progress_bar.progress((idx + 1) / total_files)
 
-    progress_bar.empty()
-    status_text.empty()
-    return documents, doc_trees
+class AdaptiveResponseGenerator:
+    """Generates strict template-enforced responses based on intent.
+    Forces PageIndex-style "Group by Material/Alloy" structure for cross-document synthesis."""
+    def __init__(self, llm: HybridLLM):
+        self.llm = llm
 
+    def generate(self, query: str, items: List[Dict], intent: str) -> str:
+        evidence = "\n".join([f"- [{i.get('doc_name')}, p.{i.get('page')}] {i.get('context', i.get('equation_latex', ''))}" for i in items[:20]])
+
+        if intent == "value_extraction":
+            prompt = f"""You are an expert scientific analyst. Synthesize the extracted data into a comprehensive report grouped by Material/Alloy.
+            Query: {query}
+            Evidence: {evidence}
+
+            REQUIRED OUTPUT STRUCTURE:
+            ### [Parameter Name] — by Material/Alloy
+            1. [Material/Alloy Name] ([Process, e.g., LPBF, SLM])
+            - **Values Tested:** [List the specific values, e.g., 250 W and 350 W]
+            - **Outcomes & Context:** [Describe what happened at these values. Be specific with numbers.]
+            - **Key Finding:** [State the optimal value or main conclusion]
+            - **Citation:** [{items[0].get('doc_name') if items else 'Doc'}, p.{items[0].get('page') if items else '?'}]
+
+            ### Summary Table
+            | Material / Alloy | Process | Parameter (Unit) | Optimal Value |
+
+            ### Key Takeaway
+            [2-3 sentences synthesizing the macro-trend across all materials.]
+
+            RULES:
+            - EVERY factual claim MUST be backed by the evidence. Do not invent data.
+            - Use the exact heading names provided above."""
+
+        elif intent == "equation":
+            prompt = f"""State the governing equations in LaTeX format ($$ ... $$).
+            Query: {query}
+            Evidence: {evidence}
+            RULE: Define all variables immediately below the equation. Cite the document."""
+
+        else:  # mechanism or open_query
+            prompt = f"""Answer the query comprehensively.
+            Query: {query}
+            Evidence: {evidence}
+            RULE: Use inline citations like [DocName, p.X] for every factual claim. Explain the physical mechanism."""
+
+        return self.llm.generate(prompt, max_new_tokens=2048, system_prompt="You are a scientific analyst. Follow formatting rules strictly.")
 
 
 # ============================================================================
-# STREAMLIT UI
+# ADVANCED RETRIEVAL PIPELINE (DECLARMIMA-STYLE)
 # ============================================================================
 
-def render_sidebar():
-    """Render the sidebar with model selection and configuration."""
-    with st.sidebar:
-        st.markdown("### ⚙️ Configuration")
+def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM):
+    """The DECLARMIMA v20.0 Minimal Pipeline with Multi-Hop Cross-Document Reasoning.
 
-        # Model selection
-        model_keys = list(LOCAL_LLM_OPTIONS.keys())
-        if "llm_model_choice" not in st.session_state:
-            st.session_state.llm_model_choice = model_keys[2]  # Default: qwen2.5:7b
+    Pipeline:
+    1. Route Intent
+    2. Build Cross-Document Meta-Tree
+    3. Multi-Hop MCTS Navigation
+    4. Structured Extraction
+    5. Citation Validation
+    6. Adaptive Synthesis
+    """
+    # 1. Route Intent
+    router = ScientificIntentRouter()
+    intent_data = router.route(query)
 
-        selected = st.selectbox(
-            "Select LLM Model",
-            options=model_keys,
-            index=model_keys.index(st.session_state.llm_model_choice),
-            key="llm_model_select",
-            help="Choose between Ollama (fast, local API) or HuggingFace Transformers (local loading, requires more RAM/VRAM)"
-        )
-        st.session_state.llm_model_choice = selected
+    # 2. Build Cross-Document Meta-Tree
+    doc_trees = [data['tree'] for data in selected_docs.values()]
+    meta_tree = build_cross_document_meta_tree(query, doc_trees, llm)
 
-        # Show backend info
-        model_key = LOCAL_LLM_OPTIONS[selected]
-        if model_key.startswith("ollama:"):
-            st.caption("🟢 Backend: Ollama (API)")
-            st.caption(f"Model: `{model_key.replace('ollama:', '')}`")
-        else:
-            st.caption("🔵 Backend: Transformers (Local)")
-            st.caption(f"Model: `{model_key}`")
+    # 3. Multi-Hop MCTS Navigation
+    navigator = JSONMCTSNavigator(llm, selected_docs, max_steps=3)
+    retrieved_chunks = navigator.navigate(query, meta_tree)
 
-        # 4-bit quantization toggle (only for transformers)
-        if not model_key.startswith("ollama:"):
-            st.checkbox("Use 4-bit quantization (saves VRAM)", value=True, key="use_4bit")
-            if TORCH_AVAILABLE and torch.cuda.is_available():
-                st.caption(f"GPU: {torch.cuda.get_device_name(0)}")
-            else:
-                st.warning("⚠️ No GPU detected. Local model will run on CPU (slow).")
-        else:
-            st.session_state.use_4bit = False
+    if not retrieved_chunks:
+        return "I could not find relevant sections in the selected documents.", "No sections matched.", []
 
-        st.markdown("---")
-        st.markdown("#### 📊 System Status")
+    # 4. Structured Extraction
+    extractor = UniversalLLMExtractor(llm)
+    raw_items = extractor.extract(retrieved_chunks, query)
 
-        # Show dependency status
-        cols = st.columns(2)
-        with cols[0]:
-            st.markdown(f"{'✅' if OLLAMA_AVAILABLE else '❌'} Ollama")
-        with cols[1]:
-            st.markdown(f"{'✅' if TRANSFORMERS_AVAILABLE else '❌'} Transformers")
-        cols2 = st.columns(2)
-        with cols2[0]:
-            st.markdown(f"{'✅' if TORCH_AVAILABLE else '❌'} PyTorch")
-        with cols2[1]:
-            st.markdown(f"{'✅' if PYMUPDF_AVAILABLE else '❌'} PyMuPDF")
-        cols3 = st.columns(2)
-        with cols3[0]:
-            st.markdown(f"{'✅' if GLOBAL_DEPS.get('pymupdf4llm') else '❌'} pymupdf4llm")
-        with cols3[1]:
-            st.markdown(f"{'✅' if RAPIDFUZZ_AVAILABLE else '❌'} rapidfuzz")
+    # 5. Citation Validation
+    validator = CitationValidator()
+    verified_items = validator.verify(raw_items, selected_docs)
+    verified_items = [i for i in verified_items if i.get('confidence', 0) > 0.5]
 
-        st.markdown("---")
+    # 6. Adaptive Synthesis
+    generator = AdaptiveResponseGenerator(llm)
+    answer = generator.generate(query, verified_items, intent_data['intent'])
 
-        # Advanced settings
-        with st.expander("Advanced Settings", expanded=False):
-            st.slider("Max context chars", 5000, 30000, 15000, 1000, 
-                     key="max_context_chars",
-                     help="Maximum characters to send to LLM as context")
-            st.slider("Chunk size (pages)", 1, 10, 5, 1,
-                     key="chunk_size",
-                     help="Pages per chunk for section extraction")
-            st.checkbox("Use Meta-Tree JSON navigation", value=False, key="use_meta_tree",
-                       help="Enable PageIndex-style hierarchical JSON tree navigation (requires pymupdf4llm)")
-            st.checkbox("Build JSON trees during indexing", value=False, key="build_json_trees",
-                       help="Build nested Markdown header trees during document indexing")
+    return answer, "\n".join(navigator.trace), verified_items
 
-        st.markdown("---")
+def build_cross_document_meta_tree(query: str, doc_trees: List[Dict], llm: HybridLLM) -> Dict:
+    """Stitches equivalent JSON sections from multiple documents into a single virtual root."""
+    # Step 1: Ask LLM what structural category is needed for the query
+    intent_prompt = f"""To answer "{query}", which structural section of a scientific paper is most relevant?
+    (e.g., 'Experimental Setup', 'Results', 'Methodology'). Return ONLY the section name."""
+    target_section = llm.generate(intent_prompt, max_new_tokens=20).strip().strip('"')
 
-        if st.button("🗑️ Clear Cache & Reset", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
+    # Step 2: Build the Virtual Meta-Root
+    meta_root = {
+        "node_id": "meta_root",
+        "title": f"Cross-Document Meta-Tree: {target_section}",
+        "doc_id": "META",
+        "nodes": []
+    }
 
+    # Step 3: Search all document JSON trees and stitch matching nodes
+    for tree in doc_trees:
+        doc_id = tree.get('doc_id', 'unknown')
+        matching_node = _find_section_by_keyword(tree, target_section)
+
+        if matching_node:
+            meta_root["nodes"].append({
+                "node_id": f"meta_{doc_id}_{matching_node.get('node_id', '')}",
+                "title": f"[{doc_id}] {matching_node.get('title', '')}",
+                "summary": matching_node.get('summary', ''),
+                "doc_id": doc_id,
+                "original_node_id": matching_node.get('node_id', ''),
+                "nodes": matching_node.get('nodes', []) # Preserve nested children!
+            })
+
+    return meta_root
+
+
+def _find_section_by_keyword(tree: Dict, keyword: str) -> Optional[Dict]:
+    """Recursively finds a node whose title matches the keyword."""
+    def search(node):
+        if keyword.lower() in node.get('title', '').lower():
+            return node
+        for child in node.get('nodes', []):
+            res = search(child)
+            if res: 
+                return res
+        return None
+    return search(tree)
+
+
+class JSONMCTSNavigator:
+    """PageIndex-style JSON-action MCTS navigator for cross-document meta-trees.
+    Supports true multi-hop navigation with raw PDF text fetching."""
+    def __init__(self, llm: HybridLLM, selected_docs: Dict, max_steps: int = 3):
+        self.llm = llm
+        self.selected_docs = selected_docs  # Needed to fetch raw PDF text
+        self.max_steps = max_steps
+        self.trace = []
+
+    def navigate(self, query: str, meta_tree: Dict) -> List[Dict]:
+        """Agentic navigation: LLM iteratively decides drill_down vs extract_text via JSON."""
+        current_nodes = meta_tree.get("nodes", [])
+        final_chunks = []
+
+        for step in range(self.max_steps):
+            if not current_nodes: 
+                break
+
+            # Format the current JSON nodes for the LLM
+            nodes_summary = json.dumps([{
+                "node_id": n['node_id'], "doc_id": n['doc_id'],
+                "title": n['title'], "summary": n.get('summary', '')[:150]
+            } for n in current_nodes], indent=2)
+
+            prompt = f"""You are an expert scientific navigator. Step {step+1}.
+            QUERY: "{query}"
+            CURRENT JSON NODES:
+            {nodes_summary}
+
+            INSTRUCTIONS:
+            1. If a node's summary contains the answer or specific data, choose "extract_text".
+            2. If a node is a parent section and you need more detail, choose "drill_down".
+            3. You MUST select nodes from MULTIPLE documents if the query asks for cross-document comparison.
+
+            Return JSON: {{"reasoning": "...", "actions": [{{"node_id": "...", "action": "drill_down|extract_text"}}]}}"""
+
+            response = self.llm.generate(prompt, max_new_tokens=1024, system_prompt="Return ONLY valid JSON.")
+            actions_data = extract_json(response)
+            if not actions_data: 
+                break
+            actions = actions_data.get('actions', [])
+            self.trace.append(actions_data.get('reasoning', ''))
+
+            if not actions: 
+                break
+
+            next_level_nodes = []
+            for action in actions:
+                node_id = action.get('node_id')
+                if action.get('action') == 'drill_down':
+                    # Fetch children from the JSON tree
+                    children = _get_children_from_tree(meta_tree, node_id)
+                    next_level_nodes.extend(children)
+                elif action.get('action') == 'extract_text':
+                    # Fetch full text and stop drilling this branch
+                    chunk = self._get_full_text_from_tree(meta_tree, node_id)
+                    if chunk: 
+                        final_chunks.append(chunk)
+
+            current_nodes = next_level_nodes
+
+        return final_chunks
+
+    def _get_full_text_from_tree(self, tree: Dict, node_id: str) -> Optional[Dict]:
+        """Recursively find a node and return its RAW PDF text chunk."""
+        def search(node):
+            if node.get('node_id') == node_id:
+                doc_id = node.get('doc_id', 'unknown')
+                start_p = node.get('start_page', 1)
+                end_p = node.get('end_page', start_p)
+
+                # Fetch RAW text from the actual PDF pages
+                raw_text = ""
+                if doc_id in self.selected_docs:
+                    pages = self.selected_docs[doc_id]['pages']
+                    text_parts = [pages[p-1]['text'] for p in range(start_p, end_p+1) if 0 < p <= len(pages)]
+                    raw_text = "\n".join(text_parts)
+                else:
+                    raw_text = node.get('summary', '')  # Fallback
+
+                return {
+                    "doc_name": doc_id, "section_title": node.get('title', ''),
+                    "start_page": start_p, "end_page": end_p, "full_text": raw_text
+                }
+            for child in node.get('nodes', []):
+                res = search(child)
+                if res: 
+                    return res
+            return None
+        return search(tree)
+
+
+def _get_children_from_tree(tree: Dict, node_id: str) -> List[Dict]:
+    """Recursively find children of a node by node_id."""
+    def search(node):
+        if node.get('node_id') == node_id: 
+            return node.get('nodes', [])
+        for child in node.get('nodes', []):
+            res = search(child)
+            if res is not None: 
+                return res
+        return None
+    result = search(tree)
+    return result if result is not None else []
 
 def run_streamlit():
     """Main Streamlit application entry point."""
     st.set_page_config(
-        page_title="DECLARMIMA v20.1 - 4-Pillar Vectorless RAG", 
+        page_title="DECLARMIMA Enhanced - Hybrid Vectorless RAG", 
         layout="wide"
     )
-    st.title("🌲 DECLARMIMA v20.1 - 4-Pillar Vectorless RAG")
+    st.title("🌲 DECLARMIMA Enhanced - Hybrid Vectorless RAG")
     st.markdown(
-        "Upload multiple PDFs, build hierarchical tree indices, and query them using **4-Pillar agentic navigation**. "
+        "Upload multiple PDFs, build hierarchical tree indices, and query them using **agentic navigation**. "
         "**No Vector DBs. No Chunking. No Embeddings.** "
-        "Supports both **Ollama** (fast API) and **HuggingFace Transformers** (local loading). "
-        "Now with **Intent Routing**, **Citation Validation**, and **Meta-Tree JSON Navigation**."
+        "Supports both **Ollama** (fast API) and **HuggingFace Transformers** (local loading)."
     )
 
     # Initialize session state
@@ -1550,8 +1298,6 @@ def run_streamlit():
         st.session_state.selected_docs_for_query = []
     if 'documents' not in st.session_state:
         st.session_state.documents = {}
-    if 'doc_trees' not in st.session_state:
-        st.session_state.doc_trees = []
     if 'llm' not in st.session_state:
         st.session_state.llm = None
 
@@ -1579,20 +1325,13 @@ def run_streamlit():
                     st.success(f"✅ LLM loaded: {llm.model_name} via {llm.backend}")
 
                     # Index documents
-                    build_trees = st.session_state.get("build_json_trees", False)
-                    documents, doc_trees = index_all_documents(
+                    st.session_state.documents = index_all_documents(
                         uploaded_files, 
                         llm,
-                        chunk_size=st.session_state.get("chunk_size", 5),
-                        build_json_trees=build_trees
+                        chunk_size=st.session_state.get("chunk_size", 5)
                     )
-                    st.session_state.documents = documents
-                    st.session_state.doc_trees = doc_trees
                     st.session_state.messages = []  # Clear chat history
                     st.success(f"✅ Indexed {len(uploaded_files)} document(s)")
-
-                    if doc_trees:
-                        st.info(f"📊 Built {len(doc_trees)} JSON hierarchical trees")
 
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
@@ -1637,18 +1376,11 @@ def run_streamlit():
 
             4. **Ask questions** in the chat below
 
-            ### 4-Pillar Architecture
-            - **Pillar 1 - Intent Router**: Automatically detects if you want values, equations, mechanisms, comparisons, or methodology
-            - **Pillar 2 - MCTS Navigator**: Drill-down agent selects exact document sections
-            - **Pillar 3 - Citation Validator**: Cross-checks extracted data against raw PDF text to kill hallucinations
-            - **Pillar 4 - Adaptive Synthesizer**: Forces strict Markdown tables, LaTeX blocks, or causal chains
-
             ### Requirements
             - **PyMuPDF**: `pip install pymupdf`
             - **For Ollama**: `pip install ollama` + [Ollama app](https://ollama.com)
             - **For HF**: `pip install transformers torch`
-            - **Optional**: `pip install pymupdf4llm` (better LaTeX/math + Meta-Tree JSON)
-            - **Optional**: `pip install rapidfuzz` (fuzzy matching for Meta-Tree)
+            - **Optional**: `pip install pymupdf4llm` (better LaTeX/math extraction)
             """)
     else:
         st.subheader("💬 Chat with your Documents")
@@ -1657,34 +1389,28 @@ def run_streamlit():
         for msg in st.session_state.messages:
             with st.chat_message(msg['role']):
                 st.markdown(msg['content'])
-                if msg['role'] == 'assistant':
-                    # Show reasoning expander
-                    if 'thinking' in msg:
-                        with st.expander("🧠 Agent Reasoning & Retrieved Sections"):
-                            st.markdown(f"**Thinking Process:**\n{msg['thinking']}")
-                            if msg.get('retrieved_info'):
-                                st.markdown("**Retrieved Sections:**")
-                                for info in msg['retrieved_info']:
-                                    sec = info['section']
-                                    st.info(
-                                        f"📄 **{info['doc_name']}** | {sec['id']}: {sec['title']} "
-                                        f"(Pages {sec['start_page']}-{sec['end_page']})"
-                                    )
-                    # Show verified extractions expander
-                    if 'verified_items' in msg and msg['verified_items']:
-                        with st.expander("✅ Verified Extractions (Hallucination Checked)"):
-                            st.markdown("**Detected Intent:** " + msg.get('intent', 'open_query'))
+                if msg['role'] == 'assistant' and 'thinking' in msg:
+                    with st.expander("🧠 Agent Reasoning & Verified Extractions"):
+                        st.markdown(f"**Navigation Trace:**\n{msg['thinking']}")
+                        # Support both old format (retrieved_info) and new format (verified_items)
+                        if msg.get('verified_items'):
+                            st.markdown("**Verified Extractions (Hallucination Checked):**")
                             for item in msg['verified_items'][:10]:
                                 conf = item.get('confidence', 0)
                                 color = "🟢" if conf > 0.8 else "🟡" if conf > 0.5 else "🔴"
-                                param = item.get('parameter_name', 'N/A')
-                                val = item.get('value', item.get('equation_latex', 'N/A'))
-                                unit = item.get('unit', '')
-                                status = item.get('verification_status', 'unknown')
                                 st.caption(
-                                    f"{color} **{param}**: {val} {unit} | "
-                                    f"Conf: {conf:.2f} | Status: {status} | "
+                                    f"{color} **{item.get('parameter_name', 'Mechanism')}**: "
+                                    f"{item.get('value', item.get('equation_latex', 'N/A'))} "
+                                    f"{item.get('unit', '')} | Conf: {conf:.2f} | "
                                     f"[{item.get('doc_name')}, p.{item.get('page')}]"
+                                )
+                        elif msg.get('retrieved_info'):
+                            st.markdown("**Retrieved Sections:**")
+                            for info in msg['retrieved_info']:
+                                sec = info['section']
+                                st.info(
+                                    f"📄 **{info['doc_name']}** | {sec['id']}: {sec['title']} "
+                                    f"(Pages {sec['start_page']}-{sec['end_page']})"
                                 )
 
         # Chat input
@@ -1699,7 +1425,7 @@ def run_streamlit():
 
                 # Generate response
                 with st.chat_message("assistant"):
-                    with st.spinner("🔍 Routing intent → Navigating → Extracting → Validating → Synthesizing..."):
+                    with st.spinner("Searching document trees and generating answer..."):
                         try:
                             # Filter documents
                             docs_to_search = {
@@ -1713,81 +1439,44 @@ def run_streamlit():
                                 st.session_state.get("use_4bit", True)
                             )
 
-                            # Decide which pipeline to use
-                            use_meta = st.session_state.get("use_meta_tree", False)
-                            doc_trees = st.session_state.get("doc_trees", [])
+                            # ================================================================
+                            # ADVANCED DECLARMIMA-STYLE RETRIEVAL PIPELINE
+                            # ================================================================
+                            # Uses 4 architectural pillars:
+                            # 1. ScientificIntentRouter - classifies query intent
+                            # 2. IterativeTreeNavigator - MCTS-style document navigation
+                            # 3. UniversalLLMExtractor + CitationValidator - structured extraction with hallucination checking
+                            # 4. AdaptiveResponseGenerator - intent-aware formatted output
+                            # ================================================================
+                            answer, thinking, verified_items = advanced_retrieve_and_answer(
+                                prompt, 
+                                docs_to_search, 
+                                llm
+                            )
 
-                            if use_meta and doc_trees:
-                                # Use advanced 4-pillar + Meta-Tree pipeline
-                                answer, thinking, verified_items, intent_data = advanced_retrieve_and_answer(
-                                    prompt, 
-                                    docs_to_search, 
-                                    llm,
-                                    use_meta_tree=True,
-                                    doc_trees=doc_trees,
-                                    max_context_chars=st.session_state.get("max_context_chars", 15000)
-                                )
+                            st.markdown(answer)
 
-                                st.markdown(answer)
+                            with st.expander("🧠 Agent Reasoning & Verified Extractions"):
+                                st.markdown(f"**Navigation Trace:**\n{thinking}")
+                                if verified_items:
+                                    st.markdown("**Verified Extractions (Hallucination Checked):**")
+                                    for item in verified_items[:10]:
+                                        conf = item.get('confidence', 0)
+                                        color = "🟢" if conf > 0.8 else "🟡" if conf > 0.5 else "🔴"
+                                        st.caption(
+                                            f"{color} **{item.get('parameter_name', 'Mechanism')}**: "
+                                            f"{item.get('value', item.get('equation_latex', 'N/A'))} "
+                                            f"{item.get('unit', '')} | Conf: {conf:.2f} | "
+                                            f"[{item.get('doc_name')}, p.{item.get('page')}]"
+                                        )
 
-                                with st.expander("🧠 Agent Reasoning & Retrieved Sections"):
-                                    st.markdown(f"**Detected Intent:** {intent_data['intent']}")
-                                    st.markdown(f"**Navigation Trace:**\n{thinking}")
-
-                                with st.expander("✅ Verified Extractions (Hallucination Checked)"):
-                                    if verified_items:
-                                        for item in verified_items[:10]:
-                                            conf = item.get('confidence', 0)
-                                            color = "🟢" if conf > 0.8 else "🟡" if conf > 0.5 else "🔴"
-                                            param = item.get('parameter_name', 'N/A')
-                                            val = item.get('value', item.get('equation_latex', 'N/A'))
-                                            unit = item.get('unit', '')
-                                            status = item.get('verification_status', 'unknown')
-                                            st.caption(
-                                                f"{color} **{param}**: {val} {unit} | "
-                                                f"Conf: {conf:.2f} | Status: {status} | "
-                                                f"[{item.get('doc_name')}, p.{item.get('page')}]"
-                                            )
-                                    else:
-                                        st.caption("No verified extractions found.")
-
-                                # Save to history
-                                st.session_state.messages.append({
-                                    "role": "assistant", 
-                                    "content": answer, 
-                                    "thinking": thinking, 
-                                    "verified_items": verified_items,
-                                    "intent": intent_data['intent'],
-                                })
-                            else:
-                                # Use legacy pipeline (backward compatible)
-                                answer, thinking, retrieved_info = agentic_retrieve_and_answer(
-                                    prompt, 
-                                    docs_to_search, 
-                                    llm,
-                                    max_context_chars=st.session_state.get("max_context_chars", 15000)
-                                )
-
-                                st.markdown(answer)
-
-                                with st.expander("🧠 Agent Reasoning & Retrieved Sections"):
-                                    st.markdown(f"**Thinking Process:**\n{thinking}")
-                                    if retrieved_info:
-                                        st.markdown("**Retrieved Sections:**")
-                                        for info in retrieved_info:
-                                            sec = info['section']
-                                            st.info(
-                                                f"📄 **{info['doc_name']}** | {sec['id']}: {sec['title']} "
-                                                f"(Pages {sec['start_page']}-{sec['end_page']})"
-                                            )
-
-                                # Save to history
-                                st.session_state.messages.append({
-                                    "role": "assistant", 
-                                    "content": answer, 
-                                    "thinking": thinking, 
-                                    "retrieved_info": retrieved_info
-                                })
+                            # Save to history
+                            st.session_state.messages.append({
+                                "role": "assistant", 
+                                "content": answer, 
+                                "thinking": thinking, 
+                                "verified_items": verified_items
+                            })
 
                         except Exception as e:
                             error_msg = f"❌ Error generating response: {str(e)}"

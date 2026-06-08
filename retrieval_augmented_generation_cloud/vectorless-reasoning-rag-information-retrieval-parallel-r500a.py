@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 from io import BytesIO
 from enum import Enum
-
+import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -1247,8 +1247,8 @@ def run_streamlit():
     st.title("🌲 DECLARMIMA v21 — Architected Vectorless RAG")
     st.markdown(
         "**Pipeline:** Intent Router → Tree Navigator → Structured Extractor → "
-        "Citation Validator → Adaptive Synthesizer  
-"
+        "Citation Validator → Adaptive Synthesizer**  \n"
+        "**No Vector DBs. No Embeddings. Agentic. Verified.**"
         "**No Vector DBs. No Embeddings. Agentic. Verified.**"
     )
 

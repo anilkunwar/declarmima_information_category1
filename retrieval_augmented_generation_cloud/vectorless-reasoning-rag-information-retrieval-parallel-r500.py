@@ -1,39 +1,48 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import ollama
 import json
 import re
-import time
+import os
+from huggingface_hub import InferenceClient
 
 # ============================================================================
 # CONFIGURATION & MODEL OPTIONS
 # ============================================================================
-LOCAL_LLM_OPTIONS = {
-    "[Ollama] qwen2.5:0.5b (Fastest, CPU Ok)": "qwen2.5:0.5b",
-    "[Ollama] qwen2.5:1.5b (Balanced)": "qwen2.5:1.5b",
-    "[Ollama] qwen2.5:7b (Recommended for RAG)": "qwen2.5:7b",
-    "[Ollama] qwen2.5:14b (Max Reasoning)": "qwen2.5:14b",
-    "[Ollama] llama3.1:8b (Meta Standard)": "llama3.1:8b",
-    "[Ollama] mistral:7b (High JSON Reliability)": "mistral:7b",
-    "[Ollama] gemma2:9b (Scientific Nuance)": "gemma2:9b",
-    "[Ollama] falcon3:10b (Instruction Following)": "falcon3:10b",
+HF_MODEL_OPTIONS = {
+    "[HF] Qwen2.5-7B-Instruct (Recommended)": "Qwen/Qwen2.5-7B-Instruct",
+    "[HF] Mistral-7B-Instruct-v0.3 (Great for JSON)": "mistralai/Mistral-7B-Instruct-v0.3",
+    "[HF] Llama-3.1-8B-Instruct (Meta Standard)": "meta-llama/Llama-3.1-8B-Instruct",
+    "[HF] Meta-Llama-3-8B-Instruct": "meta-llama/Meta-Llama-3-8B-Instruct",
 }
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-def call_ollama(model, prompt, system="You are a helpful assistant.", json_mode=False):
-    """Unified wrapper for Ollama chat completions."""
+@st.cache_resource
+def get_hf_client():
+    """Initialize the Hugging Face client using Streamlit secrets."""
+    if "HF_TOKEN" not in st.secrets:
+        st.error("⚠️ Please add your HF_TOKEN to Streamlit secrets!")
+        st.stop()
+    return InferenceClient(api_key=st.secrets["HF_TOKEN"])
+
+def call_llm(model_id, prompt, system="You are a helpful assistant."):
+    """Unified wrapper for Hugging Face Inference API."""
+    client = get_hf_client()
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": prompt}
     ]
     try:
-        # format='json' enforces JSON output for models that support grammar
-        response = ollama.chat(model=model, messages=messages, format='json' if json_mode else '')
-        return response['message']['content']
+        response = client.chat_completion(
+            messages=messages,
+            model=model_id,
+            max_tokens=1024,
+            temperature=0.1
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Ollama Error: {e}")
+        st.error(f"Hugging Face API Error: {e}")
         return ""
 
 def extract_json(text):
@@ -60,83 +69,101 @@ def extract_json(text):
 # ============================================================================
 # PAGEINDEX CORE LOGIC (VECTORLESS)
 # ============================================================================
-def build_document_tree(pdf_bytes, model):
-    """Phase 1: Builds a hierarchical tree index with summaries."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages_text = [{"page": i + 1, "text": page.get_text()} for i, page in enumerate(doc)]
-    
-    st.info(f"Extracted text from {len(pages_text)} pages. Building tree structure...")
+def index_all_documents(uploaded_files, model_id):
+    """Phase 1: Builds hierarchical tree indices for multiple PDFs."""
+    documents = {}
+    total_files = len(uploaded_files)
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    # 1. Extract Sections (Chunked to fit local model context windows)
-    chunk_size = 5
-    sections = []
-    for i in range(0, len(pages_text), chunk_size):
-        chunk = pages_text[i:i+chunk_size]
-        text_with_tags = "\n".join([f"<page_{p['page']}>\n{p['text']}\n</page_{p['page']}>" for p in chunk])
-        
-        prompt = f"""Analyze the document text and extract main section headings and their starting page numbers.
-        Return a JSON list of objects: {{"title": "Section Title", "start_page": page_number}}.
-        Ignore headers/footers. Only include actual content sections.
-        
-        Text:
-        {text_with_tags}"""
-        
-        system = "You are an expert document analyzer. Return ONLY a valid JSON list."
-        response = call_ollama(model, prompt, system=system, json_mode=True)
-        parsed = extract_json(response)
-        
-        if parsed and isinstance(parsed, list):
-            for item in parsed:
-                if 'title' in item and 'start_page' in item:
-                    sections.append(item)
-        progress_bar.progress((i + chunk_size) / len(pages_text))
-        
-    # 2. Determine End Pages and Build Flat Tree
-    sections.sort(key=lambda x: x['start_page'])
-    for i in range(len(sections)):
-        sections[i]['end_page'] = sections[i+1]['start_page'] - 1 if i + 1 < len(sections) else len(pages_text)
-        sections[i]['id'] = f"sec_{i+1:03d}"
-        
-    # 3. Generate Summaries for each node
-    st.info("Generating summaries for each section...")
-    for i, sec in enumerate(sections):
-        start_idx = sec['start_page'] - 1
-        end_idx = sec['end_page']
-        section_text = "\n".join([p['text'] for p in pages_text[start_idx:end_idx]])
-        
-        # Limit text length for summary to avoid context overflow on smaller models
-        if len(section_text) > 4000:
-            section_text = section_text[:4000] + "..."
+    for idx, uploaded_file in enumerate(uploaded_files):
+        doc_name = os.path.splitext(uploaded_file.name)[0]
+        # Handle duplicate filenames
+        if doc_name in documents:
+            doc_name = f"{doc_name}_{idx+1}"
             
-        prompt = f"Summarize the following text in 2-3 concise sentences:\n\n{section_text}"
-        system = "You are a helpful summarizer."
-        summary = call_ollama(model, prompt, system=system)
-        sec['summary'] = summary.strip()
-        progress_bar.progress((i + 1) / len(sections))
+        status_text.info(f"Processing ({idx+1}/{total_files}): {uploaded_file.name}...")
+        
+        pdf_bytes = uploaded_file.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        pages_text = [{"page": i + 1, "text": page.get_text()} for i, page in enumerate(doc)]
+        
+        # 1. Extract Sections (Chunked to fit context windows)
+        chunk_size = 5
+        sections = []
+        for i in range(0, len(pages_text), chunk_size):
+            chunk = pages_text[i:i+chunk_size]
+            text_with_tags = "\n".join([f"<page_{p['page']}>\n{p['text']}\n</page_{p['page']}>" for p in chunk])
+            
+            prompt = f"""Analyze the document text and extract main section headings and their starting page numbers.
+            Return a JSON list of objects: {{"title": "Section Title", "start_page": page_number}}.
+            Ignore headers/footers. Only include actual content sections.
+            
+            Text:
+            {text_with_tags}"""
+            
+            system = "You are an expert document analyzer. Return ONLY a valid JSON list."
+            response = call_llm(model_id, prompt, system=system)
+            parsed = extract_json(response)
+            
+            if parsed and isinstance(parsed, list):
+                for item in parsed:
+                    if 'title' in item and 'start_page' in item:
+                        sections.append(item)
+                        
+        # 2. Determine End Pages and Build Flat Tree
+        sections.sort(key=lambda x: x['start_page'])
+        for i in range(len(sections)):
+            sections[i]['end_page'] = sections[i+1]['start_page'] - 1 if i + 1 < len(sections) else len(pages_text)
+            sections[i]['id'] = f"sec_{i+1:03d}"
+            
+        # 3. Generate Summaries for each node
+        for i, sec in enumerate(sections):
+            start_idx = sec['start_page'] - 1
+            end_idx = sec['end_page']
+            section_text = "\n".join([p['text'] for p in pages_text[start_idx:end_idx]])
+            
+            # Limit text length for summary to avoid context overflow
+            if len(section_text) > 4000:
+                section_text = section_text[:4000] + "..."
+                
+            prompt = f"Summarize the following text in 2-3 concise sentences:\n\n{section_text}"
+            system = "You are a helpful summarizer."
+            summary = call_llm(model_id, prompt, system=system)
+            sec['summary'] = summary.strip()
+            
+        documents[doc_name] = {'doc': doc, 'sections': sections, 'filename': uploaded_file.name}
+        progress_bar.progress((idx + 1) / total_files)
         
     progress_bar.empty()
-    return doc, sections
+    status_text.empty()
+    return documents
 
-def agentic_retrieve_and_answer(query, doc, sections, model):
-    """Phase 2 & 3: Agentic Tree Search and Answer Generation."""
+def agentic_retrieve_and_answer(query, selected_docs, model_id):
+    """Phase 2 & 3: Agentic Multi-Document Tree Search and Answer Generation."""
     
-    # 1. Tree Search (Navigation Agent)
-    tree_desc = "\n".join([
-        f"ID: {s['id']} | Title: {s['title']} | Pages: {s['start_page']}-{s['end_page']} | Summary: {s['summary']}" 
-        for s in sections
-    ])
+    # 1. Build the "Forest" Description
+    forest_desc = []
+    for doc_name, data in selected_docs.items():
+        forest_desc.append(f"--- Document: {doc_name} ---")
+        for s in data['sections']:
+            # Namespace the ID with a safe delimiter (:::)
+            ns_id = f"{doc_name}:::{s['id']}"
+            forest_desc.append(f"ID: {ns_id} | Title: {s['title']} | Pages: {s['start_page']}-{s['end_page']} | Summary: {s['summary']}")
     
-    search_prompt = f"""You are a research assistant. Given a query and a document structure, identify which sections are most likely to contain the answer.
+    tree_text = "\n".join(forest_desc)
+    
+    search_prompt = f"""You are a research assistant. Given a query and a forest of document structures, identify which sections across the documents are most likely to contain the answer.
     Query: {query}
     
-    Document Structure:
-    {tree_desc}
+    Document Structures:
+    {tree_text}
     
-    Return a JSON object: {{"thinking": "your step-by-step reasoning", "relevant_ids": ["id1", "id2"]}}"""
+    Return a JSON object: {{"thinking": "your step-by-step reasoning", "relevant_ids": ["doc_name:::sec_id1", "doc_name:::sec_id2"]}}.
+    If no sections are relevant, return an empty list for relevant_ids."""
     
     system = "You are a precise navigation agent. Return ONLY valid JSON."
-    search_response = call_ollama(model, search_prompt, system=system, json_mode=True)
+    search_response = call_llm(model_id, search_prompt, system=system)
     search_result = extract_json(search_response)
     
     thinking = "No reasoning provided."
@@ -147,78 +174,99 @@ def agentic_retrieve_and_answer(query, doc, sections, model):
         
     # 2. Fetch Content (Lossless Retrieval)
     context = ""
-    retrieved_sections = []
-    for s in sections:
-        if s['id'] in relevant_ids:
-            retrieved_sections.append(s)
-            text_parts = []
-            for p_num in range(s['start_page'], s['end_page'] + 1):
-                if 0 < p_num <= len(doc):
-                    text_parts.append(doc[p_num - 1].get_text())
-            context += f"\n\n--- Section: {s['title']} (Pages {s['start_page']}-{s['end_page']}) ---\n" + "\n".join(text_parts) + "\n"
+    retrieved_info = []
+    
+    for ns_id in relevant_ids:
+        if ":::" not in ns_id: continue
+        doc_name, sec_id = ns_id.split(":::", 1)
+        if doc_name in selected_docs:
+            data = selected_docs[doc_name]
+            doc = data['doc']
+            sections = data['sections']
             
+            sec = next((s for s in sections if s['id'] == sec_id), None)
+            if sec:
+                retrieved_info.append({"doc_name": doc_name, "section": sec})
+                text_parts = []
+                for p_num in range(sec['start_page'], sec['end_page'] + 1):
+                    if 0 < p_num <= len(doc):
+                        text_parts.append(doc[p_num - 1].get_text())
+                context += f"\n\n--- Document: {doc_name} | Section: {sec['title']} (Pages {sec['start_page']}-{sec['end_page']}) ---\n" + "\n".join(text_parts) + "\n"
+                
     if not context:
-        return "I could not find any relevant sections in the document to answer your query.", thinking, retrieved_sections
+        return "I could not find any relevant sections in the selected documents to answer your query.", thinking, retrieved_info
         
-    # Safeguard for local model context limits
+    # Safeguard for context limits
     if len(context) > 15000:
         context = context[:15000] + "\n[Context truncated due to length]"
         
     # 3. Generate Answer
     answer_prompt = f"""Answer the user's query based ONLY on the provided document context.
-    If the answer is not in the context, say "I don't know based on the provided document."
+    If the answer is not in the context, say "I don't know based on the provided documents."
+    Cite the document name and section title when possible.
     
     Query: {query}
     Context:
     {context}"""
     
     system = "You are a helpful document QA assistant. Be concise and accurate."
-    answer = call_ollama(model, answer_prompt, system=system)
+    answer = call_llm(model_id, answer_prompt, system=system)
     
-    return answer, thinking, retrieved_sections
+    return answer, thinking, retrieved_info
 
 # ============================================================================
 # STREAMLIT UI
 # ============================================================================
-st.set_page_config(page_title="Vectorless RAG with Ollama", layout="wide")
-st.title("🌲 PageIndex-Style Vectorless RAG (Local Ollama)")
-st.markdown("Upload a PDF, build a hierarchical tree index, and query it using local LLMs (Qwen, Mistral, Falcon). **No Vector DBs. No Chunking.**")
+st.set_page_config(page_title="Multi-Doc Vectorless RAG", layout="wide")
+st.title("🌲 Multi-Document Vectorless RAG (Hugging Face)")
+st.markdown("Upload multiple PDFs, build hierarchical tree indices, and query them using LLMs via Hugging Face. **No Vector DBs. No Chunking.**")
+
+# Initialize session state variables safely
+if 'selected_docs_for_query' not in st.session_state:
+    st.session_state['selected_docs_for_query'] = []
 
 # Sidebar Configuration
 with st.sidebar:
     st.header("⚙️ Configuration")
-    selected_model_name = st.selectbox("Select Ollama Model", list(LOCAL_LLM_OPTIONS.keys()))
-    model_id = LOCAL_LLM_OPTIONS[selected_model_name]
+    selected_model_name = st.selectbox("Select Hugging Face Model", list(HF_MODEL_OPTIONS.keys()))
+    model_id = HF_MODEL_OPTIONS[selected_model_name]
     
-    if "0.5b" in model_id or "1.5b" in model_id:
-        st.warning("⚠️ Small models (<7B) may struggle with strict JSON formatting and complex reasoning.")
-        
     st.markdown("---")
-    st.header("📄 Document")
-    uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+    st.header("📄 Documents")
+    uploaded_files = st.file_uploader("Upload one or more PDFs", type=["pdf"], accept_multiple_files=True)
     
-    if uploaded_file and st.button("🚀 Build Document Tree"):
-        with st.spinner("Indexing document... This may take a few minutes."):
-            pdf_bytes = uploaded_file.read()
-            doc, sections = build_document_tree(pdf_bytes, model_id)
-            st.session_state['doc'] = doc
-            st.session_state['sections'] = sections
+    if uploaded_files and st.button("🚀 Build Document Trees"):
+        with st.spinner("Indexing documents... This may take a few minutes."):
+            st.session_state['documents'] = index_all_documents(uploaded_files, model_id)
             st.session_state['messages'] = []
-            st.success("Tree built successfully!")
+            st.success("All documents indexed successfully!")
             
-    # Display the Tree Structure
-    if 'sections' in st.session_state:
-        with st.expander("🌳 View Document Tree Structure", expanded=False):
-            for s in st.session_state['sections']:
-                st.markdown(f"**{s['id']}: {s['title']}** *(pp. {s['start_page']}-{s['end_page']})*")
-                st.caption(s['summary'])
-                st.divider()
+    # Display the Tree Structure and Document Selector
+    if 'documents' in st.session_state:
+        st.markdown("---")
+        st.header("🎯 Query Scope")
+        
+        doc_names = list(st.session_state['documents'].keys())
+        st.session_state['selected_docs_for_query'] = st.multiselect(
+            "Select documents to search:",
+            doc_names,
+            default=doc_names
+        )
+        
+        with st.expander("🌳 View Document Trees", expanded=False):
+            for doc_name in doc_names:
+                st.subheader(f"📄 {doc_name}")
+                data = st.session_state['documents'][doc_name]
+                for s in data['sections']:
+                    st.markdown(f"**{s['id']}: {s['title']}** *(pp. {s['start_page']}-{s['end_page']})*")
+                    st.caption(s['summary'])
+                    st.divider()
 
 # Main Chat Area
-if 'doc' not in st.session_state:
-    st.warning("👈 Please upload a PDF and build the document tree to start querying.")
+if 'documents' not in st.session_state:
+    st.warning("👈 Please upload PDF(s) and build the document trees to start querying.")
 else:
-    st.subheader("💬 Chat with your Document")
+    st.subheader("💬 Chat with your Documents")
     
     # Display chat history
     for msg in st.session_state['messages']:
@@ -227,33 +275,41 @@ else:
             if msg['role'] == 'assistant' and 'thinking' in msg:
                 with st.expander("🧠 Agent Reasoning & Retrieved Sections"):
                     st.markdown(f"**Thinking Process:**\n{msg['thinking']}")
-                    if msg.get('retrieved_sections'):
+                    if msg.get('retrieved_info'):
                         st.markdown("**Retrieved Sections:**")
-                        for sec in msg['retrieved_sections']:
-                            st.info(f"{sec['id']}: {sec['title']} (Pages {sec['start_page']}-{sec['end_page']})")
+                        for info in msg['retrieved_info']:
+                            sec = info['section']
+                            st.info(f"📄 **{info['doc_name']}** | {sec['id']}: {sec['title']} (Pages {sec['start_page']}-{sec['end_page']})")
                             
     # Chat input
-    if prompt := st.chat_input("Ask a question about the document..."):
-        st.session_state['messages'].append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-            
-        with st.chat_message("assistant"):
-            with st.spinner("Searching tree and generating answer..."):
-                answer, thinking, retrieved_secs = agentic_retrieve_and_answer(
-                    prompt, st.session_state['doc'], st.session_state['sections'], model_id
-                )
-                st.markdown(answer)
-                with st.expander("🧠 Agent Reasoning & Retrieved Sections"):
-                    st.markdown(f"**Thinking Process:**\n{thinking}")
-                    if retrieved_secs:
-                        st.markdown("**Retrieved Sections:**")
-                        for sec in retrieved_secs:
-                            st.info(f"{sec['id']}: {sec['title']} (Pages {sec['start_page']}-{sec['end_page']})")
-                            
-        st.session_state['messages'].append({
-            "role": "assistant", 
-            "content": answer, 
-            "thinking": thinking, 
-            "retrieved_sections": retrieved_secs
-        })
+    if prompt := st.chat_input("Ask a question about the documents..."):
+        if not st.session_state['selected_docs_for_query']:
+            st.error("Please select at least one document in the sidebar to search.")
+        else:
+            st.session_state['messages'].append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+                
+            with st.chat_message("assistant"):
+                with st.spinner("Searching document trees and generating answer..."):
+                    # Filter the documents dict based on user selection
+                    docs_to_search = {k: st.session_state['documents'][k] for k in st.session_state['selected_docs_for_query']}
+                    
+                    answer, thinking, retrieved_info = agentic_retrieve_and_answer(
+                        prompt, docs_to_search, model_id
+                    )
+                    st.markdown(answer)
+                    with st.expander("🧠 Agent Reasoning & Retrieved Sections"):
+                        st.markdown(f"**Thinking Process:**\n{thinking}")
+                        if retrieved_info:
+                            st.markdown("**Retrieved Sections:**")
+                            for info in retrieved_info:
+                                sec = info['section']
+                                st.info(f"📄 **{info['doc_name']}** | {sec['id']}: {sec['title']} (Pages {sec['start_page']}-{sec['end_page']})")
+                                
+            st.session_state['messages'].append({
+                "role": "assistant", 
+                "content": answer, 
+                "thinking": thinking, 
+                "retrieved_info": retrieved_info
+            })

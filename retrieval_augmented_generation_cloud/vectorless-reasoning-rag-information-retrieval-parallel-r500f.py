@@ -776,6 +776,41 @@ def build_nested_json_tree(pages_text, doc_name, llm):
     return tree
 
 
+def flatten_tree_to_sections(tree: Dict, doc_name: str) -> List[Dict]:
+    """Flatten a nested JSON tree into the old flat 'sections' format for backward compatibility.
+
+    Recursively walks the tree and extracts all nodes into a flat list with 
+    'id', 'title', 'start_page', 'end_page', 'summary' fields.
+    """
+    sections = []
+
+    def walk(node):
+        node_id = node.get('node_id', '')
+        title = node.get('title', '')
+        start_page = node.get('start_page', 1)
+        end_page = node.get('end_page', start_page)
+        summary = node.get('summary', '')
+
+        # Create section entry (skip root node)
+        if node_id and node_id != f"{doc_name}_0000" and node_id != "0000":
+            sec = {
+                'id': node_id,
+                'title': title,
+                'start_page': start_page,
+                'end_page': end_page,
+                'summary': summary
+            }
+            sections.append(sec)
+
+        # Recurse into children
+        children = node.get('nodes', [])
+        for child in children:
+            walk(child)
+
+    walk(tree)
+    return sections
+
+
 def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
     """Phase 1: Builds NESTED hierarchical JSON tree indices for multiple PDFs."""
     documents = {}
@@ -797,9 +832,13 @@ def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
         tree = build_nested_json_tree(pages_text, doc_name, llm)
         tree['doc_id'] = doc_name  # Inject doc_id for meta-tree stitching
 
+        # Generate flat sections from nested tree for backward compatibility
+        flat_sections = flatten_tree_to_sections(tree, doc_name)
+
         documents[doc_name] = {
             'pages': pages_text,
-            'tree': tree,  # NESTED TREE REPLACES FLAT SECTIONS
+            'tree': tree,           # NESTED TREE for new MCTS navigator
+            'sections': flat_sections,  # FLAT SECTIONS for old code & UI viewer
             'filename': uploaded_file.name,
             'pdf_bytes': pdf_bytes
         }
@@ -1424,10 +1463,35 @@ def run_streamlit():
                 for doc_name in doc_names:
                     st.subheader(f"📄 {doc_name}")
                     data = st.session_state.documents[doc_name]
-                    for s in data['sections']:
-                        st.markdown(f"**{s['id']}: {s['title']}** *(pp. {s['start_page']}-{s['end_page']})*")
-                        st.caption(s['summary'])
-                        st.divider()
+
+                    # Display nested tree structure
+                    def render_tree_node(node, depth=0):
+                        """Recursively render a tree node with indentation."""
+                        node_id = node.get('node_id', '')
+                        title = node.get('title', '')
+                        start_p = node.get('start_page', 1)
+                        end_p = node.get('end_page', start_p)
+                        summary = node.get('summary', '')
+                        children = node.get('nodes', [])
+
+                        # Skip root node, render children
+                        indent = "&nbsp;" * (depth * 4)
+                        if depth > 0:
+                            st.markdown(f"{indent}**{node_id}**: {title} *(pp. {start_p}-{end_p})*")
+                            if summary:
+                                st.caption(f"{indent}{summary[:120]}")
+
+                        for child in children:
+                            render_tree_node(child, depth + 1)
+
+                    if 'tree' in data:
+                        render_tree_node(data['tree'])
+                    else:
+                        # Fallback to flat display
+                        for s in data['sections']:
+                            st.markdown(f"**{s['id']}: {s['title']}** *(pp. {s['start_page']}-{s['end_page']})*")
+                            st.caption(s['summary'])
+                    st.divider()
 
     # Main Chat Area
     if not st.session_state.documents:

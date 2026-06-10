@@ -1135,7 +1135,8 @@ def render_sidebar():
 
         # Advanced settings
         with st.expander("Advanced Settings", expanded=False):
-            st.slider("Max context chars", 5000, 30000, 15000, 1000, 
+            #st.slider("Max context chars", 5000, 30000, 15000, 1000, 
+            st.slider("Max context chars", 5000, 100000, 50000, 1000,
                      key="max_context_chars",
                      help="Maximum characters to send to LLM as context")
             st.slider("Chunk size (pages)", 1, 10, 5, 1,

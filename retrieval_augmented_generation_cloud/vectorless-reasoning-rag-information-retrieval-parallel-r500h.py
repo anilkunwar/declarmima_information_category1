@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 r"""
-DECLARMIMA v20.1 Anti-Hallucination - Hybrid Vectorless RAG
+DECLARMIMA v20.2 Hybrid Retrieval - Hybrid Vectorless RAG
 ===================================================
 Combines the robust import/LLM-loading system from DECLARMIMA v20.0
 with the clean vectorless RAG architecture from the shorter codebase.
@@ -1119,13 +1119,9 @@ class CitationValidator:
                     item['confidence'] = 0.8 # Hard to verify LaTeX via raw text, trust LLM
                     verified.append(item)
                 elif param and param in raw_text:
-                    # ==================================================================
-                    # CRITICAL FIX: Lowered from 0.7 to 0.4. 
-                    # If the parameter name is there but the exact value is missing/wrong, 
-                    # it's likely a hallucination. This ensures it gets filtered out 
-                    # by the > 0.5 threshold later.
-                    # ==================================================================
-                    item['confidence'] = 0.4 
+                    # Conceptual match: parameter name is in the text.
+                    # The strict filtering in advanced_retrieve_and_answer will handle value_extraction.
+                    item['confidence'] = 0.7 
                     verified.append(item)
                 else:
                     item['confidence'] = 0.2 # Hallucination suspected
@@ -1193,41 +1189,75 @@ class AdaptiveResponseGenerator:
 # ADVANCED RETRIEVAL PIPELINE (DECLARMIMA-STYLE)
 # ============================================================================
 
-def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM):
-    """The DECLARMIMA v20.0 Minimal Pipeline with Multi-Hop Cross-Document Reasoning.
+def keyword_page_scan(query: str, selected_docs: Dict) -> List[Dict]:
+    """Scans pages for keywords related to the query and returns the raw text of matching pages.
+    This is much more reliable for local LLMs than complex MCTS drill-downs for value extraction."""
+    # Extract meaningful words from query
+    words = set(re.findall(r'\b[a-zA-Z]{3,}\b', query.lower()))
+    stop_words = {'the', 'for', 'and', 'are', 'was', 'were', 'describe', 'different', 'materials', 'alloys', 'this', 'that', 'with', 'from', 'what', 'how', 'why'}
+    keywords = [w for w in words if w not in stop_words]
 
-    Pipeline:
-    1. Route Intent
-    2. Build Cross-Document Meta-Tree
-    3. Multi-Hop MCTS Navigation
-    4. Structured Extraction
-    5. Citation Validation
-    6. Adaptive Synthesis
-    """
+    # Add domain-specific keywords for value extraction
+    keywords.extend(['watts', 'power', 'laser', 'lpbf', 'slm', 'w'])
+
+    retrieved_chunks = []
+    for doc_name, data in selected_docs.items():
+        pages = data['pages']
+        for page_data in pages:
+            text = page_data['text'].lower()
+            # Check if page contains at least 2 keywords
+            match_count = sum(1 for k in keywords if k in text)
+            if match_count >= 2:
+                retrieved_chunks.append({
+                    "doc_name": doc_name,
+                    "section_title": f"Page {page_data['page_num']}",
+                    "start_page": page_data['page_num'],
+                    "end_page": page_data['page_num'],
+                    "full_text": page_data['text']
+                })
+    return retrieved_chunks
+
+
+def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM):
+    """The DECLARMIMA v20.1 Pipeline with Hybrid Retrieval."""
     # 1. Route Intent
     router = ScientificIntentRouter()
     intent_data = router.route(query)
 
-    # 2. Build Cross-Document Meta-Tree
-    doc_trees = [data['tree'] for data in selected_docs.values()]
-    meta_tree = build_cross_document_meta_tree(query, doc_trees, llm)
+    retrieved_chunks = []
+    trace = ""
 
-    # 3. Multi-Hop MCTS Navigation
-    navigator = JSONMCTSNavigator(llm, selected_docs, max_steps=3)
-    retrieved_chunks = navigator.navigate(query, meta_tree)
+    # ==================================================================
+    # HYBRID RETRIEVAL: Use Keyword Scanner for Value Extraction
+    # Local LLMs struggle with complex MCTS "drill-down" for specific values.
+    # A keyword scan is much more reliable for finding pages with "Watts" or "W".
+    # ==================================================================
+    if intent_data['intent'] == 'value_extraction':
+        logger.info("🔍 Value extraction detected. Using Keyword Page Scanner...")
+        retrieved_chunks = keyword_page_scan(query, selected_docs)
+        trace = f"Keyword Page Scanner found {len(retrieved_chunks)} relevant pages."
 
-    # ======================================================================
-    # CRITICAL FIX: THE SAFETY NET FALLBACK (RETRIEVAL ONLY)
-    # If MCTS fails, we use the flat search ONLY to get text chunks.
-    # We DO NOT let the fallback generate the final answer!
-    # ======================================================================
+        # If keyword scanner finds nothing, fallback to MCTS
+        if not retrieved_chunks:
+            logger.warning("⚠️ Keyword scanner found 0 pages. Falling back to MCTS...")
+            doc_trees = [data['tree'] for data in selected_docs.values()]
+            meta_tree = build_cross_document_meta_tree(query, doc_trees, llm)
+            navigator = JSONMCTSNavigator(llm, selected_docs, max_steps=3)
+            retrieved_chunks = navigator.navigate(query, meta_tree)
+            trace += "\n" + "\n".join(navigator.trace)
+    else:
+        # For mechanism/equation/open_query, use the standard MCTS
+        doc_trees = [data['tree'] for data in selected_docs.values()]
+        meta_tree = build_cross_document_meta_tree(query, doc_trees, llm)
+        navigator = JSONMCTSNavigator(llm, selected_docs, max_steps=3)
+        retrieved_chunks = navigator.navigate(query, meta_tree)
+        trace = "\n".join(navigator.trace)
+    # ==================================================================
+
+    # If still no chunks, try the flat search fallback
     if not retrieved_chunks:
-        logger.warning("⚠️ MCTS Navigation returned 0 chunks. Falling back to robust flat search (500d style) for retrieval...")
-
-        # Use the flat search JUST to get the relevant text chunks
+        logger.warning("⚠️ Primary retrieval failed. Falling back to robust flat search...")
         _, _, retrieved_info = agentic_retrieve_and_answer(query, selected_docs, llm)
-
-        # Convert the flat search results into chunks for the strict extraction pipeline
         if retrieved_info:
             for info in retrieved_info:
                 sec = info.get("section", {})
@@ -1242,11 +1272,8 @@ def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM
                         "end_page": sec.get("end_page", 1),
                         "full_text": "\n".join(text_parts)
                     })
-
-        # If the fallback ALSO found nothing, abort immediately to prevent hallucination!
         if not retrieved_chunks:
-            return "I could not find any relevant sections in the selected documents to answer your query.", "No sections matched in either MCTS or flat search.", []
-    # ======================================================================
+            return "I could not find any relevant sections in the selected documents to answer your query.", trace, []
 
     # 4. Structured Extraction
     extractor = UniversalLLMExtractor(llm)
@@ -1255,13 +1282,25 @@ def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM
     # 5. Citation Validation
     validator = CitationValidator()
     verified_items = validator.verify(raw_items, selected_docs)
-    verified_items = [i for i in verified_items if i.get('confidence', 0) > 0.5]
+
+    # ==================================================================
+    # STRICT FILTERING BASED ON INTENT
+    # For value extraction, we ONLY accept items where the exact value was 
+    # found in the raw text (confidence >= 0.9). This blocks all hallucinated numbers.
+    # For mechanisms, we accept conceptual matches (confidence > 0.5).
+    # ==================================================================
+    if intent_data['intent'] == 'value_extraction':
+        verified_items = [i for i in verified_items if i.get('confidence', 0) >= 0.9 and i.get('value') is not None]
+    else:
+        verified_items = [i for i in verified_items if i.get('confidence', 0) > 0.5]
+    # ==================================================================
 
     # 6. Adaptive Synthesis
     generator = AdaptiveResponseGenerator(llm)
     answer = generator.generate(query, verified_items, intent_data['intent'])
 
-    return answer, "\n".join(navigator.trace), verified_items
+    return answer, trace, verified_items
+
 
 def build_cross_document_meta_tree(query: str, doc_trees: List[Dict], llm: HybridLLM) -> Dict:
     """Stitches equivalent JSON sections from multiple documents into a single virtual root."""

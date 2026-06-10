@@ -892,7 +892,7 @@ def agentic_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM,
 
     thinking = "No reasoning provided."
     relevant_ids = []
-    if search_result:
+    if search_result and isinstance(search_result, dict):
         thinking = search_result.get('thinking', 'No reasoning provided.')
         relevant_ids = search_result.get('relevant_ids', [])
 
@@ -1003,7 +1003,7 @@ class IterativeTreeNavigator:
             resp = self.llm.generate(prompt, max_new_tokens=512, system_prompt="Return ONLY valid JSON.")
             actions_data = extract_json(resp)
 
-            if not actions_data or 'actions' not in actions_data:
+            if not actions_data or not isinstance(actions_data, dict) or 'actions' not in actions_data:
                 break
 
             self.trace.append(actions_data.get('reasoning', ''))
@@ -1302,7 +1302,7 @@ class JSONMCTSNavigator:
 
             response = self.llm.generate(prompt, max_new_tokens=1024, system_prompt="Return ONLY valid JSON.")
             actions_data = extract_json(response)
-            if not actions_data: 
+            if not actions_data or not isinstance(actions_data, dict): 
                 break
             actions = actions_data.get('actions', [])
             self.trace.append(actions_data.get('reasoning', ''))

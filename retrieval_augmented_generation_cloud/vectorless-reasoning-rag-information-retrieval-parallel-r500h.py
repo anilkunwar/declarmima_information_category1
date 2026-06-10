@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 r"""
-DECLARMIMA v20.0 Enhanced - Hybrid Vectorless RAG
+DECLARMIMA v20.1 Anti-Hallucination - Hybrid Vectorless RAG
 ===================================================
 Combines the robust import/LLM-loading system from DECLARMIMA v20.0
 with the clean vectorless RAG architecture from the shorter codebase.
@@ -1108,17 +1108,24 @@ class CitationValidator:
                 raw_text = selected_docs[doc_name]['pages'][page_num-1]['text'].lower()
 
                 # Verification Logic
-                val_str = str(item.get('value', ''))
+                # CRITICAL FIX: Lowercase the value to match the lowercased raw_text!
+                val_str = str(item.get('value', '')).lower()
                 param = (item.get('parameter_name') or '').lower()
 
-                if item.get('value') is not None and val_str in raw_text:
+                if item.get('value') is not None and val_str and val_str in raw_text:
                     item['confidence'] = 0.95
-                    verified.append(item)
-                elif param and param in raw_text:
-                    item['confidence'] = 0.7
                     verified.append(item)
                 elif item.get('item_type') == 'equation' and item.get('equation_latex'):
                     item['confidence'] = 0.8 # Hard to verify LaTeX via raw text, trust LLM
+                    verified.append(item)
+                elif param and param in raw_text:
+                    # ==================================================================
+                    # CRITICAL FIX: Lowered from 0.7 to 0.4. 
+                    # If the parameter name is there but the exact value is missing/wrong, 
+                    # it's likely a hallucination. This ensures it gets filtered out 
+                    # by the > 0.5 threshold later.
+                    # ==================================================================
+                    item['confidence'] = 0.4 
                     verified.append(item)
                 else:
                     item['confidence'] = 0.2 # Hallucination suspected
@@ -1134,6 +1141,15 @@ class AdaptiveResponseGenerator:
 
     def generate(self, query: str, items: List[Dict], intent: str) -> str:
         evidence = "\n".join([f"- [{i.get('doc_name')}, p.{i.get('page')}] {i.get('context', i.get('equation_latex', ''))}" for i in items[:20]])
+
+        # ==================================================================
+        # CRITICAL FIX: ABORT ON EMPTY EVIDENCE
+        # If the CitationValidator filtered out all items, we have no verified data.
+        # If we force a local LLM to fill a strict template with no data, it WILL hallucinate.
+        # ==================================================================
+        if not evidence.strip():
+            return "I could not find verified data in the provided documents to answer your query. The specific values or mechanisms requested are not present in the retrieved sections."
+        # ==================================================================
 
         if intent == "value_extraction":
             prompt = f"""You are an expert scientific analyst. Synthesize the extracted data into a comprehensive report grouped by Material/Alloy.
@@ -1201,28 +1217,35 @@ def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM
     retrieved_chunks = navigator.navigate(query, meta_tree)
 
     # ======================================================================
-    # CRITICAL FIX: THE SAFETY NET FALLBACK
-    # If the advanced MCTS fails (returns 0 chunks), fallback to 500d's
-    # robust flat-section search so the user still gets an answer!
+    # CRITICAL FIX: THE SAFETY NET FALLBACK (RETRIEVAL ONLY)
+    # If MCTS fails, we use the flat search ONLY to get text chunks.
+    # We DO NOT let the fallback generate the final answer!
     # ======================================================================
     if not retrieved_chunks:
-        logger.warning("⚠️ MCTS Navigation returned 0 chunks. Falling back to robust flat search (500d style)...")
-        answer, thinking, retrieved_info = agentic_retrieve_and_answer(query, selected_docs, llm)
-        # Convert fallback results to verified_items format so the UI stays consistent
-        verified_items = []
-        for info in retrieved_info:
-            sec = info.get("section", {})
-            verified_items.append({
-                "doc_name": info.get("doc_name", "unknown"),
-                "page": sec.get("start_page", 1),
-                "parameter_name": sec.get("title", "Section"),
-                "value": None,
-                "unit": "",
-                "confidence": 0.7,
-                "item_type": "section",
-                "context": sec.get("summary", "")
-            })
-        return answer, thinking, verified_items
+        logger.warning("⚠️ MCTS Navigation returned 0 chunks. Falling back to robust flat search (500d style) for retrieval...")
+
+        # Use the flat search JUST to get the relevant text chunks
+        _, _, retrieved_info = agentic_retrieve_and_answer(query, selected_docs, llm)
+
+        # Convert the flat search results into chunks for the strict extraction pipeline
+        if retrieved_info:
+            for info in retrieved_info:
+                sec = info.get("section", {})
+                doc_name = info.get("doc_name")
+                if doc_name in selected_docs:
+                    pages = selected_docs[doc_name]['pages']
+                    text_parts = [pages[p-1]['text'] for p in range(sec['start_page'], sec['end_page']+1) if 0 < p <= len(pages)]
+                    retrieved_chunks.append({
+                        "doc_name": doc_name,
+                        "section_title": sec.get("title", ""),
+                        "start_page": sec.get("start_page", 1),
+                        "end_page": sec.get("end_page", 1),
+                        "full_text": "\n".join(text_parts)
+                    })
+
+        # If the fallback ALSO found nothing, abort immediately to prevent hallucination!
+        if not retrieved_chunks:
+            return "I could not find any relevant sections in the selected documents to answer your query.", "No sections matched in either MCTS or flat search.", []
     # ======================================================================
 
     # 4. Structured Extraction

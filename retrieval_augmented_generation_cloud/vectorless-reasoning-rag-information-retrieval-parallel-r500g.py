@@ -810,6 +810,13 @@ def flatten_tree_to_sections(tree: Dict, doc_name: str) -> List[Dict]:
     walk(tree)
     return sections
 
+def _inject_doc_id_recursive(node: Dict, doc_id: str):
+    """Recursively ensure every node in the tree carries the parent doc_id."""
+    if "doc_id" not in node:
+        node["doc_id"] = doc_id
+    for child in node.get("nodes", []):
+        _inject_doc_id_recursive(child, doc_id)
+
 
 def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
     """Phase 1: Builds NESTED hierarchical JSON tree indices for multiple PDFs."""
@@ -830,7 +837,8 @@ def index_all_documents(uploaded_files, llm: HybridLLM, chunk_size: int = 5):
 
         # BUILD NESTED TREE
         tree = build_nested_json_tree(pages_text, doc_name, llm)
-        tree['doc_id'] = doc_name  # Inject doc_id for meta-tree stitching
+        tree['doc_id'] = doc_name
+        _inject_doc_id_recursive(tree, doc_name)  # Propagate to ALL children
 
         # Generate flat sections from nested tree for backward compatibility
         flat_sections = flatten_tree_to_sections(tree, doc_name)
@@ -1155,7 +1163,22 @@ def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM
     # ======================================================================
     if not retrieved_chunks:
         logger.warning("⚠️ MCTS Navigation returned 0 chunks. Falling back to robust flat search (500d style)...")
-        return agentic_retrieve_and_answer(query, selected_docs, llm)
+        answer, thinking, retrieved_info = agentic_retrieve_and_answer(query, selected_docs, llm)
+        # Convert fallback results to verified_items format so the UI stays consistent
+        verified_items = []
+        for info in retrieved_info:
+            sec = info.get("section", {})
+            verified_items.append({
+                "doc_name": info.get("doc_name", "unknown"),
+                "page": sec.get("start_page", 1),
+                "parameter_name": sec.get("title", "Section"),
+                "value": None,
+                "unit": "",
+                "confidence": 0.7,
+                "item_type": "section",
+                "context": sec.get("summary", "")
+            })
+        return answer, thinking, verified_items
     # ======================================================================
 
     # 4. Structured Extraction
@@ -1171,7 +1194,7 @@ def advanced_retrieve_and_answer(query: str, selected_docs: Dict, llm: HybridLLM
     generator = AdaptiveResponseGenerator(llm)
     answer = generator.generate(query, verified_items, intent_data['intent'])
 
-    return answer, "\n".join(navigator.trace), verified_itemss
+    return answer, "\n".join(navigator.trace), verified_items
 
 def build_cross_document_meta_tree(query: str, doc_trees: List[Dict], llm: HybridLLM) -> Dict:
     """Stitches equivalent JSON sections from multiple documents into a single virtual root."""
@@ -1261,7 +1284,7 @@ class JSONMCTSNavigator:
 
             # Format the current JSON nodes for the LLM
             nodes_summary = json.dumps([{
-                "node_id": n['node_id'], "doc_id": n['doc_id'],
+                "node_id": n.get('node_id', ''), "doc_id": n.get('doc_id', 'unknown'),
                 "title": n['title'], "summary": n.get('summary', '')[:150]
             } for n in current_nodes], indent=2)
 
@@ -1319,7 +1342,7 @@ class JSONMCTSNavigator:
                     text_parts = [pages[p-1]['text'] for p in range(start_p, end_p+1) if 0 < p <= len(pages)]
                     raw_text = "\n".join(text_parts)
                 else:
-                    raw_text = node.get('summary', '')  # Fallback
+                    raw_text = node.get('summary', node.get('title', ''))  # Fallback
 
                 return {
                     "doc_name": doc_id, "section_title": node.get('title', ''),

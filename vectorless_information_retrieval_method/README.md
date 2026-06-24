@@ -44,7 +44,7 @@
 
 
 
-# LLM Names:
+# LLM Names (More description about the Context Window is provided after this section):
 
 Model A: Falcon3 10B
 
@@ -53,3 +53,21 @@ Model B: Mistral 7B
 Model C: Qwen 14B
 
 Model D: Qwen 7B
+
+
+## Evaluation Configuration & Context Window
+
+To benchmark model performance on the retrieval-augmented extraction tasks, we evaluated several open-weight LLMs under consistent experimental conditions, with one key distinction: **maximum retrieved context length**.
+
+The system’s `max_retrieval_chars` parameter (which controls the number of characters passed from the retrieved document sections to the LLM for extraction) was set differently based on hardware constraints and the model's native context window capacity.
+
+| Model Alias | Full Model Name | Max Retrieval Context (characters) |
+| :---------- | :-------------- | :--------------------------------- |
+| Model A     | Falcon 10B      | 10,000                             |
+| Model B     | Mistral 7B      | 50,000                             |
+| Model C     | Qwen 14B        | 50,000                             |
+| Model D     | Qwen 7B         | 50,000                             |
+
+> **Note:** The performance CSV results reported for **Model A (Falcon 10B)** were obtained with the **10,000-character** limit, while Models B, C, and D were evaluated with the extended **50,000-character** setting. This distinction is important when comparing extraction completeness, as longer contexts may provide more surrounding evidence for numerical values, whereas shorter contexts force stricter summarization and may favor precision over recall.
+
+All other hyperparameters (e.g., confidence threshold, page window size, retrieval top-k) were kept identical across models to ensure a fair comparison of underlying reasoning capability.

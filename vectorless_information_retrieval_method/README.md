@@ -45,11 +45,11 @@
 
 
 # LLM Names :
-|Model Alias | LLM Name |
-|Model A | Falcon3 10B |
-| Model B | Mistral 7B |
-| Model C | Qwen 14B |
-| Model D | Qwen 7B |
+| Model Alias | LLM Name    |
+| Model A     | Falcon3 10B |
+| Model B     | Mistral 7B  |
+| Model C     | Qwen 14B    |
+| Model D     | Qwen 7B     |
 
 
 ## Evaluation Configuration & Context Window

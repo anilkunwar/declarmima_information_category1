@@ -50,7 +50,7 @@
 
 [![meaningtowords](https://img.shields.io/badge/alloysmaterials-v14.0-yellow)](https://alloys-materials-retrieval-performance14.streamlit.app/) (Comparison with LLM model A (results obtained with 10000 char limit) and  models B,C and D (results obtained with  50,000-character context limit), v10 with no unreferenced numbers, Number of Labels is Equal to the Number of Nodes in Chord Diagram, Previous versions have labels less than the number of nodes in chord diagram, Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
 
-[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v15.0-yellow)](https://alloys-materials-retrieval-performance15.streamlit.app/) (Comparison with LLM model A (results obtained with 10000 char limit) and  models B,C and D (results obtained with  50,000-character context limit), v10 with no unreferenced numbers, Number of Labels is Equal to the Number of Nodes in Chord Diagram, Previous versions have labels less than the number of nodes in chord diagram, Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
+[![meaningtowords](https://img.shields.io/badge/alloysmaterials-v15.0-yellow)](https://alloys-materials-retrieval-performance15.streamlit.app/) (Standalone LLM model A (results obtained with 10000 char limit),  v10 with no unreferenced numbers, Number of Labels is Equal to the Number of Nodes in Chord Diagram, Previous versions have labels less than the number of nodes in chord diagram, Enhanced unified visualizations, Comparison among different LLM models, a document for a given model is given a unique label)
 
 
 

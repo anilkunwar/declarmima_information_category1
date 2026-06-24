@@ -11,7 +11,13 @@
 
 [![meaningtowords](https://img.shields.io/badge/physicalquantities-v4.0-violet)](https://physical-quantities-retrieval-performance4.streamlit.app/) (Comparison among different LLM models, Figure Customization and Enhancement)
 
-[![meaningtowords](https://img.shields.io/badge/physicalquantities-v5.0-violet)](https://physical-quantities-retrieval-performance5.streamlit.app/) (Comparison among different LLM models, Figure Customization and Enhancement)
+[![meaningtowords](https://img.shields.io/badge/physicalquantities-v5.0-violet)](https://physical-quantities-retrieval-performance5.streamlit.app/) (Comparison among different LLM models B,C and D for the results ontained with  50,000-character context limit, Figure Customization and Enhancement)
+
+[![meaningtowords](https://img.shields.io/badge/physicalquantities-v6.0-yellow)](https://physical-quantities-retrieval-performance6.streamlit.app/) (Comparison among different LLM model A (results obtained with 10000 char limit) and  models B,C and D (results obtained with  50,000-character context limit), Figure Customization and Enhancement)
+
+[![meaningtowords](https://img.shields.io/badge/physicalquantities-v7.0-green)](https://physical-quantities-retrieval-performance7.streamlit.app/) (Standalone LLM model A for results obtained with 10,000-character context limit, Figure Customization and Enhancement)
+
+
 
 # Alloys Materials 
 
